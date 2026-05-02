@@ -1,0 +1,378 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─── Enums ────────────────────────────────────────────────────────────────────
+
+enum AdminRole {
+  OWNER
+  STAFF
+}
+
+enum GuardianRelationship {
+  PARENT
+  GUARDIAN
+  OTHER
+}
+
+enum PersonStatus {
+  ACTIVE
+  PAUSED
+  INACTIVE
+}
+
+enum PackageType {
+  MONTHLY
+  PER_SESSION
+}
+
+enum BillingPeriod {
+  MONTHLY
+  THREE_MONTHS
+  YEARLY
+}
+
+enum LessonType {
+  PRIVATE
+  GROUP
+}
+
+enum EnrollmentStatus {
+  ACTIVE
+  PAUSED
+  COMPLETED
+  CANCELLED
+}
+
+enum DiscountKind {
+  PERCENT_OFF
+  FIXED_OFF
+  FREE_SESSIONS
+  FREE_MONTH
+  REDUCED_RATE
+}
+
+enum SessionStatus {
+  SCHEDULED
+  COMPLETED
+  NO_SHOW
+  CANCELLED_BY_TUTOR
+  CANCELLED_BY_STUDENT
+}
+
+enum PaymentMethod {
+  CASH
+  BANK_TRANSFER
+  CARD
+  OTHER
+}
+
+enum ReminderType {
+  SESSION_UPCOMING
+  PAYMENT_DUE
+  PACKAGE_ENDING
+}
+
+enum ReminderStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+enum EmailTemplateType {
+  PAYMENT_REMINDER
+  SESSION_REMINDER
+  ANNOUNCEMENT
+  CUSTOM
+}
+
+// ─── Core Identity ────────────────────────────────────────────────────────────
+
+model Admin {
+  id          String    @id @default(cuid())
+  clerkUserId String    @unique
+  email       String
+  name        String
+  role        AdminRole @default(STAFF)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  payments Payment[]
+}
+
+model Guardian {
+  id             String               @id @default(cuid())
+  firstName      String
+  lastName       String
+  avatarUrl      String?
+  avatarPublicId String?
+  email          String?
+  phone          String
+  relationship   GuardianRelationship @default(PARENT)
+  notes          String?
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+
+  students StudentGuardian[]
+}
+
+model Student {
+  id             String       @id @default(cuid())
+  firstName      String
+  lastName       String
+  avatarUrl      String?
+  avatarPublicId String?
+  dob            DateTime?
+  email          String?
+  phone          String?
+  school         String?
+  gradeLevel     String?
+  status         PersonStatus @default(ACTIVE)
+  notes          String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  guardians         StudentGuardian[]
+  enrollments       Enrollment[]
+  sessionAttendance SessionAttendance[]
+  payments          Payment[]
+  discounts         Discount[]
+}
+
+model StudentGuardian {
+  studentId  String
+  guardianId String
+  isPrimary  Boolean @default(false)
+
+  student  Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  guardian Guardian @relation(fields: [guardianId], references: [id], onDelete: Cascade)
+
+  @@id([studentId, guardianId])
+}
+
+// ─── Teaching ─────────────────────────────────────────────────────────────────
+
+model Tutor {
+  id             String       @id @default(cuid())
+  firstName      String
+  lastName       String
+  avatarUrl      String?
+  avatarPublicId String?
+  email          String       @unique
+  phone          String
+  hourlyRate     Decimal      @db.Decimal(10, 2)
+  status         PersonStatus @default(ACTIVE)
+  notes          String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  subjects    TutorSubject[]
+  enrollments Enrollment[]
+  sessions    Session[]
+}
+
+model Subject {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tutors      TutorSubject[]
+  packages    Package[]
+  enrollments Enrollment[]
+  sessions    Session[]
+}
+
+model TutorSubject {
+  tutorId   String
+  subjectId String
+
+  tutor   Tutor   @relation(fields: [tutorId], references: [id], onDelete: Cascade)
+  subject Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+
+  @@id([tutorId, subjectId])
+}
+
+// ─── Packages & Enrollments ───────────────────────────────────────────────────
+
+model Package {
+  id               String      @id @default(cuid())
+  name             String
+  type             PackageType
+  billingPeriod    BillingPeriod @default(MONTHLY)
+  lessonType       LessonType  @default(PRIVATE)
+  subjectId        String?
+  basePrice        Decimal     @db.Decimal(10, 2)
+  sessionsPerWeek  Int?
+  durationMinutes  Int
+  isActive         Boolean     @default(true)
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+
+  subject     Subject?     @relation(fields: [subjectId], references: [id])
+  enrollments Enrollment[]
+}
+
+model Enrollment {
+  id                  String           @id @default(cuid())
+  studentId           String
+  packageId           String
+  tutorId             String
+  subjectId           String
+  startDate           DateTime         @db.Date
+  endDate             DateTime?        @db.Date
+  status              EnrollmentStatus @default(ACTIVE)
+  customPriceOverride Decimal?         @db.Decimal(10, 2)
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+
+  student           Student             @relation(fields: [studentId], references: [id])
+  package           Package             @relation(fields: [packageId], references: [id])
+  tutor             Tutor               @relation(fields: [tutorId], references: [id])
+  subject           Subject             @relation(fields: [subjectId], references: [id])
+  sessions          Session[]
+  sessionAttendance SessionAttendance[]
+  recurrenceRules   RecurrenceRule[]
+  discounts         Discount[]
+  payments          Payment[]
+
+  @@index([studentId, status])
+}
+
+model Discount {
+  id            String       @id @default(cuid())
+  enrollmentId  String?
+  studentId     String?
+  kind          DiscountKind
+  value         Decimal      @db.Decimal(10, 2)
+  temporary     Boolean      @default(false)
+  validFrom     DateTime?
+  validUntil    DateTime?
+  usesRemaining Int?
+  notes         String?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  enrollment Enrollment? @relation(fields: [enrollmentId], references: [id], onDelete: Cascade)
+  student    Student?    @relation(fields: [studentId], references: [id], onDelete: Cascade)
+}
+
+// ─── Scheduling ───────────────────────────────────────────────────────────────
+
+model RecurrenceRule {
+  id              String    @id @default(cuid())
+  enrollmentId    String
+  dayOfWeek       Int
+  startTime       String
+  durationMinutes Int
+  intervalWeeks   Int       @default(1)
+  room            String?
+  color           String?
+  startsOn        DateTime  @db.Date
+  endsOn          DateTime? @db.Date
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  enrollment Enrollment @relation(fields: [enrollmentId], references: [id], onDelete: Cascade)
+  sessions   Session[]
+}
+
+model Session {
+  id               String        @id @default(cuid())
+  enrollmentId     String?
+  tutorId          String
+  subjectId        String
+  scheduledFor     DateTime
+  durationMinutes  Int
+  room             String?
+  status           SessionStatus @default(SCHEDULED)
+  recurrenceRuleId String?
+  notes            String?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  enrollment     Enrollment?         @relation(fields: [enrollmentId], references: [id])
+  tutor          Tutor               @relation(fields: [tutorId], references: [id])
+  subject        Subject             @relation(fields: [subjectId], references: [id])
+  recurrenceRule RecurrenceRule?     @relation(fields: [recurrenceRuleId], references: [id])
+  attendance     SessionAttendance[]
+  reminders      Reminder[]
+
+  @@unique([recurrenceRuleId, scheduledFor])
+  @@index([scheduledFor])
+  @@index([tutorId, scheduledFor])
+}
+
+model SessionAttendance {
+  id           String        @id @default(cuid())
+  sessionId    String
+  studentId    String
+  enrollmentId String?
+  status       SessionStatus @default(SCHEDULED)
+  billable     Boolean       @default(false)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  session    Session     @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  student    Student     @relation(fields: [studentId], references: [id])
+  enrollment Enrollment? @relation(fields: [enrollmentId], references: [id])
+
+  @@unique([sessionId, studentId])
+}
+
+// ─── Billing ──────────────────────────────────────────────────────────────────
+
+model Payment {
+  id           String        @id @default(cuid())
+  studentId    String
+  amount       Decimal       @db.Decimal(10, 2)
+  method       PaymentMethod
+  paidAt       DateTime
+  recordedById String
+  notes        String?
+  coversMonth  String?
+  enrollmentId String?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  student    Student     @relation(fields: [studentId], references: [id])
+  recordedBy Admin       @relation(fields: [recordedById], references: [id])
+  enrollment Enrollment? @relation(fields: [enrollmentId], references: [id])
+
+  @@index([studentId, paidAt])
+}
+
+// ─── Notifications ────────────────────────────────────────────────────────────
+
+model EmailTemplate {
+  id        String            @id @default(cuid())
+  name      String
+  subject   String
+  body      String
+  type      EmailTemplateType @default(CUSTOM)
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+}
+
+model Reminder {
+  id             String         @id @default(cuid())
+  type           ReminderType
+  recipientEmail String
+  payload        Json
+  scheduledFor   DateTime
+  sentAt         DateTime?
+  sessionId      String?
+  status         ReminderStatus @default(PENDING)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  session Session? @relation(fields: [sessionId], references: [id])
+
+  @@index([scheduledFor, status])
+}
