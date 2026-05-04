@@ -1,10 +1,6 @@
 import { auth } from "@clerk/nextjs/server";
 import { prisma } from "@/lib/prisma";
 
-/**
- * Returns the current Admin record, syncing from Clerk on first visit.
- * Throws if not authenticated (should be handled by proxy.ts protecting the route).
- */
 export async function requireAdmin() {
   const { userId } = await auth();
   if (!userId) throw new Error("Unauthorized");
@@ -12,7 +8,6 @@ export async function requireAdmin() {
   let admin = await prisma.admin.findUnique({ where: { clerkUserId: userId } });
 
   if (!admin) {
-    // First visit — provision the Admin row from Clerk user data
     const { clerkClient } = await import("@clerk/nextjs/server");
     const client = await clerkClient();
     const user = await client.users.getUser(userId);
@@ -27,5 +22,11 @@ export async function requireAdmin() {
     });
   }
 
+  return admin;
+}
+
+export async function requireOwner() {
+  const admin = await requireAdmin();
+  if (admin.role !== "OWNER") throw new Error("Forbidden");
   return admin;
 }

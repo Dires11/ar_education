@@ -7,7 +7,7 @@ import {
   differenceInCalendarMonths,
 } from "date-fns";
 import { prisma } from "@/lib/prisma";
-import { createPayment, listPayments, deletePayment } from "@/lib/data/payments";
+import { createPayment, listPayments, deletePayment, getPaymentStats } from "@/lib/data/payments";
 import {
   createPaymentSchema,
   type CreatePaymentInput,
@@ -227,4 +227,4 @@ export async function sendPaymentReminderEmail(
   });
 }
 
-export { listPayments, getStudentBalance };
+export { listPayments, getStudentBalance, getPaymentStats };

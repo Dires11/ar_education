@@ -13,6 +13,7 @@ import {
   format,
   addMonths,
   subMonths,
+  addMinutes,
 } from "date-fns";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -368,7 +369,9 @@ export function MonthCalendar({
   const days = eachDayOfInterval({ start: calStart, end: calEnd });
 
   const selectedDaySessions = selectedDay
-    ? sessions.filter((s) => isSameDay(new Date(s.scheduledFor), selectedDay))
+    ? sessions
+        .filter((s) => isSameDay(new Date(s.scheduledFor), selectedDay))
+        .sort((a, b) => new Date(a.scheduledFor).getTime() - new Date(b.scheduledFor).getTime())
     : [];
 
   return (
@@ -481,9 +484,9 @@ export function MonthCalendar({
             )}
           >
             {days.map((day, i) => {
-              const daySessions = sessions.filter((s) =>
-                isSameDay(new Date(s.scheduledFor), day),
-              );
+              const daySessions = sessions
+                .filter((s) => isSameDay(new Date(s.scheduledFor), day))
+                .sort((a, b) => new Date(a.scheduledFor).getTime() - new Date(b.scheduledFor).getTime());
               const isCurrentMonth = isSameMonth(day, monthStart);
               const isSelected = selectedDay
                 ? isSameDay(day, selectedDay)
@@ -597,8 +600,9 @@ export function MonthCalendar({
                         >
                           <div className="flex items-center justify-between gap-1">
                             <span className="font-medium">
-                              {format(new Date(session.scheduledFor), "h:mm a")}{" "}
-                              · {session.durationMinutes}min
+                              {format(new Date(session.scheduledFor), "h:mm")}
+                              {" – "}
+                              {format(addMinutes(new Date(session.scheduledFor), session.durationMinutes), "h:mm a")}
                             </span>
                             <div className="flex items-center gap-1.5">
                               {session.isPaid === false && (
@@ -658,8 +662,9 @@ export function MonthCalendar({
                         >
                           <div className="flex items-center justify-between gap-1">
                             <span className="font-medium">
-                              {format(new Date(session.scheduledFor), "h:mm a")}{" "}
-                              · {session.durationMinutes}min
+                              {format(new Date(session.scheduledFor), "h:mm")}
+                              {" – "}
+                              {format(addMinutes(new Date(session.scheduledFor), session.durationMinutes), "h:mm a")}
                             </span>
                             <div className="flex items-center gap-1.5">
                               {session.isPaid === false && (

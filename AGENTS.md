@@ -40,13 +40,6 @@ This version has breaking changes — APIs, conventions, and file structure may 
 
 /(protected) # protected routes
 
-- /dashboard
-- /students
-- /tutors
-- /schedule
-- /payments
-- /packages
-
 /api
 /cron # scheduled reminder jobs
 
@@ -60,21 +53,8 @@ prisma.ts # Prisma client singleton
 /prisma
 schema.prisma
 
-## Modules to build (in order)
-
-1. Prisma schema + migrations
-2. Students CRUD
-3. Tutors CRUD
-4. Subjects + Packages CRUD
-5. Enrollments CRUD
-6. Schedule / Sessions
-7. Payments
-8. Dashboard
-9. Email notifications
-
 ## Notifications
 
 - Email via Resend
 - SMS will be added later
 - Reminders stored in DB with scheduledFor field
-- Cron job at /api/cron/send-reminders runs daily via Vercel Cron

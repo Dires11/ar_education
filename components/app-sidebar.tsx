@@ -12,6 +12,7 @@ import {
   CreditCard,
   ClipboardList,
   Mail,
+  UsersRoundIcon,
 } from "lucide-react";
 
 import {
@@ -36,6 +37,7 @@ const navItems = [
   { href: "/schedule", label: "Schedule", icon: CalendarDays },
   { href: "/payments", label: "Payments", icon: CreditCard },
   { href: "/emails", label: "Emails", icon: Mail },
+  { href: "/team", label: "Team", icon: UsersRoundIcon },
 ];
 
 export function AppSidebar() {

@@ -1,5 +1,15 @@
 import { prisma } from "@/lib/prisma";
-import { startOfDay, endOfDay, addDays, startOfWeek, endOfWeek } from "date-fns";
+import {
+  startOfDay,
+  endOfDay,
+  addDays,
+  startOfWeek,
+  endOfWeek,
+  startOfMonth,
+  endOfMonth,
+  subMonths,
+  format,
+} from "date-fns";
 
 export async function getSessionsForDay(date: Date) {
   return prisma.session.findMany({
@@ -101,4 +111,40 @@ export async function getStudentsWithBalance() {
       },
     },
   });
+}
+
+export async function getWeeklySessionsByDay() {
+  const now = new Date();
+  const weekStart = startOfWeek(now, { weekStartsOn: 1 });
+  const weekEnd = endOfWeek(now, { weekStartsOn: 1 });
+
+  const sessions = await prisma.session.findMany({
+    where: {
+      scheduledFor: { gte: weekStart, lte: weekEnd },
+      status: { in: ["SCHEDULED", "COMPLETED"] },
+    },
+    select: { scheduledFor: true },
+  });
+
+  const days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  const counts = Object.fromEntries(days.map((d) => [d, 0]));
+  for (const s of sessions) {
+    const dayKey = format(s.scheduledFor, "EEE");
+    if (dayKey in counts) counts[dayKey]++;
+  }
+  return days.map((day) => ({ day, sessions: counts[day] }));
+}
+
+export async function getMonthlyRevenue(months = 6) {
+  const now = new Date();
+  return Promise.all(
+    Array.from({ length: months }, (_, i) => {
+      const date = subMonths(now, months - 1 - i);
+      const start = startOfMonth(date);
+      const end = endOfMonth(date);
+      return prisma.payment
+        .aggregate({ where: { paidAt: { gte: start, lte: end } }, _sum: { amount: true } })
+        .then((r) => ({ month: format(date, "MMM"), revenue: Number(r._sum.amount ?? 0) }));
+    })
+  );
 }

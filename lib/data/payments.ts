@@ -1,9 +1,10 @@
 import { prisma } from "@/lib/prisma";
-import { addMonths, format, parse } from "date-fns";
+import { addMonths, format, parse, startOfMonth, endOfMonth, subMonths } from "date-fns";
 
 export type PaymentFilters = {
   studentId?: string;
   enrollmentId?: string;
+  method?: string;
   from?: Date;
   to?: Date;
   page?: number;
@@ -13,6 +14,7 @@ export type PaymentFilters = {
 export async function listPayments({
   studentId,
   enrollmentId,
+  method,
   from,
   to,
   page = 1,
@@ -21,6 +23,7 @@ export async function listPayments({
   const where = {
     ...(studentId && { studentId }),
     ...(enrollmentId && { enrollmentId }),
+    ...(method && { method: method as "CASH" | "BANK_TRANSFER" | "CARD" | "OTHER" }),
     ...(from || to
       ? {
           paidAt: {
@@ -115,4 +118,32 @@ export async function getEnrollmentPaidMonths(
   }
 
   return paid;
+}
+
+export async function getPaymentStats() {
+  const now = new Date();
+  const thisMonthStart = startOfMonth(now);
+  const thisMonthEnd = endOfMonth(now);
+  const lastMonthStart = startOfMonth(subMonths(now, 1));
+  const lastMonthEnd = endOfMonth(subMonths(now, 1));
+
+  const [thisMonth, lastMonth, total] = await Promise.all([
+    prisma.payment.aggregate({
+      where: { paidAt: { gte: thisMonthStart, lte: thisMonthEnd } },
+      _sum: { amount: true },
+      _count: true,
+    }),
+    prisma.payment.aggregate({
+      where: { paidAt: { gte: lastMonthStart, lte: lastMonthEnd } },
+      _sum: { amount: true },
+    }),
+    prisma.payment.count(),
+  ]);
+
+  return {
+    thisMonthTotal: Number(thisMonth._sum.amount ?? 0),
+    thisMonthCount: thisMonth._count,
+    lastMonthTotal: Number(lastMonth._sum.amount ?? 0),
+    total,
+  };
 }

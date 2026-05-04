@@ -5,6 +5,8 @@ import {
   getUpcomingPackageEndings,
   getTutorSessionCountsThisWeek,
   getStudentsWithBalance,
+  getWeeklySessionsByDay,
+  getMonthlyRevenue,
 } from "@/lib/data/dashboard";
 import { applyDiscounts } from "@/lib/services/pricing";
 import { Prisma } from "../../generated/prisma";
@@ -26,6 +28,8 @@ export async function getDashboardStats() {
     upcomingEndings,
     tutorCounts,
     studentsData,
+    weeklySessionsByDay,
+    monthlyRevenue,
   ] = await Promise.all([
     getSessionsForDay(today),
     getSessionsForDay(tomorrow),
@@ -33,6 +37,8 @@ export async function getDashboardStats() {
     getUpcomingPackageEndings(14),
     getTutorSessionCountsThisWeek(),
     getStudentsWithBalance(),
+    getWeeklySessionsByDay(),
+    getMonthlyRevenue(6),
   ]);
 
   // Compute unpaid balances
@@ -91,5 +97,7 @@ export async function getDashboardStats() {
     upcomingEndings,
     tutorCounts,
     unpaidStudents,
+    weeklySessionsByDay,
+    monthlyRevenue,
   };
 }
