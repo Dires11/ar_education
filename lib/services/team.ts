@@ -1,5 +1,10 @@
 import { clerkClient } from "@clerk/nextjs/server";
-import { listAdmins, findAdminById, setAdminRole, deleteAdmin } from "@/lib/data/team";
+import {
+  listAdmins,
+  findAdminById,
+  setAdminRole,
+  deleteAdmin,
+} from "@/lib/data/team";
 
 export async function getTeamPageData() {
   const client = await clerkClient();
@@ -12,7 +17,10 @@ export async function getTeamPageData() {
 
 export async function inviteTeamMember(email: string) {
   const client = await clerkClient();
-  await client.invitations.createInvitation({ emailAddress: email });
+  await client.invitations.createInvitation({
+    emailAddress: email,
+    redirectUrl: `${process.env.NEXT_PUBLIC_APP_URL}/sign-up`,
+  });
 }
 
 export async function revokeTeamInvitation(invitationId: string) {
@@ -25,11 +33,15 @@ export async function updateTeamMemberRole(
   adminId: string,
   role: "OWNER" | "STAFF",
 ) {
-  if (adminId === currentAdminId) throw new Error("Cannot change your own role");
+  if (adminId === currentAdminId)
+    throw new Error("Cannot change your own role");
   await setAdminRole(adminId, role);
 }
 
-export async function removeTeamMember(currentAdminId: string, adminId: string) {
+export async function removeTeamMember(
+  currentAdminId: string,
+  adminId: string,
+) {
   if (adminId === currentAdminId) throw new Error("Cannot remove yourself");
   const admin = await findAdminById(adminId);
   await deleteAdmin(admin.id);
