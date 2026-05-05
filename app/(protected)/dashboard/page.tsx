@@ -20,8 +20,7 @@ import {
   ClockIcon,
   ArrowRightIcon,
 } from "lucide-react";
-import { SessionsChart } from "./sessions-chart";
-import { RevenueChart } from "./revenue-chart";
+import { SessionsChart, RevenueChart } from "./dashboard-charts";
 
 export default async function DashboardPage() {
   const {
@@ -346,7 +345,7 @@ export default async function DashboardPage() {
                 upcomingEndings.slice(0, 5).map((e) => (
                   <Link
                     key={e.id}
-                    href={`/enrollments/${e.id}`}
+                    href="/enrollments"
                     className="flex items-start justify-between rounded-lg border px-3 py-2.5 text-sm hover:bg-accent transition-colors group"
                   >
                     <div className="min-w-0">

@@ -1,0 +1,150 @@
+"use client";
+
+import { useState } from "react";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { StudentAvatar } from "@/components/entity-avatar";
+import { formatDate } from "@/lib/utils/dates";
+import { formatUSD } from "@/lib/utils/money";
+import { EnrollmentPopup } from "./enrollment-popup";
+
+const STATUS_COLORS = {
+  ACTIVE: "bg-green-100 text-green-800",
+  PAUSED: "bg-yellow-100 text-yellow-800",
+  COMPLETED: "bg-blue-100 text-blue-800",
+  CANCELLED: "bg-gray-100 text-gray-700",
+};
+
+type EnrollmentRow = {
+  id: string;
+  status: keyof typeof STATUS_COLORS;
+  startDate: string;
+  customPriceOverride: string | null;
+  student: {
+    firstName: string;
+    lastName: string;
+    avatarUrl: string | null;
+  };
+  subject: { name: string };
+  package: {
+    name: string;
+    basePrice: string;
+  };
+  tutor: {
+    firstName: string;
+    lastName: string;
+  };
+};
+
+export function EnrollmentsTable({
+  enrollments,
+}: {
+  enrollments: EnrollmentRow[];
+}) {
+  const [selectedEnrollmentId, setSelectedEnrollmentId] = useState<string | null>(
+    null,
+  );
+  const [open, setOpen] = useState(false);
+
+  function openEnrollment(id: string) {
+    setSelectedEnrollmentId(id);
+    setOpen(true);
+  }
+
+  return (
+    <>
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Student</TableHead>
+            <TableHead>Subject</TableHead>
+            <TableHead>Package</TableHead>
+            <TableHead>Tutor</TableHead>
+            <TableHead>Price</TableHead>
+            <TableHead>Started</TableHead>
+            <TableHead>Status</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {enrollments.length === 0 ? (
+            <TableRow>
+              <TableCell
+                colSpan={7}
+                className="py-8 text-center text-muted-foreground"
+              >
+                No active enrollments
+              </TableCell>
+            </TableRow>
+          ) : (
+            enrollments.map((enrollment) => (
+              <TableRow
+                key={enrollment.id}
+                className="cursor-pointer transition-colors hover:bg-muted/40"
+                onClick={() => openEnrollment(enrollment.id)}
+                tabIndex={0}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    openEnrollment(enrollment.id);
+                  }
+                }}
+              >
+                <TableCell>
+                  <div className="flex items-center gap-3">
+                    <StudentAvatar
+                      firstName={enrollment.student.firstName}
+                      lastName={enrollment.student.lastName}
+                      avatarUrl={enrollment.student.avatarUrl}
+                      className="h-8 w-8 rounded-xl"
+                    />
+                    <span className="font-medium">
+                      {enrollment.student.firstName}{" "}
+                      {enrollment.student.lastName}
+                    </span>
+                  </div>
+                </TableCell>
+                <TableCell className="text-sm">
+                  {enrollment.subject.name}
+                </TableCell>
+                <TableCell className="text-sm text-muted-foreground">
+                  {enrollment.package.name}
+                </TableCell>
+                <TableCell className="text-sm">
+                  {enrollment.tutor.firstName} {enrollment.tutor.lastName}
+                </TableCell>
+                <TableCell className="text-sm font-medium">
+                  {formatUSD(
+                    enrollment.customPriceOverride ??
+                      enrollment.package.basePrice,
+                  )}
+                </TableCell>
+                <TableCell className="text-sm text-muted-foreground">
+                  {formatDate(enrollment.startDate)}
+                </TableCell>
+                <TableCell>
+                  <span
+                    className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_COLORS[enrollment.status]}`}
+                  >
+                    {enrollment.status}
+                  </span>
+                </TableCell>
+              </TableRow>
+            ))
+          )}
+        </TableBody>
+      </Table>
+
+      <EnrollmentPopup
+        enrollmentId={selectedEnrollmentId}
+        open={open}
+        onOpenChange={setOpen}
+      />
+    </>
+  );
+}

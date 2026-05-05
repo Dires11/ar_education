@@ -382,7 +382,7 @@ export function StudentPopup({
           }
         }}
       >
-        <DialogContent className="overflow-hidden p-0 sm:max-w-3xl">
+        <DialogContent className="overflow-hidden p-0 sm:max-w-3xl [&_[data-slot=dialog-close]]:!right-6 [&_[data-slot=dialog-close]]:!top-6">
           <DialogHeader className="sr-only">
             <DialogTitle>
               {student
@@ -399,7 +399,7 @@ export function StudentPopup({
             </div>
           ) : !student ? null : (
             <div className="max-h-[85vh] space-y-4 overflow-y-auto p-4">
-              <section className="rounded-2xl border bg-gradient-to-br from-amber-50 via-background to-emerald-50 px-4 py-4">
+              <section className="rounded-2xl border bg-gradient-to-br from-amber-50 via-background to-emerald-50 px-4 py-4 pr-16">
                 <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                   <div className="space-y-2">
                     <div className="flex flex-wrap items-center gap-2">
@@ -443,7 +443,7 @@ export function StudentPopup({
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2 pr-10">
+                  <div className="flex shrink-0 items-center justify-end gap-2 sm:pt-2">
                     <Button
                       size="sm"
                       variant="outline"

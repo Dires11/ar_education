@@ -1,31 +1,13 @@
-import Link from "next/link";
 import { listEnrollments } from "@/lib/services/enrollments";
 import { listStudents } from "@/lib/data/students";
 import { listTutors } from "@/lib/data/tutors";
 import { listSubjects } from "@/lib/data/subjects";
 import { listPackages } from "@/lib/data/packages";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { formatDate } from "@/lib/utils/dates";
-import { formatUSD } from "@/lib/utils/money";
 import { NewEnrollmentDialog } from "./components/new-enrollment-dialog";
 import { PageHero } from "@/components/page-hero";
 import { ClipboardListIcon, UserCheckIcon, UsersIcon } from "lucide-react";
-import { StudentAvatar } from "@/components/entity-avatar";
-
-const STATUS_COLORS = {
-  ACTIVE: "bg-green-100 text-green-800",
-  PAUSED: "bg-yellow-100 text-yellow-800",
-  COMPLETED: "bg-blue-100 text-blue-800",
-  CANCELLED: "bg-gray-100 text-gray-700",
-};
+import { EnrollmentsTable } from "./components/enrollments-table";
 
 export default async function EnrollmentsPage() {
   const [enrollments, studentsData, tutorsData, subjects, packages] =
@@ -93,88 +75,36 @@ export default async function EnrollmentsPage() {
           <div>
             <h2 className="text-sm font-medium">Enrollment Records</h2>
             <p className="text-xs text-muted-foreground">
-              Click any row to open the enrollment detail page.
+              Click any row to open enrollment details.
             </p>
           </div>
           <Badge variant="outline" className="rounded-full">
             {enrollments.length} active
           </Badge>
         </div>
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Student</TableHead>
-              <TableHead>Subject</TableHead>
-              <TableHead>Package</TableHead>
-              <TableHead>Tutor</TableHead>
-              <TableHead>Price</TableHead>
-              <TableHead>Started</TableHead>
-              <TableHead>Status</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {enrollments.length === 0 ? (
-              <TableRow>
-                <TableCell
-                  colSpan={7}
-                  className="py-8 text-center text-muted-foreground"
-                >
-                  No active enrollments
-                </TableCell>
-              </TableRow>
-            ) : (
-              enrollments.map((enrollment) => (
-                <TableRow
-                  key={enrollment.id}
-                  className="cursor-pointer transition-colors hover:bg-muted/40"
-                >
-                  <TableCell>
-                    <Link
-                      href={`/enrollments/${enrollment.id}`}
-                      className="flex items-center gap-3"
-                    >
-                      <StudentAvatar
-                        firstName={enrollment.student.firstName}
-                        lastName={enrollment.student.lastName}
-                        avatarUrl={enrollment.student.avatarUrl}
-                        className="h-8 w-8 rounded-xl"
-                      />
-                      <span className="font-medium hover:underline">
-                        {enrollment.student.firstName}{" "}
-                        {enrollment.student.lastName}
-                      </span>
-                    </Link>
-                  </TableCell>
-                  <TableCell className="text-sm">
-                    {enrollment.subject.name}
-                  </TableCell>
-                  <TableCell className="text-sm text-muted-foreground">
-                    {enrollment.package.name}
-                  </TableCell>
-                  <TableCell className="text-sm">
-                    {enrollment.tutor.firstName} {enrollment.tutor.lastName}
-                  </TableCell>
-                  <TableCell className="text-sm font-medium">
-                    {formatUSD(
-                      enrollment.customPriceOverride ??
-                        enrollment.package.basePrice
-                    )}
-                  </TableCell>
-                  <TableCell className="text-sm text-muted-foreground">
-                    {formatDate(enrollment.startDate)}
-                  </TableCell>
-                  <TableCell>
-                    <span
-                      className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_COLORS[enrollment.status]}`}
-                    >
-                      {enrollment.status}
-                    </span>
-                  </TableCell>
-                </TableRow>
-              ))
-            )}
-          </TableBody>
-        </Table>
+        <EnrollmentsTable
+          enrollments={enrollments.map((enrollment) => ({
+            id: enrollment.id,
+            status: enrollment.status,
+            startDate: enrollment.startDate.toISOString(),
+            customPriceOverride:
+              enrollment.customPriceOverride?.toString() ?? null,
+            student: {
+              firstName: enrollment.student.firstName,
+              lastName: enrollment.student.lastName,
+              avatarUrl: enrollment.student.avatarUrl,
+            },
+            subject: { name: enrollment.subject.name },
+            package: {
+              name: enrollment.package.name,
+              basePrice: enrollment.package.basePrice.toString(),
+            },
+            tutor: {
+              firstName: enrollment.tutor.firstName,
+              lastName: enrollment.tutor.lastName,
+            },
+          }))}
+        />
       </div>
     </div>
   );

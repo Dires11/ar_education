@@ -201,7 +201,7 @@ export function NewEnrollmentForm({
         if (onSuccess) {
           onSuccess();
         } else {
-          router.push(`/enrollments/${result.id}`);
+          router.push("/enrollments");
         }
       }
     } catch (e: unknown) {

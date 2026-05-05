@@ -60,10 +60,12 @@ export function DiscountManager({
   enrollmentId,
   studentId,
   discounts,
+  onUpdated,
 }: {
   enrollmentId: string;
   studentId: string;
   discounts: Discount[];
+  onUpdated?: () => void | Promise<void>;
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -90,6 +92,7 @@ export function DiscountManager({
       toast.success("Discount added");
       setOpen(false);
       form.reset();
+      await onUpdated?.();
       router.refresh();
     } catch {
       toast.error("Failed to add discount");
@@ -100,6 +103,7 @@ export function DiscountManager({
     try {
       await removeDiscountAction(discountId, enrollmentId, studentId);
       toast.success("Discount removed");
+      await onUpdated?.();
       router.refresh();
     } catch {
       toast.error("Failed to remove discount");

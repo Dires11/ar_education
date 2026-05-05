@@ -49,5 +49,6 @@ export async function archiveTutorAction(id: string) {
 
 export async function getTutorAction(id: string) {
   await requireAdmin();
-  return getTutor(id);
+  const tutor = await getTutor(id);
+  return JSON.parse(JSON.stringify(tutor)) as typeof tutor;
 }

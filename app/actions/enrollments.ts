@@ -7,6 +7,7 @@ import {
   updateEnrollmentStatus,
   addDiscountToEnrollment,
   removeDiscount,
+  getEnrollment,
 } from "@/lib/services/enrollments";
 import type {
   CreateEnrollmentInput,
@@ -30,7 +31,6 @@ export async function updateEnrollmentAction(
   await requireAdmin();
   await updateEnrollmentStatus(id, input);
   revalidatePath("/enrollments");
-  revalidatePath(`/enrollments/${id}`);
   revalidatePath(`/students/${studentId}`);
   return { success: true };
 }
@@ -42,7 +42,7 @@ export async function addDiscountAction(
 ) {
   await requireAdmin();
   await addDiscountToEnrollment(enrollmentId, input);
-  revalidatePath(`/enrollments/${enrollmentId}`);
+  revalidatePath("/enrollments");
   revalidatePath(`/students/${studentId}`);
   return { success: true };
 }
@@ -54,7 +54,14 @@ export async function removeDiscountAction(
 ) {
   await requireAdmin();
   await removeDiscount(discountId);
-  revalidatePath(`/enrollments/${enrollmentId}`);
+  revalidatePath("/enrollments");
   revalidatePath(`/students/${studentId}`);
   return { success: true };
+}
+
+export async function getEnrollmentAction(enrollmentId: string) {
+  await requireAdmin();
+  const enrollment = await getEnrollment(enrollmentId);
+  if (!enrollment) return null;
+  return JSON.parse(JSON.stringify(enrollment)) as typeof enrollment;
 }

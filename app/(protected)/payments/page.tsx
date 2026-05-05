@@ -34,10 +34,7 @@ import {
   ChevronRightIcon,
 } from "lucide-react";
 
-const METHOD_CONFIG: Record<
-  string,
-  { label: string; className: string }
-> = {
+const METHOD_CONFIG: Record<string, { label: string; className: string }> = {
   CASH: {
     label: "Cash",
     className: "border-green-200 bg-green-50 text-green-700",
@@ -108,7 +105,8 @@ export default async function PaymentsPage({
 
   const revenueChange =
     stats.lastMonthTotal > 0
-      ? ((stats.thisMonthTotal - stats.lastMonthTotal) / stats.lastMonthTotal) * 100
+      ? ((stats.thisMonthTotal - stats.lastMonthTotal) / stats.lastMonthTotal) *
+        100
       : null;
 
   return (
@@ -158,7 +156,7 @@ export default async function PaymentsPage({
               <Link href="/payments?tab=upcoming" className="gap-1.5">
                 Upcoming Dues
                 {urgentCount > 0 && (
-                  <span className="inline-flex items-center justify-center rounded-full bg-destructive text-destructive-foreground text-[10px] font-semibold leading-none h-4 min-w-4 px-1">
+                  <span className="inline-flex items-center justify-center rounded-full bg-destructive/45 text-destructive-foreground text-[10px] font-semibold leading-none h-4 min-w-4 px-1">
                     {urgentCount}
                   </span>
                 )}
@@ -208,13 +206,25 @@ export default async function PaymentsPage({
               <TableHeader>
                 <TableRow className="bg-muted/40 hover:bg-muted/40">
                   <TableHead className="text-xs font-semibold">Date</TableHead>
-                  <TableHead className="text-xs font-semibold">Student</TableHead>
-                  <TableHead className="text-xs font-semibold">Amount</TableHead>
-                  <TableHead className="text-xs font-semibold">Method</TableHead>
-                  <TableHead className="text-xs font-semibold">Enrollment</TableHead>
-                  <TableHead className="text-xs font-semibold">Covers</TableHead>
+                  <TableHead className="text-xs font-semibold">
+                    Student
+                  </TableHead>
+                  <TableHead className="text-xs font-semibold">
+                    Amount
+                  </TableHead>
+                  <TableHead className="text-xs font-semibold">
+                    Method
+                  </TableHead>
+                  <TableHead className="text-xs font-semibold">
+                    Enrollment
+                  </TableHead>
+                  <TableHead className="text-xs font-semibold">
+                    Covers
+                  </TableHead>
                   <TableHead className="text-xs font-semibold">Notes</TableHead>
-                  <TableHead className="text-xs font-semibold">Recorded By</TableHead>
+                  <TableHead className="text-xs font-semibold">
+                    Recorded By
+                  </TableHead>
                   <TableHead />
                 </TableRow>
               </TableHeader>
@@ -244,7 +254,8 @@ export default async function PaymentsPage({
                             href="/students"
                             className="font-medium text-sm hover:text-primary transition-colors"
                           >
-                            {payment.student.firstName} {payment.student.lastName}
+                            {payment.student.firstName}{" "}
+                            {payment.student.lastName}
                           </Link>
                         </TableCell>
                         <TableCell className="font-semibold text-sm">
@@ -261,7 +272,7 @@ export default async function PaymentsPage({
                         <TableCell className="text-sm">
                           {payment.enrollment ? (
                             <Link
-                              href={`/enrollments/${payment.enrollmentId}`}
+                              href="/enrollments"
                               className="text-muted-foreground hover:text-primary transition-colors"
                             >
                               {payment.enrollment.subject.name} ·{" "}

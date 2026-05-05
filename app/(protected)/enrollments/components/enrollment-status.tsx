@@ -16,10 +16,12 @@ export function EnrollmentStatusSelect({
   enrollmentId,
   studentId,
   currentStatus,
+  onUpdated,
 }: {
   enrollmentId: string;
   studentId: string;
   currentStatus: EnrollmentStatus;
+  onUpdated?: () => void | Promise<void>;
 }) {
   const router = useRouter();
 
@@ -29,6 +31,7 @@ export function EnrollmentStatusSelect({
         status: status as EnrollmentStatus,
       });
       toast.success("Status updated");
+      await onUpdated?.();
       router.refresh();
     } catch {
       toast.error("Failed to update status");

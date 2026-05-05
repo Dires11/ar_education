@@ -121,7 +121,9 @@ export function CloudinaryImageUpload({
         >
           {uploading ? "Uploading…" : value ? "Change photo" : "Upload photo"}
         </button>
-        {error && <p className="text-xs text-destructive">{error}</p>}
+        <p className={`min-h-4 text-xs leading-4 text-destructive ${error ? "" : "invisible"}`}>
+          {error || " "}
+        </p>
         <input
           ref={inputRef}
           type="file"
