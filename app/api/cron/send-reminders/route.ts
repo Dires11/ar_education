@@ -15,11 +15,15 @@ export async function GET(request: NextRequest) {
     const now = new Date();
     // Materialize first so newly created sessions can receive reminders
     const materialized = await materializeSessions(now, addDays(now, 30));
-    const reminders = await processDueReminders();
+    // const reminders = await processDueReminders();
 
-    return NextResponse.json({ ok: true, materialized, ...reminders });
+    // return NextResponse.json({ ok: true, materialized, ...reminders });
+    return NextResponse.json({ ok: true, materialized });
   } catch (error) {
     console.error("[cron/send-reminders]", error);
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+    return NextResponse.json(
+      { error: "Internal server error" },
+      { status: 500 },
+    );
   }
 }

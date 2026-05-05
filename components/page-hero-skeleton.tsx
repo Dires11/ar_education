@@ -3,12 +3,12 @@ import { Skeleton } from "@/components/ui/skeleton";
 export function PageHeroSkeleton({ statCount = 3 }: { statCount?: number }) {
   const cols =
     statCount <= 1
-      ? "sm:grid-cols-1"
+      ? "grid-cols-1"
       : statCount === 2
-        ? "sm:grid-cols-2"
+        ? "grid-cols-2"
         : statCount === 4
-          ? "sm:grid-cols-4"
-          : "sm:grid-cols-3";
+          ? "grid-cols-2 lg:grid-cols-4"
+          : "grid-cols-3";
 
   return (
     <section className="overflow-hidden rounded-3xl border bg-muted/30 px-6 py-6">

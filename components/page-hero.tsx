@@ -26,12 +26,12 @@ export function PageHero({
 }) {
   const colsClass =
     !stats || stats.length <= 1
-      ? "sm:grid-cols-1"
+      ? "grid-cols-1"
       : stats.length === 2
-        ? "sm:grid-cols-2"
+        ? "grid-cols-2"
         : stats.length === 4
-          ? "sm:grid-cols-4"
-          : "sm:grid-cols-3";
+          ? "grid-cols-2 lg:grid-cols-4"
+          : "grid-cols-3";
 
   return (
     <section
@@ -55,13 +55,13 @@ export function PageHero({
                   key={stat.label}
                   className="rounded-2xl border bg-background/80 px-4 py-3 shadow-sm"
                 >
-                  <div className="flex items-center gap-2 text-muted-foreground">
-                    <stat.icon className="h-4 w-4" />
-                    <span className="text-xs uppercase tracking-[0.18em]">
+                  <div className="flex items-start gap-1.5 text-muted-foreground min-h-[2rem]">
+                    <stat.icon className="hidden sm:block h-3.5 w-3.5 shrink-0 mt-px" />
+                    <span className="text-[10px] uppercase tracking-wider leading-tight">
                       {stat.label}
                     </span>
                   </div>
-                  <p className="mt-2 text-2xl font-semibold">{stat.value}</p>
+                  <p className="mt-1 text-2xl font-semibold">{stat.value}</p>
                 </div>
               ))}
             </div>

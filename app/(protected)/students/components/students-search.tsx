@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter, usePathname, useSearchParams } from "next/navigation";
-import { useTransition, useCallback } from "react";
+import { useTransition, useCallback, useRef } from "react";
 import { SearchIcon } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -25,6 +25,7 @@ export function StudentsSearch({
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const [, startTransition] = useTransition();
+  const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const updateParams = useCallback(
     (key: string, value: string | undefined) => {
@@ -62,11 +63,11 @@ export function StudentsSearch({
             className="h-10 min-w-[280px] pl-9 sm:min-w-[320px]"
             onChange={(e) => {
               const value = e.target.value;
-              const timer = setTimeout(
+              if (searchTimer.current) clearTimeout(searchTimer.current);
+              searchTimer.current = setTimeout(
                 () => updateParams("search", value || undefined),
                 300
               );
-              return () => clearTimeout(timer);
             }}
           />
         </div>

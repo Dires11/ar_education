@@ -29,13 +29,13 @@ import {
 
 const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/students", label: "Students", icon: Users },
+  { href: "/schedule", label: "Schedule", icon: CalendarDays },
+  { href: "/payments", label: "Payments", icon: CreditCard },
   { href: "/tutors", label: "Tutors", icon: GraduationCap },
+  { href: "/students", label: "Students", icon: Users },
   { href: "/subjects", label: "Subjects", icon: BookOpen },
   { href: "/packages", label: "Packages", icon: Package },
   { href: "/enrollments", label: "Enrollments", icon: ClipboardList },
-  { href: "/schedule", label: "Schedule", icon: CalendarDays },
-  { href: "/payments", label: "Payments", icon: CreditCard },
   { href: "/emails", label: "Emails", icon: Mail },
   { href: "/team", label: "Team", icon: UsersRoundIcon },
 ];

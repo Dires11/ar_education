@@ -384,9 +384,11 @@ export function NewSessionForm({
       setActiveRules([]);
       return;
     }
+    let cancelled = false;
     getActiveRecurrenceRulesAction(recurringEnrollmentId)
-      .then(setActiveRules)
-      .catch(() => setActiveRules([]));
+      .then((rules) => { if (!cancelled) setActiveRules(rules); })
+      .catch(() => { if (!cancelled) setActiveRules([]); });
+    return () => { cancelled = true; };
   }, [recurringEnrollmentId]);
 
   // ── Seed color from enrollment hash ──────────────────────────────
