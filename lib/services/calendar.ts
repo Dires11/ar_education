@@ -72,6 +72,7 @@ export async function getCalendarSessions(
   // Generate virtual sessions for any slot not covered by a real session
   for (const rule of rules) {
     const { enrollment } = rule;
+    if (!enrollment) continue; // group rules handled separately
     const searchStart =
       new Date(rule.startsOn) > fromDate ? new Date(rule.startsOn) : fromDate;
     let current = getFirstMatchingDate(searchStart, rule.dayOfWeek);
