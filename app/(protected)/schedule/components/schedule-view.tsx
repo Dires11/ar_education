@@ -25,6 +25,13 @@ type Enrollment = {
   sessionsPerWeek?: number | null;
   packageName?: string | null;
 };
+type Group = {
+  id: string;
+  label: string;
+  tutorId: string;
+  subjectId: string;
+  memberCount: number;
+};
 
 function mergeAll(
   sessions: CalendarSession[],
@@ -48,6 +55,7 @@ export function ScheduleView({
   tutors,
   subjects,
   enrollments,
+  groups,
 }: {
   monthStart: Date;
   sessions: CalendarSession[];
@@ -55,6 +63,7 @@ export function ScheduleView({
   tutors: Tutor[];
   subjects: Subject[];
   enrollments: Enrollment[];
+  groups: Group[];
 }) {
   const [isPending, startTransition] = useTransition();
   const [monthStart, setMonthStart] = useState(initialMonthStart);
@@ -115,6 +124,7 @@ export function ScheduleView({
             tutors={tutors}
             subjects={subjects}
             enrollments={enrollments}
+            groups={groups}
             defaultDate={selectedDay ?? undefined}
             onSuccess={refresh}
           />

@@ -25,17 +25,26 @@ type Enrollment = {
   sessionsPerWeek?: number | null;
   packageName?: string | null;
 };
+type Group = {
+  id: string;
+  label: string;
+  tutorId: string;
+  subjectId: string;
+  memberCount: number;
+};
 
 export function NewSessionDialog({
   tutors,
   subjects,
   enrollments,
+  groups,
   defaultDate,
   onSuccess,
 }: {
   tutors: Tutor[];
   subjects: Subject[];
   enrollments: Enrollment[];
+  groups: Group[];
   defaultDate?: Date;
   onSuccess?: () => void;
 }) {
@@ -61,6 +70,7 @@ export function NewSessionDialog({
           tutors={tutors}
           subjects={subjects}
           enrollments={enrollments}
+          groups={groups}
           defaultDate={defaultDate}
           onSuccess={() => {
             setOpen(false);

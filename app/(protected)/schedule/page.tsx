@@ -5,6 +5,7 @@ import {
 import { listTutors } from "@/lib/data/tutors";
 import { listSubjects } from "@/lib/data/subjects";
 import { listEnrollments } from "@/lib/data/enrollments";
+import { listGroups } from "@/lib/data/groups";
 import { format, startOfMonth, parse } from "date-fns";
 import { ScheduleView } from "./components/schedule-view";
 
@@ -26,11 +27,13 @@ export default async function SchedulePage({
     tutorsData,
     subjects,
     enrollments,
+    groups,
   ] = await Promise.all([
     getMonthSchedule(monthStart),
     listTutors({ status: "ACTIVE" }),
     listSubjects(),
     listEnrollments({ status: "ACTIVE" }),
+    listGroups(),
   ]);
 
   return (
@@ -87,6 +90,13 @@ export default async function SchedulePage({
         subjectId: e.subjectId,
         sessionsPerWeek: e.package?.sessionsPerWeek ?? null,
         packageName: e.package?.name ?? null,
+      }))}
+      groups={groups.map((g) => ({
+        id: g.id,
+        label: `${g.name} · ${g.enrollments.length} students`,
+        tutorId: g.tutorId,
+        subjectId: g.subjectId,
+        memberCount: g.enrollments.length,
       }))}
     />
   );
