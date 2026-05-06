@@ -27,7 +27,7 @@ export function NewTutorDialog({ subjects }: { subjects: Subject[] }) {
           New Tutor
         </Button>
       </DialogTrigger>
-      <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
+      <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>New Tutor</DialogTitle>
         </DialogHeader>

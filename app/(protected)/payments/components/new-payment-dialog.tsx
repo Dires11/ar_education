@@ -36,7 +36,7 @@ export function NewPaymentDialog({
           Record Payment
         </Button>
       </DialogTrigger>
-      <DialogContent className="max-w-xl max-h-[90vh] overflow-y-auto">
+      <DialogContent className="sm:max-w-xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Record Payment</DialogTitle>
         </DialogHeader>

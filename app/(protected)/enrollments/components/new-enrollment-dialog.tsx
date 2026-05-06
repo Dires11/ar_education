@@ -56,7 +56,7 @@ export function NewEnrollmentDialog({
           New Enrollment
         </Button>
       </DialogTrigger>
-      <DialogContent className="max-w-xl max-h-[90vh] overflow-y-auto">
+      <DialogContent className="sm:max-w-xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>New Enrollment</DialogTitle>
         </DialogHeader>
