@@ -15,11 +15,12 @@ import {
   type CreateDiscountInput,
 } from "@/lib/validators/enrollments";
 import { prisma } from "@/lib/prisma";
+import { findOrCreateGroup } from "@/lib/services/groups";
+import { listGroups } from "@/lib/data/groups";
 
 export async function createEnrollmentForStudent(input: CreateEnrollmentInput) {
   const parsed = createEnrollmentSchema.parse(input);
 
-  // Validate tutor teaches this subject
   const tutorSubject = await prisma.tutorSubject.findUnique({
     where: {
       tutorId_subjectId: {
@@ -28,9 +29,28 @@ export async function createEnrollmentForStudent(input: CreateEnrollmentInput) {
       },
     },
   });
-
   if (!tutorSubject) {
     throw new Error("Tutor does not teach the selected subject");
+  }
+
+  const selectedPackage = await prisma.package.findUnique({
+    where: { id: parsed.packageId },
+  });
+
+  let groupId: string | null = null;
+  if (selectedPackage?.lessonType === "GROUP") {
+    if (!parsed.groupId && !parsed.newGroupName) {
+      throw new Error("Group is required for group packages");
+    }
+    groupId = await findOrCreateGroup(
+      parsed.groupId
+        ? { existingGroupId: parsed.groupId }
+        : {
+            name: parsed.newGroupName!,
+            tutorId: parsed.tutorId,
+            subjectId: parsed.subjectId,
+          }
+    );
   }
 
   return createEnrollment({
@@ -41,6 +61,7 @@ export async function createEnrollmentForStudent(input: CreateEnrollmentInput) {
     startDate: new Date(parsed.startDate),
     endDate: parsed.endDate ? new Date(parsed.endDate) : null,
     customPriceOverride: parsed.customPriceOverride || null,
+    groupId,
   });
 }
 
@@ -77,4 +98,4 @@ export async function removeDiscount(id: string) {
   return deleteDiscount(id);
 }
 
-export { getEnrollment, listEnrollments };
+export { getEnrollment, listEnrollments, listGroups };
