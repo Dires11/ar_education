@@ -243,7 +243,7 @@ model Enrollment {
   sessionAttendance SessionAttendance[]
   recurrenceRules   RecurrenceRule[]
   discounts         Discount[]
-  group             Group?              @relation(fields: [groupId], references: [id])
+  group             Group?              @relation(fields: [groupId], references: [id], onDelete: SetNull)
   payments          Payment[]
 
   @@index([studentId, status])
@@ -285,7 +285,7 @@ model RecurrenceRule {
   updatedAt       DateTime  @updatedAt
 
   enrollment Enrollment? @relation(fields: [enrollmentId], references: [id], onDelete: Cascade)
-  group      Group?      @relation(fields: [groupId], references: [id])
+  group      Group?      @relation(fields: [groupId], references: [id], onDelete: SetNull)
   sessions   Session[]
 }
 
@@ -301,6 +301,10 @@ model Group {
   subject         Subject          @relation(fields: [subjectId], references: [id])
   enrollments     Enrollment[]
   recurrenceRules RecurrenceRule[]
+
+  @@index([tutorId])
+  @@index([subjectId])
+  @@unique([tutorId, name])
 }
 
 model Session {
