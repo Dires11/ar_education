@@ -250,7 +250,7 @@ export function NewEnrollmentForm({
 
   return (
     <Form {...form}>
-      <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-5">
+      <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
         {/* Student */}
         <FormField
           control={form.control}
@@ -473,7 +473,7 @@ export function NewEnrollmentForm({
         )}
 
         {/* Dates */}
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <FormField
             control={form.control}
             name="startDate"
