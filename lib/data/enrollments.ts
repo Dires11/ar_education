@@ -53,6 +53,7 @@ export async function createEnrollment(data: {
   startDate: Date;
   endDate?: Date | null;
   customPriceOverride?: string | null;
+  groupId?: string | null;
 }) {
   return prisma.enrollment.create({ data });
 }
