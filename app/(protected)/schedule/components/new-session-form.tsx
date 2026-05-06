@@ -25,7 +25,9 @@ import {
   createRecurringScheduleAction,
   getEnrollmentMonthSummaryAction,
   getActiveRecurrenceRulesAction,
+  getActiveRecurrenceRulesForGroupAction,
 } from "@/app/actions/sessions";
+import { Badge } from "@/components/ui/badge";
 import type { EnrollmentMonthSummary } from "@/lib/services/sessions";
 import { EditRecurringGroupDialog, type GroupRule } from "./edit-recurring-group-dialog";
 import {
@@ -113,6 +115,13 @@ type Enrollment = {
   subjectId: string;
   sessionsPerWeek?: number | null;
   packageName?: string | null;
+};
+type Group = {
+  id: string;
+  label: string;
+  tutorId: string;
+  subjectId: string;
+  memberCount: number;
 };
 
 // Monday-first to match the calendar grid
@@ -247,12 +256,14 @@ export function NewSessionForm({
   tutors,
   subjects,
   enrollments,
+  groups,
   defaultDate,
   onSuccess,
 }: {
   tutors: Tutor[];
   subjects: Subject[];
   enrollments: Enrollment[];
+  groups: Group[];
   defaultDate?: Date;
   onSuccess?: () => void;
 }) {
@@ -275,12 +286,16 @@ export function NewSessionForm({
   type ActiveRule = GroupRule & { enrollment: { subject: { name: string } } };
   const [activeRules, setActiveRules] = useState<ActiveRule[]>([]);
   const [editingGroupOpen, setEditingGroupOpen] = useState(false);
+  const [activeGroupRules, setActiveGroupRules] = useState<any[]>([]);
+  const [recurEnrollOpen, setRecurEnrollOpen] = useState(false);
+  const [adHocEnrollOpen, setAdHocEnrollOpen] = useState(false);
 
   // ── Forms ─────────────────────────────────────────────────────────
   const adHocForm = useForm<CreateAdHocSessionInput>({
     resolver: zodResolver(createAdHocSessionSchema),
     defaultValues: {
       enrollmentId: "",
+      groupId: "",
       tutorId: "",
       subjectId: "",
       scheduledFor: "",
@@ -295,6 +310,7 @@ export function NewSessionForm({
     resolver: zodResolver(createRecurrenceSchema),
     defaultValues: {
       enrollmentId: "",
+      groupId: "",
       daysOfWeek: [],
       startTime: "09:00",
       durationMinutes: "60",
@@ -356,6 +372,15 @@ export function NewSessionForm({
     name: "startTime",
   });
 
+  const recurringGroupId = useWatch({
+    control: recurringForm.control,
+    name: "groupId",
+  });
+  const adHocGroupId = useWatch({
+    control: adHocForm.control,
+    name: "groupId",
+  });
+
   const recurringEnrollment = enrollments.find((e) => e.id === recurringEnrollmentId);
   const packageLimit = recurringEnrollment?.sessionsPerWeek ?? null;
   const daysOverLimit =
@@ -391,12 +416,31 @@ export function NewSessionForm({
     return () => { cancelled = true; };
   }, [recurringEnrollmentId]);
 
+  // ── Active recurrence rules for recurring group ──────────────────
+  useEffect(() => {
+    if (!recurringGroupId) {
+      setActiveGroupRules([]);
+      return;
+    }
+    let cancelled = false;
+    getActiveRecurrenceRulesForGroupAction(recurringGroupId)
+      .then((rules) => { if (!cancelled) setActiveGroupRules(rules); })
+      .catch(() => { if (!cancelled) setActiveGroupRules([]); });
+    return () => { cancelled = true; };
+  }, [recurringGroupId]);
+
   // ── Seed color from enrollment hash ──────────────────────────────
   useEffect(() => {
     if (recurringEnrollmentId) {
       setRecurringColor(hashToColor(recurringEnrollmentId));
     }
   }, [recurringEnrollmentId]);
+
+  useEffect(() => {
+    if (recurringGroupId) {
+      setRecurringColor(hashToColor(recurringGroupId));
+    }
+  }, [recurringGroupId]);
 
   // ── Per-day times: seed new days with default time, drop removed ones ──────
   useEffect(() => {
@@ -478,7 +522,7 @@ export function NewSessionForm({
         <div className="min-w-0">
           <h2 className="text-sm font-semibold">New Session</h2>
           <p className="text-xs text-muted-foreground">
-            {enrollments.length} enrollments · {tutors.length} tutors
+            {enrollments.length} enrollments · {groups.length > 0 ? `${groups.length} groups · ` : ""}{tutors.length} tutors
           </p>
         </div>
       </div>
@@ -520,36 +564,82 @@ export function NewSessionForm({
                         </span>
                       </div>
                       <FormControl>
-                        <SearchableSelect
-                          options={[
-                            { value: "none", label: "No enrollment" },
-                            ...enrollments.map((e) => ({
-                              value: e.id,
-                              label: e.label,
-                              sublabel: [
-                                e.packageName,
-                                e.sessionsPerWeek != null ? `${e.sessionsPerWeek}×/week` : null,
-                              ]
-                                .filter(Boolean)
-                                .join(" · "),
-                            })),
-                          ]}
-                          value={field.value || "none"}
-                          onChange={(v) => {
-                            const resolved = v === "none" ? "" : v;
-                            field.onChange(resolved);
-                            const e = enrollments.find(
-                              (en) => en.id === resolved
-                            );
-                            if (e) {
-                              adHocForm.setValue("tutorId", e.tutorId);
-                              adHocForm.setValue("subjectId", e.subjectId);
-                              adHocForm.setValue("studentIds", [e.studentId]);
-                            }
-                          }}
-                          placeholder="Search enrollments..."
-                          emptyText="No enrollments found."
-                        />
+                        <Popover open={adHocEnrollOpen} onOpenChange={setAdHocEnrollOpen}>
+                          <PopoverTrigger asChild>
+                            <Button
+                              variant="outline"
+                              role="combobox"
+                              className="w-full justify-between font-normal"
+                            >
+                              <span className="min-w-0 truncate text-left">
+                                {adHocGroupId
+                                  ? (groups.find((g) => g.id === adHocGroupId)?.label ?? "Group")
+                                  : field.value && field.value !== "none"
+                                  ? (enrollments.find((e) => e.id === field.value)?.label ?? "Enrollment")
+                                  : <span className="text-muted-foreground">Search enrollments or groups...</span>}
+                              </span>
+                              <ChevronsUpDownIcon className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                            </Button>
+                          </PopoverTrigger>
+                          <PopoverContent className="w-[--radix-popover-trigger-width] p-0" align="start">
+                            <Command>
+                              <CommandInput placeholder="Search..." />
+                              <CommandEmpty>No results found.</CommandEmpty>
+                              <CommandGroup heading="Individual Enrollments" className="max-h-40 overflow-y-auto">
+                                <CommandItem
+                                  value="none"
+                                  onSelect={() => {
+                                    field.onChange("");
+                                    adHocForm.setValue("groupId", "");
+                                    setAdHocEnrollOpen(false);
+                                  }}
+                                >
+                                  <CheckIcon className={cn("mr-2 h-4 w-4 shrink-0", !field.value && !adHocGroupId ? "opacity-100" : "opacity-0")} />
+                                  No enrollment
+                                </CommandItem>
+                                {enrollments.map((e) => (
+                                  <CommandItem
+                                    key={e.id}
+                                    value={e.label}
+                                    onSelect={() => {
+                                      field.onChange(e.id);
+                                      adHocForm.setValue("groupId", "");
+                                      adHocForm.setValue("tutorId", e.tutorId);
+                                      adHocForm.setValue("subjectId", e.subjectId);
+                                      adHocForm.setValue("studentIds", [e.studentId]);
+                                      setAdHocEnrollOpen(false);
+                                    }}
+                                  >
+                                    <CheckIcon className={cn("mr-2 h-4 w-4 shrink-0", field.value === e.id ? "opacity-100" : "opacity-0")} />
+                                    {e.label}
+                                  </CommandItem>
+                                ))}
+                              </CommandGroup>
+                              {groups.length > 0 && (
+                                <CommandGroup heading="Groups" className="max-h-40 overflow-y-auto">
+                                  {groups.map((g) => (
+                                    <CommandItem
+                                      key={g.id}
+                                      value={g.label}
+                                      onSelect={() => {
+                                        adHocForm.setValue("groupId", g.id);
+                                        field.onChange("");
+                                        adHocForm.setValue("tutorId", g.tutorId);
+                                        adHocForm.setValue("subjectId", g.subjectId);
+                                        adHocForm.setValue("studentIds", []);
+                                        setAdHocEnrollOpen(false);
+                                      }}
+                                    >
+                                      <CheckIcon className={cn("mr-2 h-4 w-4 shrink-0", adHocGroupId === g.id ? "opacity-100" : "opacity-0")} />
+                                      <span>{g.label}</span>
+                                      <Badge variant="outline" className="ml-auto text-[10px]">Group · {g.memberCount}</Badge>
+                                    </CommandItem>
+                                  ))}
+                                </CommandGroup>
+                              )}
+                            </Command>
+                          </PopoverContent>
+                        </Popover>
                       </FormControl>
                       <FormMessage />
                     </FormItem>
@@ -778,22 +868,65 @@ export function NewSessionForm({
                     <FormItem>
                       <FormLabel>Enrollment</FormLabel>
                       <FormControl>
-                        <SearchableSelect
-                          options={enrollments.map((e) => ({
-                            value: e.id,
-                            label: e.label,
-                            sublabel: [
-                              e.packageName,
-                              e.sessionsPerWeek != null ? `${e.sessionsPerWeek}×/week` : null,
-                            ]
-                              .filter(Boolean)
-                              .join(" · "),
-                          }))}
-                          value={field.value}
-                          onChange={field.onChange}
-                          placeholder="Search enrollments..."
-                          emptyText="No enrollments found."
-                        />
+                        <Popover open={recurEnrollOpen} onOpenChange={setRecurEnrollOpen}>
+                          <PopoverTrigger asChild>
+                            <Button
+                              variant="outline"
+                              role="combobox"
+                              className="w-full justify-between font-normal"
+                            >
+                              <span className="min-w-0 truncate text-left">
+                                {recurringGroupId
+                                  ? (groups.find((g) => g.id === recurringGroupId)?.label ?? "Group")
+                                  : field.value
+                                  ? (enrollments.find((e) => e.id === field.value)?.label ?? "Enrollment")
+                                  : <span className="text-muted-foreground">Search enrollments or groups...</span>}
+                              </span>
+                              <ChevronsUpDownIcon className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                            </Button>
+                          </PopoverTrigger>
+                          <PopoverContent className="w-[--radix-popover-trigger-width] p-0" align="start">
+                            <Command>
+                              <CommandInput placeholder="Search..." />
+                              <CommandEmpty>No results found.</CommandEmpty>
+                              <CommandGroup heading="Individual Enrollments" className="max-h-40 overflow-y-auto">
+                                {enrollments.map((e) => (
+                                  <CommandItem
+                                    key={e.id}
+                                    value={e.label}
+                                    onSelect={() => {
+                                      field.onChange(e.id);
+                                      recurringForm.setValue("groupId", "");
+                                      setRecurEnrollOpen(false);
+                                    }}
+                                  >
+                                    <CheckIcon className={cn("mr-2 h-4 w-4 shrink-0", field.value === e.id ? "opacity-100" : "opacity-0")} />
+                                    {e.label}
+                                  </CommandItem>
+                                ))}
+                              </CommandGroup>
+                              {groups.length > 0 && (
+                                <CommandGroup heading="Groups" className="max-h-40 overflow-y-auto">
+                                  {groups.map((g) => (
+                                    <CommandItem
+                                      key={g.id}
+                                      value={g.label}
+                                      onSelect={() => {
+                                        recurringForm.setValue("groupId", g.id);
+                                        field.onChange("");
+                                        setRecurEnrollOpen(false);
+                                      }}
+                                    >
+                                      <CheckIcon className={cn("mr-2 h-4 w-4 shrink-0", recurringGroupId === g.id ? "opacity-100" : "opacity-0")} />
+                                      <span>{g.label}</span>
+                                      <Badge variant="outline" className="ml-auto text-[10px]">Group · {g.memberCount}</Badge>
+                                    </CommandItem>
+                                  ))}
+                                </CommandGroup>
+                              )}
+                            </Command>
+                          </PopoverContent>
+                        </Popover>
                       </FormControl>
                       <FormMessage />
                     </FormItem>
@@ -1101,8 +1234,9 @@ export function NewSessionForm({
                   type="submit"
                   disabled={
                     recurringForm.formState.isSubmitting ||
-                    recurringExceedsLimit ||
-                    hasExistingRecurring
+                    (!recurringGroupId && recurringExceedsLimit) ||
+                    (!recurringGroupId && hasExistingRecurring) ||
+                    (!!recurringGroupId && activeGroupRules.length > 0)
                   }
                   className="w-full"
                 >
