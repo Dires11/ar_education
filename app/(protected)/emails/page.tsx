@@ -117,7 +117,7 @@ export default async function EmailsPage({
 
         {/* ── Templates tab ── */}
         <TabsContent value="templates" className="mt-4">
-          <div className="grid grid-cols-[280px_1fr] gap-6">
+          <div className="grid grid-cols-1 md:grid-cols-[280px_1fr] gap-6">
             {/* Template list */}
             <div className="space-y-2">
               <a

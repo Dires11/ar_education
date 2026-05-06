@@ -179,7 +179,7 @@ export function EditRecurringDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-sm">
+      <DialogContent className="sm:max-w-sm max-h-[90dvh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <RepeatIcon className="h-4 w-4" />
@@ -257,7 +257,7 @@ export function EditRecurringDialog({
                     Changes apply from {format(date, "MMM d")} onward.
                   </p>
 
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div className="space-y-1.5">
                       <Label>Time</Label>
                       <Input
@@ -278,7 +278,7 @@ export function EditRecurringDialog({
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div className="space-y-1.5">
                       <Label>Every</Label>
                       <Select value={intervalWeeks} onValueChange={setIntervalWeeks}>
@@ -345,7 +345,7 @@ export function EditRecurringDialog({
                     </Popover>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div className="space-y-1.5">
                       <Label>Time</Label>
                       <Input

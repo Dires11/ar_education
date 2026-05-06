@@ -60,7 +60,7 @@ export function StudentsSearch({
           <Input
             placeholder="Search students or guardians..."
             defaultValue={defaultSearch}
-            className="h-10 min-w-[280px] pl-9 sm:min-w-[320px]"
+            className="h-10 w-full pl-9 sm:min-w-[320px]"
             onChange={(e) => {
               const value = e.target.value;
               if (searchTimer.current) clearTimeout(searchTimer.current);

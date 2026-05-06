@@ -126,7 +126,7 @@ export function DiscountManager({
             </DialogHeader>
             <Form {...form}>
               <form onSubmit={form.handleSubmit(handleAdd)} className="space-y-1">
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <FormField
                     control={form.control}
                     name="kind"
@@ -182,7 +182,7 @@ export function DiscountManager({
                   )}
                 />
                 {isTemporary && (
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <FormField
                       control={form.control}
                       name="validFrom"

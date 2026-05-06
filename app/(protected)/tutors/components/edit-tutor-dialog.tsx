@@ -32,7 +32,7 @@ export function EditTutorDialog({
           Edit
         </Button>
       </DialogTrigger>
-      <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
+      <DialogContent className="sm:max-w-lg max-h-[90dvh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Edit Tutor</DialogTitle>
         </DialogHeader>

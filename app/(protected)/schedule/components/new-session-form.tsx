@@ -711,7 +711,7 @@ export function NewSessionForm({
                 </div>
 
                 {/* Date + Time + Duration */}
-                <div className="grid grid-cols-[2fr_1fr] gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-[2fr_1fr] gap-3">
                   <div className="space-y-1.5">
                     <FormField
                       control={adHocForm.control}
@@ -1027,7 +1027,7 @@ export function NewSessionForm({
                 />
 
                 {/* Time + Duration + Interval */}
-                <div className="grid grid-cols-3 gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                   <FormField
                     control={recurringForm.control}
                     name="startTime"

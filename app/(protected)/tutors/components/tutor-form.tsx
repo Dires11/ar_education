@@ -27,7 +27,13 @@ import { useCloudinaryCleanup } from "@/hooks/use-cloudinary-cleanup";
 
 type Subject = { id: string; name: string };
 
-export function TutorForm({ subjects, onSuccess }: { subjects: Subject[]; onSuccess?: () => void }) {
+export function TutorForm({
+  subjects,
+  onSuccess,
+}: {
+  subjects: Subject[];
+  onSuccess?: () => void;
+}) {
   const router = useRouter();
   const { trackUpload, commit } = useCloudinaryCleanup();
   const form = useForm<CreateTutorInput>({
@@ -45,7 +51,10 @@ export function TutorForm({ subjects, onSuccess }: { subjects: Subject[]; onSucc
   });
 
   const avatarUrl = useWatch({ control: form.control, name: "avatarUrl" });
-  const avatarPublicId = useWatch({ control: form.control, name: "avatarPublicId" });
+  const avatarPublicId = useWatch({
+    control: form.control,
+    name: "avatarPublicId",
+  });
   const firstName = useWatch({ control: form.control, name: "firstName" });
   const lastName = useWatch({ control: form.control, name: "lastName" });
 
@@ -68,7 +77,7 @@ export function TutorForm({ subjects, onSuccess }: { subjects: Subject[]; onSucc
 
   return (
     <Form {...form}>
-      <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+      <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-1">
         <CloudinaryImageUpload
           value={avatarUrl ?? ""}
           publicId={avatarPublicId ?? ""}
@@ -178,7 +187,7 @@ export function TutorForm({ subjects, onSuccess }: { subjects: Subject[]; onSucc
                               field.onChange(
                                 checked
                                   ? [...current, subject.id]
-                                  : current.filter((v) => v !== subject.id)
+                                  : current.filter((v) => v !== subject.id),
                               );
                             }}
                           />

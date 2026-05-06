@@ -53,15 +53,17 @@ export function PageHero({
               {stats.map((stat) => (
                 <div
                   key={stat.label}
-                  className="rounded-2xl border bg-background/80 px-4 py-3 shadow-sm"
+                  className="flex flex-col rounded-2xl border bg-background/80 px-4 py-3 shadow-sm"
                 >
-                  <div className="flex items-start gap-1.5 text-muted-foreground min-h-[2rem]">
-                    <stat.icon className="hidden sm:block h-3.5 w-3.5 shrink-0 mt-px" />
-                    <span className="text-[10px] uppercase tracking-wider leading-tight">
+                  <div className="flex items-center gap-1.5 text-muted-foreground">
+                    <stat.icon className="hidden sm:block h-3.5 w-3.5 shrink-0" />
+                    <span className="min-w-0 text-[10px] md:text-xs uppercase tracking-wider leading-tight break-words">
                       {stat.label}
                     </span>
                   </div>
-                  <p className="mt-1 text-2xl font-semibold">{stat.value}</p>
+                  <p className="mt-auto pt-2 text-xl font-semibold sm:text-2xl">
+                    {stat.value}
+                  </p>
                 </div>
               ))}
             </div>

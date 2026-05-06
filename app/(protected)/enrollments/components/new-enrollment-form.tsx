@@ -11,8 +11,12 @@ import {
   CalendarIcon,
   CheckIcon,
   ChevronsUpDownIcon,
+  CircleDollarSign,
   ClockIcon,
-  TagIcon,
+  RepeatIcon,
+  UserRoundIcon,
+  UsersIcon,
+  ZapIcon,
 } from "lucide-react";
 import { createEnrollmentAction } from "@/app/actions/enrollments";
 import {
@@ -29,7 +33,6 @@ import {
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import {
   Select,
   SelectContent,
@@ -107,7 +110,10 @@ function SearchableSelect({
           <ChevronsUpDownIcon className="ml-auto h-4 w-4 shrink-0 opacity-50" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-[--radix-popover-trigger-width] p-0" align="start">
+      <PopoverContent
+        className="w-[--radix-popover-trigger-width] p-0"
+        align="start"
+      >
         <Command>
           <CommandInput placeholder={searchPlaceholder ?? "Search..."} />
           <CommandEmpty>{emptyText ?? "No options found."}</CommandEmpty>
@@ -124,7 +130,7 @@ function SearchableSelect({
                 <CheckIcon
                   className={cn(
                     "mr-2 h-4 w-4 shrink-0",
-                    value === o.value ? "opacity-100" : "opacity-0"
+                    value === o.value ? "opacity-100" : "opacity-0",
                   )}
                 />
                 {o.label}
@@ -170,11 +176,20 @@ export function NewEnrollmentForm({
     },
   });
 
-  const selectedPackageId = useWatch({ control: form.control, name: "packageId" });
-  const selectedSubjectId = useWatch({ control: form.control, name: "subjectId" });
+  const selectedPackageId = useWatch({
+    control: form.control,
+    name: "packageId",
+  });
+  const selectedSubjectId = useWatch({
+    control: form.control,
+    name: "subjectId",
+  });
   const selectedTutorId = useWatch({ control: form.control, name: "tutorId" });
   const watchedGroupId = useWatch({ control: form.control, name: "groupId" });
-  const watchedNewGroupName = useWatch({ control: form.control, name: "newGroupName" });
+  const watchedNewGroupName = useWatch({
+    control: form.control,
+    name: "newGroupName",
+  });
 
   const selectedPackage = packages.find((p) => p.id === selectedPackageId);
 
@@ -185,7 +200,7 @@ export function NewEnrollmentForm({
   const availableGroups = groups.filter(
     (g) =>
       (!selectedTutorId || g.tutorId === selectedTutorId) &&
-      (!selectedSubjectId || g.subjectId === selectedSubjectId)
+      (!selectedSubjectId || g.subjectId === selectedSubjectId),
   );
 
   // When the package changes, auto-set or clear the subject, and reset tutor
@@ -199,14 +214,14 @@ export function NewEnrollmentForm({
       form.setValue("subjectId", "");
     }
     form.setValue("tutorId", "");
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedPackageId]);
 
   useEffect(() => {
     form.setValue("groupId", "");
     setCreatingNewGroup(false);
     form.setValue("newGroupName", "");
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedTutorId, selectedSubjectId]);
 
   // Subject is asked only when the selected package has no fixed subject
@@ -228,7 +243,9 @@ export function NewEnrollmentForm({
 
   async function onSubmit(values: CreateEnrollmentInput) {
     if (isGroupPackage && !values.groupId && !values.newGroupName) {
-      toast.error("Please select or create a group for this enrollment");
+      form.setError("groupId", {
+        message: "Group is required for group packages",
+      });
       return;
     }
     try {
@@ -243,7 +260,7 @@ export function NewEnrollmentForm({
       }
     } catch (e: unknown) {
       toast.error(
-        e instanceof Error ? e.message : "Failed to create enrollment"
+        e instanceof Error ? e.message : "Failed to create enrollment",
       );
     }
   }
@@ -260,7 +277,10 @@ export function NewEnrollmentForm({
               <FormLabel>Student</FormLabel>
               <FormControl>
                 <SearchableSelect
-                  options={students.map((s) => ({ value: s.id, label: s.name }))}
+                  options={students.map((s) => ({
+                    value: s.id,
+                    label: s.name,
+                  }))}
                   value={field.value}
                   onChange={field.onChange}
                   placeholder="Search students..."
@@ -280,68 +300,58 @@ export function NewEnrollmentForm({
           render={({ field }) => (
             <FormItem>
               <FormLabel>Package</FormLabel>
-              <Select onValueChange={field.onChange} value={field.value}>
-                <FormControl>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select a package" />
-                  </SelectTrigger>
-                </FormControl>
-                <SelectContent>
-                  {packages.map((p) => (
-                    <SelectItem key={p.id} value={p.id}>
-                      <span className="font-medium">{p.name}</span>
-                      <span className="ml-2 text-muted-foreground">
-                        ${p.basePrice}
-                        {p.type === "MONTHLY" ? "/period" : "/session"}
+              <div className="flex items-center gap-2 flex-wrap">
+                <Select onValueChange={field.onChange} value={field.value}>
+                  <FormControl>
+                    <SelectTrigger className="flex-1">
+                      <SelectValue placeholder="Select a package" />
+                    </SelectTrigger>
+                  </FormControl>
+                  <SelectContent>
+                    {packages.map((p) => (
+                      <SelectItem key={p.id} value={p.id}>
+                        <span className="font-medium">{p.name}</span>
+                        <span className="ml-2 text-muted-foreground">
+                          ${p.basePrice}
+                          {p.type === "MONTHLY" ? "/period" : "/session"}
+                        </span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {selectedPackage && (
+                  <div className="flex shrink-0 items-center gap-3 rounded-lg bg-muted px-3 py-2 text-xs text-muted-foreground">
+                    {selectedPackage.type === "MONTHLY" ? (
+                      <RepeatIcon className="h-3.5 w-3.5" />
+                    ) : (
+                      <ZapIcon className="h-3.5 w-3.5" />
+                    )}
+                    {selectedPackage.lessonType === "GROUP" ? (
+                      <UsersIcon className="h-3.5 w-3.5" />
+                    ) : (
+                      <UserRoundIcon className="h-3.5 w-3.5" />
+                    )}
+                    <span className="flex items-center gap-1">
+                      <CircleDollarSign className="h-3.5 w-3.5" />
+                      <span className="font-medium text-foreground">
+                        {selectedPackage.basePrice}
                       </span>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                    </span>
+                    {(packageSubjectName || isAnySubjectPackage) && (
+                      <span className="flex items-center gap-1">
+                        <BookOpenIcon className="h-3.5 w-3.5" />
+                        <span className="font-medium text-foreground">
+                          {packageSubjectName ?? "Any"}
+                        </span>
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
               <FormMessage />
             </FormItem>
           )}
         />
-
-        {/* Package info card — shown when package is selected */}
-        {selectedPackage && (
-          <div className="rounded-xl border bg-muted/40 px-4 py-3 text-sm">
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-              <div className="flex items-center gap-1.5 text-muted-foreground">
-                <TagIcon className="h-3.5 w-3.5" />
-                <Badge variant="outline" className="text-xs font-normal">
-                  {selectedPackage.type === "MONTHLY" ? "Subscription" : "Per Session"}
-                </Badge>
-              </div>
-              <div className="flex items-center gap-1.5 text-muted-foreground">
-                <BanknoteIcon className="h-3.5 w-3.5" />
-                <span>
-                  <span className="font-medium text-foreground">
-                    ${selectedPackage.basePrice}
-                  </span>{" "}
-                  {selectedPackage.type === "MONTHLY" ? "/ period" : "/ session"}
-                </span>
-              </div>
-              {packageSubjectName && (
-                <div className="flex items-center gap-1.5 text-muted-foreground">
-                  <BookOpenIcon className="h-3.5 w-3.5" />
-                  <span>
-                    Subject:{" "}
-                    <span className="font-medium text-foreground">
-                      {packageSubjectName}
-                    </span>
-                  </span>
-                </div>
-              )}
-              {isAnySubjectPackage && (
-                <div className="flex items-center gap-1.5 text-muted-foreground">
-                  <BookOpenIcon className="h-3.5 w-3.5" />
-                  <span>Any subject — select below</span>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
 
         {/* Subject — only when package is any-subject */}
         {isAnySubjectPackage && (
@@ -414,62 +424,71 @@ export function NewEnrollmentForm({
 
         {/* Group — only for GROUP packages */}
         {isGroupPackage && (
-          <div className="space-y-2">
-            <label className="text-sm font-medium">Group</label>
-            {!creatingNewGroup ? (
-              <div className="flex gap-2">
-                <SearchableSelect
-                  options={availableGroups.map((g) => ({
-                    value: g.id,
-                    label: `${g.name} (${g.memberCount} student${g.memberCount !== 1 ? "s" : ""})`,
-                  }))}
-                  value={watchedGroupId ?? ""}
-                  onChange={(v) => form.setValue("groupId", v)}
-                  placeholder={
-                    !selectedTutorId || !selectedSubjectId
-                      ? "Select tutor & subject first"
-                      : availableGroups.length === 0
-                      ? "No groups yet — create one"
-                      : "Select a group..."
-                  }
-                  disabled={!selectedTutorId || !selectedSubjectId}
-                />
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => {
-                    setCreatingNewGroup(true);
-                    form.setValue("groupId", "");
-                  }}
-                >
-                  New
-                </Button>
-              </div>
-            ) : (
-              <div className="flex gap-2">
-                <Input
-                  value={watchedNewGroupName}
-                  onChange={(e) => {
-                    form.setValue("newGroupName", e.target.value);
-                  }}
-                  placeholder="Group name (e.g. Monday Math Beginners)"
-                />
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => {
-                    setCreatingNewGroup(false);
-                    form.setValue("newGroupName", "");
-                  }}
-                >
-                  Cancel
-                </Button>
-              </div>
+          <FormField
+            control={form.control}
+            name="groupId"
+            render={() => (
+              <FormItem className="w-full">
+                <FormLabel>Group</FormLabel>
+                {!creatingNewGroup && availableGroups.length > 0 ? (
+                  <div className="flex gap-2">
+                    <div className="flex-1 min-w-0">
+                      <SearchableSelect
+                        options={availableGroups.map((g) => ({
+                          value: g.id,
+                          label: `${g.name} (${g.memberCount} student${g.memberCount !== 1 ? "s" : ""})`,
+                        }))}
+                        value={watchedGroupId ?? ""}
+                        onChange={(v) => {
+                          form.setValue("groupId", v);
+                          form.clearErrors("groupId");
+                        }}
+                        placeholder="Select a group..."
+                      />
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="shrink-0"
+                      onClick={() => {
+                        setCreatingNewGroup(true);
+                        form.setValue("groupId", "");
+                      }}
+                    >
+                      Create New
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="flex gap-2">
+                    <Input
+                      className="flex-1 min-w-0"
+                      value={watchedNewGroupName}
+                      onChange={(e) => {
+                        form.setValue("newGroupName", e.target.value);
+                        if (e.target.value) form.clearErrors("groupId");
+                      }}
+                      placeholder="Group name (e.g. Monday Math Beginners)"
+                      autoFocus
+                    />
+                    {availableGroups.length > 0 && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="shrink-0"
+                        onClick={() => {
+                          setCreatingNewGroup(false);
+                          form.setValue("newGroupName", "");
+                        }}
+                      >
+                        Cancel
+                      </Button>
+                    )}
+                  </div>
+                )}
+                <FormMessage />
+              </FormItem>
             )}
-            {isGroupPackage && !watchedGroupId && !watchedNewGroupName && (
-              <p className="text-xs text-destructive">Group is required for group packages</p>
-            )}
-          </div>
+          />
         )}
 
         {/* Dates */}
@@ -538,17 +557,12 @@ export function NewEnrollmentForm({
                     min="0"
                     placeholder={
                       selectedPackage
-                        ? `Default: $${selectedPackage.basePrice}`
+                        ? `${Number(Number(selectedPackage.basePrice) * 0.8).toFixed(2)}`
                         : "Override package price"
                     }
                     {...field}
                   />
                 </FormControl>
-                {selectedPackage && (
-                  <span className="shrink-0 text-xs text-muted-foreground">
-                    Base: ${selectedPackage.basePrice}
-                  </span>
-                )}
               </div>
               <FormMessage />
             </FormItem>

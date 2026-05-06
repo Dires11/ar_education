@@ -112,7 +112,7 @@ export function EnrollmentPopup({
             Loading...
           </div>
         ) : !enrollment ? null : (
-          <div className="max-h-[85vh] space-y-4 overflow-y-auto p-4">
+          <div className="max-h-[85dvh] space-y-4 overflow-y-auto p-4">
             <section className="rounded-2xl border bg-gradient-to-br from-teal-50 via-background to-cyan-50 px-4 py-4 pr-16">
               <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                 <div className="space-y-2">

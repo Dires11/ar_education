@@ -39,7 +39,7 @@ export function NewPackageDialog({ subjects }: { subjects: Subject[] }) {
           New Package
         </Button>
       </DialogTrigger>
-      <DialogContent className="gap-3 p-5 sm:max-w-xl">
+      <DialogContent className="gap-3 p-5 sm:max-w-xl max-h-[90dvh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>New Package</DialogTitle>
         </DialogHeader>

@@ -76,7 +76,7 @@ export default async function TutorDetailPage({
         </div>
       </div>
 
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <Card>
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">Phone</CardTitle>
@@ -152,7 +152,7 @@ export default async function TutorDetailPage({
         </TabsContent>
 
         <TabsContent value="payroll" className="mt-4 space-y-4">
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <Card>
               <CardHeader className="pb-2">
                 <CardTitle className="text-sm font-medium text-muted-foreground">Sessions</CardTitle>

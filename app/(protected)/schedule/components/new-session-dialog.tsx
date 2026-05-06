@@ -59,7 +59,7 @@ export function NewSessionDialog({
           New Session
         </Button>
       </DialogTrigger>
-      <DialogContent className="overflow-hidden p-0 sm:max-w-xl">
+      <DialogContent className="p-0 sm:max-w-xl max-h-[90dvh] overflow-y-auto">
         <DialogHeader className="sr-only">
           <DialogTitle>New Session</DialogTitle>
           <DialogDescription>

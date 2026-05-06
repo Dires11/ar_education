@@ -98,9 +98,18 @@ export function StudentForm({ onSuccess }: { onSuccess?: () => void }) {
   });
 
   const dob = useWatch({ control: form.control, name: "dob" });
-  const studentAvatarUrl = useWatch({ control: form.control, name: "avatarUrl" });
-  const studentAvatarPublicId = useWatch({ control: form.control, name: "avatarPublicId" });
-  const studentFirstName = useWatch({ control: form.control, name: "firstName" });
+  const studentAvatarUrl = useWatch({
+    control: form.control,
+    name: "avatarUrl",
+  });
+  const studentAvatarPublicId = useWatch({
+    control: form.control,
+    name: "avatarPublicId",
+  });
+  const studentFirstName = useWatch({
+    control: form.control,
+    name: "firstName",
+  });
   const studentLastName = useWatch({ control: form.control, name: "lastName" });
   const guardianAvatarUrl = useWatch({
     control: form.control,
@@ -208,7 +217,7 @@ export function StudentForm({ onSuccess }: { onSuccess?: () => void }) {
 
   return (
     <Form {...form}>
-      <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-1">
+      <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-3">
         <div className="space-y-3">
           <div className="flex items-center justify-between">
             <div>
@@ -244,14 +253,16 @@ export function StudentForm({ onSuccess }: { onSuccess?: () => void }) {
         </div>
 
         {step === 1 && (
-          <section className="space-y-4 rounded-2xl border bg-card p-4 shadow-sm">
+          <section className="space-y-1 rounded-2xl border bg-card p-4 shadow-sm">
             <CloudinaryImageUpload
               value={studentAvatarUrl ?? ""}
               publicId={studentAvatarPublicId ?? ""}
               onChange={(url, publicId) => {
                 trackUpload(publicId);
                 form.setValue("avatarUrl", url, { shouldDirty: true });
-                form.setValue("avatarPublicId", publicId, { shouldDirty: true });
+                form.setValue("avatarPublicId", publicId, {
+                  shouldDirty: true,
+                });
               }}
               label="Student photo"
               fallback={
@@ -352,7 +363,7 @@ export function StudentForm({ onSuccess }: { onSuccess?: () => void }) {
         )}
 
         {step === 2 && (
-          <section className="space-y-4 rounded-2xl border bg-card p-4 shadow-sm">
+          <section className="space-y-1 rounded-2xl border bg-card p-4 shadow-sm">
             {isAdult ? (
               <div className="grid gap-3 sm:grid-cols-2">
                 <FormField
@@ -364,9 +375,13 @@ export function StudentForm({ onSuccess }: { onSuccess?: () => void }) {
                         <PhoneIcon className="h-3.5 w-3.5 text-muted-foreground" />
                         Phone
                       </FormLabel>
-                    <FormControl>
-                      <Input type="tel" {...field} value={field.value ?? ""} />
-                    </FormControl>
+                      <FormControl>
+                        <Input
+                          type="tel"
+                          {...field}
+                          value={field.value ?? ""}
+                        />
+                      </FormControl>
                       <FormMessage />
                     </FormItem>
                   )}
@@ -381,7 +396,11 @@ export function StudentForm({ onSuccess }: { onSuccess?: () => void }) {
                         Email
                       </FormLabel>
                       <FormControl>
-                        <Input type="email" {...field} value={field.value ?? ""} />
+                        <Input
+                          type="email"
+                          {...field}
+                          value={field.value ?? ""}
+                        />
                       </FormControl>
                       <FormMessage />
                     </FormItem>
@@ -395,8 +414,12 @@ export function StudentForm({ onSuccess }: { onSuccess?: () => void }) {
                   publicId={guardianAvatarPublicId ?? ""}
                   onChange={(url, publicId) => {
                     trackUpload(publicId);
-                    form.setValue("guardian.avatarUrl", url, { shouldDirty: true });
-                    form.setValue("guardian.avatarPublicId", publicId, { shouldDirty: true });
+                    form.setValue("guardian.avatarUrl", url, {
+                      shouldDirty: true,
+                    });
+                    form.setValue("guardian.avatarPublicId", publicId, {
+                      shouldDirty: true,
+                    });
                   }}
                   label="Guardian photo"
                   fallback={
@@ -444,7 +467,11 @@ export function StudentForm({ onSuccess }: { onSuccess?: () => void }) {
                       <FormItem>
                         <RequiredLabel>Guardian Phone</RequiredLabel>
                         <FormControl>
-                          <Input type="tel" {...field} value={field.value ?? ""} />
+                          <Input
+                            type="tel"
+                            {...field}
+                            value={field.value ?? ""}
+                          />
                         </FormControl>
                         <FormMessage />
                       </FormItem>
@@ -457,7 +484,11 @@ export function StudentForm({ onSuccess }: { onSuccess?: () => void }) {
                       <FormItem>
                         <FormLabel>Guardian Email</FormLabel>
                         <FormControl>
-                          <Input type="email" {...field} value={field.value ?? ""} />
+                          <Input
+                            type="email"
+                            {...field}
+                            value={field.value ?? ""}
+                          />
                         </FormControl>
                         <FormMessage />
                       </FormItem>
@@ -498,7 +529,11 @@ export function StudentForm({ onSuccess }: { onSuccess?: () => void }) {
                     <FormItem>
                       <FormLabel>Guardian Notes</FormLabel>
                       <FormControl>
-                        <Textarea rows={2} {...field} value={field.value ?? ""} />
+                        <Textarea
+                          rows={2}
+                          {...field}
+                          value={field.value ?? ""}
+                        />
                       </FormControl>
                       <FormMessage />
                     </FormItem>

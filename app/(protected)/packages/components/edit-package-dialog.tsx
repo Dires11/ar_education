@@ -44,7 +44,7 @@ export function EditPackageDialog({
           <PencilIcon className="h-3.5 w-3.5" />
         </Button>
       </DialogTrigger>
-      <DialogContent className="gap-3 p-5 sm:max-w-xl">
+      <DialogContent className="gap-3 p-5 sm:max-w-xl max-h-[90dvh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Edit Package</DialogTitle>
         </DialogHeader>
