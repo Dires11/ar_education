@@ -8,6 +8,8 @@ export const createEnrollmentSchema = z.object({
   startDate: z.string().min(1, "Start date is required"),
   endDate: z.string().optional(),
   customPriceOverride: z.string().optional(),
+  groupId: z.string().optional(),
+  newGroupName: z.string().optional(),
 });
 
 export const updateEnrollmentSchema = z.object({
