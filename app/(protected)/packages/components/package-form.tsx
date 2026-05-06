@@ -94,7 +94,7 @@ export function PackageForm({
 
   return (
     <Form {...form}>
-      <form onSubmit={form.handleSubmit(handleSubmit)} className="space-y-3">
+      <form onSubmit={form.handleSubmit(handleSubmit)} className="space-y-1">
         <section className="rounded-xl border bg-muted/20 p-4 space-y-3">
 
           {/* Row 1 — Name + Subject */}

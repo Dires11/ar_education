@@ -125,7 +125,7 @@ export function DiscountManager({
               <DialogTitle>Add Discount</DialogTitle>
             </DialogHeader>
             <Form {...form}>
-              <form onSubmit={form.handleSubmit(handleAdd)} className="space-y-4">
+              <form onSubmit={form.handleSubmit(handleAdd)} className="space-y-1">
                 <div className="grid grid-cols-2 gap-4">
                   <FormField
                     control={form.control}

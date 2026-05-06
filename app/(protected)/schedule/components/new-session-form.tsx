@@ -550,7 +550,7 @@ export function NewSessionForm({
             <Form {...adHocForm}>
               <form
                 onSubmit={adHocForm.handleSubmit(onAdHocSubmit)}
-                className="space-y-3"
+                className="space-y-1"
               >
                 {/* Enrollment */}
                 <FormField
@@ -859,7 +859,7 @@ export function NewSessionForm({
             <Form {...recurringForm}>
               <form
                 onSubmit={recurringForm.handleSubmit(onRecurringSubmit)}
-                className="space-y-3"
+                className="space-y-1"
               >
                 {/* Enrollment */}
                 <FormField
