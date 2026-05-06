@@ -172,21 +172,20 @@ export function NewEnrollmentForm({
 
   const selectedPackageId = useWatch({ control: form.control, name: "packageId" });
   const selectedSubjectId = useWatch({ control: form.control, name: "subjectId" });
+  const selectedTutorId = useWatch({ control: form.control, name: "tutorId" });
+  const watchedGroupId = useWatch({ control: form.control, name: "groupId" });
+  const watchedNewGroupName = useWatch({ control: form.control, name: "newGroupName" });
 
   const selectedPackage = packages.find((p) => p.id === selectedPackageId);
-
-  const selectedTutorId = useWatch({ control: form.control, name: "tutorId" });
-  const selectedSubjectId2 = useWatch({ control: form.control, name: "subjectId" });
 
   const isGroupPackage = selectedPackage?.lessonType === "GROUP";
 
   const [creatingNewGroup, setCreatingNewGroup] = useState(false);
-  const [newGroupName, setNewGroupName] = useState("");
 
   const availableGroups = groups.filter(
     (g) =>
       (!selectedTutorId || g.tutorId === selectedTutorId) &&
-      (!selectedSubjectId2 || g.subjectId === selectedSubjectId2)
+      (!selectedSubjectId || g.subjectId === selectedSubjectId)
   );
 
   // When the package changes, auto-set or clear the subject, and reset tutor
@@ -206,9 +205,9 @@ export function NewEnrollmentForm({
   useEffect(() => {
     form.setValue("groupId", "");
     setCreatingNewGroup(false);
-    setNewGroupName("");
+    form.setValue("newGroupName", "");
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedTutorId, selectedSubjectId2]);
+  }, [selectedTutorId, selectedSubjectId]);
 
   // Subject is asked only when the selected package has no fixed subject
   const isAnySubjectPackage =
@@ -424,16 +423,16 @@ export function NewEnrollmentForm({
                     value: g.id,
                     label: `${g.name} (${g.memberCount} student${g.memberCount !== 1 ? "s" : ""})`,
                   }))}
-                  value={form.watch("groupId") ?? ""}
+                  value={watchedGroupId ?? ""}
                   onChange={(v) => form.setValue("groupId", v)}
                   placeholder={
-                    !selectedTutorId || !selectedSubjectId2
+                    !selectedTutorId || !selectedSubjectId
                       ? "Select tutor & subject first"
                       : availableGroups.length === 0
                       ? "No groups yet — create one"
                       : "Select a group..."
                   }
-                  disabled={!selectedTutorId || !selectedSubjectId2}
+                  disabled={!selectedTutorId || !selectedSubjectId}
                 />
                 <Button
                   type="button"
@@ -449,9 +448,8 @@ export function NewEnrollmentForm({
             ) : (
               <div className="flex gap-2">
                 <Input
-                  value={newGroupName}
+                  value={watchedNewGroupName}
                   onChange={(e) => {
-                    setNewGroupName(e.target.value);
                     form.setValue("newGroupName", e.target.value);
                   }}
                   placeholder="Group name (e.g. Monday Math Beginners)"
@@ -461,7 +459,6 @@ export function NewEnrollmentForm({
                   variant="outline"
                   onClick={() => {
                     setCreatingNewGroup(false);
-                    setNewGroupName("");
                     form.setValue("newGroupName", "");
                   }}
                 >
@@ -469,7 +466,7 @@ export function NewEnrollmentForm({
                 </Button>
               </div>
             )}
-            {isGroupPackage && !form.watch("groupId") && !newGroupName && (
+            {isGroupPackage && !watchedGroupId && !watchedNewGroupName && (
               <p className="text-xs text-destructive">Group is required for group packages</p>
             )}
           </div>
