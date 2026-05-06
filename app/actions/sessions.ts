@@ -24,6 +24,7 @@ import {
   updateSession,
   updateSessionStatus,
   getActiveRecurrenceRulesForEnrollment,
+  getActiveRecurrenceRulesForGroup,
 } from "@/lib/data/sessions";
 import { enqueueSessionReminder } from "@/lib/services/notifications";
 import type {
@@ -241,4 +242,9 @@ export async function updateEnrollmentRecurrenceColorAction(
   await updateEnrollmentRecurrenceColor(enrollmentId, color);
   revalidatePath("/schedule");
   return { success: true };
+}
+
+export async function getActiveRecurrenceRulesForGroupAction(groupId: string) {
+  await requireAdmin();
+  return getActiveRecurrenceRulesForGroup(groupId);
 }

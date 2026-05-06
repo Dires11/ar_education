@@ -9,6 +9,8 @@ import {
   removeDiscount,
   getEnrollment,
 } from "@/lib/services/enrollments";
+import { listGroups } from "@/lib/data/groups";
+import { listGroupsForTutorSubject } from "@/lib/services/groups";
 import type {
   CreateEnrollmentInput,
   UpdateEnrollmentInput,
@@ -64,4 +66,17 @@ export async function getEnrollmentAction(enrollmentId: string) {
   const enrollment = await getEnrollment(enrollmentId);
   if (!enrollment) return null;
   return JSON.parse(JSON.stringify(enrollment)) as typeof enrollment;
+}
+
+export async function listGroupsForTutorSubjectAction(
+  tutorId: string,
+  subjectId: string
+) {
+  await requireAdmin();
+  return listGroupsForTutorSubject(tutorId, subjectId);
+}
+
+export async function listAllGroupsAction() {
+  await requireAdmin();
+  return listGroups();
 }
