@@ -1027,7 +1027,7 @@ export function NewSessionForm({
                 />
 
                 {/* Time + Duration + Interval */}
-                <div className="grid grid-cols-3 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   <FormField
                     control={recurringForm.control}
                     name="startTime"
@@ -1112,7 +1112,7 @@ export function NewSessionForm({
                 )}
 
                 {/* Start + End dates */}
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <FormField
                     control={recurringForm.control}
                     name="startsOn"

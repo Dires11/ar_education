@@ -232,7 +232,7 @@ export function EditRecurringGroupDialog({
                     return (
                       <div
                         key={r.id}
-                        className={`grid grid-cols-[1fr_1fr] gap-2 rounded-md p-1.5 -mx-1.5 ${isFocused ? "bg-primary/5 ring-1 ring-primary/20" : ""}`}
+                        className={`grid grid-cols-2 gap-2 rounded-md p-1.5 -mx-1.5 ${isFocused ? "bg-primary/5 ring-1 ring-primary/20" : ""}`}
                       >
                         <div className="space-y-1">
                           <Label className="text-xs text-muted-foreground">Day</Label>
@@ -272,7 +272,7 @@ export function EditRecurringGroupDialog({
               </div>
 
               {/* Shared: duration + interval */}
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div className="space-y-1.5">
                   <Label>Duration (min)</Label>
                   <Input

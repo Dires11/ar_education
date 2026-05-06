@@ -99,7 +99,7 @@ export function EditSessionDialog({
 
         <div className="space-y-4 pt-1">
           {/* Date + Time */}
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <Label>Date</Label>
               <Popover open={calOpen} onOpenChange={setCalOpen}>
@@ -139,7 +139,7 @@ export function EditSessionDialog({
           </div>
 
           {/* Duration + Room */}
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <Label>Duration (min)</Label>
               <Input
