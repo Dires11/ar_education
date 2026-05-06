@@ -20,8 +20,16 @@ type Package = {
   id: string;
   name: string;
   type: string;
+  lessonType: string;
   basePrice: string;
   subjectId: string | null;
+};
+type Group = {
+  id: string;
+  name: string;
+  tutorId: string;
+  subjectId: string;
+  memberCount: number;
 };
 
 export function NewEnrollmentDialog({
@@ -29,11 +37,13 @@ export function NewEnrollmentDialog({
   tutors,
   subjects,
   packages,
+  groups,
 }: {
   students: Student[];
   tutors: Tutor[];
   subjects: Subject[];
   packages: Package[];
+  groups: Group[];
 }) {
   const [open, setOpen] = useState(false);
   const router = useRouter();
@@ -55,6 +65,7 @@ export function NewEnrollmentDialog({
           tutors={tutors}
           subjects={subjects}
           packages={packages}
+          groups={groups}
           onSuccess={() => {
             setOpen(false);
             router.refresh();

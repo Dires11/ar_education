@@ -1,4 +1,4 @@
-import { listEnrollments } from "@/lib/services/enrollments";
+import { listEnrollments, listGroups } from "@/lib/services/enrollments";
 import { listStudents } from "@/lib/data/students";
 import { listTutors } from "@/lib/data/tutors";
 import { listSubjects } from "@/lib/data/subjects";
@@ -10,13 +10,14 @@ import { ClipboardListIcon, UserCheckIcon, UsersIcon } from "lucide-react";
 import { EnrollmentsTable } from "./components/enrollments-table";
 
 export default async function EnrollmentsPage() {
-  const [enrollments, studentsData, tutorsData, subjects, packages] =
+  const [enrollments, studentsData, tutorsData, subjects, packages, groups] =
     await Promise.all([
       listEnrollments({ status: "ACTIVE" }),
       listStudents({ status: "ACTIVE", pageSize: 200 }),
       listTutors({ status: "ACTIVE" }),
       listSubjects(),
       listPackages(true),
+      listGroups(),
     ]);
 
   const uniqueStudents = new Set(
@@ -63,8 +64,16 @@ export default async function EnrollmentsPage() {
               id: p.id,
               name: p.name,
               type: p.type,
+              lessonType: p.lessonType,
               basePrice: p.basePrice.toString(),
               subjectId: p.subjectId,
+            }))}
+            groups={groups.map((g) => ({
+              id: g.id,
+              name: g.name,
+              tutorId: g.tutorId,
+              subjectId: g.subjectId,
+              memberCount: g.enrollments.filter((e) => e.status === "ACTIVE").length,
             }))}
           />
         }
