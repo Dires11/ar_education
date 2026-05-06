@@ -87,7 +87,7 @@ export function TutorForm({ subjects, onSuccess }: { subjects: Subject[]; onSucc
           }
         />
 
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <FormField
             control={form.control}
             name="firstName"
@@ -115,7 +115,7 @@ export function TutorForm({ subjects, onSuccess }: { subjects: Subject[]; onSucc
             )}
           />
         </div>
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <FormField
             control={form.control}
             name="email"
@@ -162,7 +162,7 @@ export function TutorForm({ subjects, onSuccess }: { subjects: Subject[]; onSucc
           render={() => (
             <FormItem>
               <FormLabel>Subjects</FormLabel>
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                 {subjects.map((subject) => (
                   <FormField
                     key={subject.id}
