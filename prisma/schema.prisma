@@ -174,6 +174,7 @@ model Tutor {
   subjects    TutorSubject[]
   enrollments Enrollment[]
   sessions    Session[]
+  groups      Group[]
 }
 
 model Subject {
@@ -187,6 +188,7 @@ model Subject {
   packages    Package[]
   enrollments Enrollment[]
   sessions    Session[]
+  groups      Group[]
 }
 
 model TutorSubject {
@@ -231,6 +233,7 @@ model Enrollment {
   customPriceOverride Decimal?         @db.Decimal(10, 2)
   createdAt           DateTime         @default(now())
   updatedAt           DateTime         @updatedAt
+  groupId             String?
 
   student           Student             @relation(fields: [studentId], references: [id])
   package           Package             @relation(fields: [packageId], references: [id])
@@ -240,6 +243,7 @@ model Enrollment {
   sessionAttendance SessionAttendance[]
   recurrenceRules   RecurrenceRule[]
   discounts         Discount[]
+  group             Group?              @relation(fields: [groupId], references: [id])
   payments          Payment[]
 
   @@index([studentId, status])
@@ -267,7 +271,8 @@ model Discount {
 
 model RecurrenceRule {
   id              String    @id @default(cuid())
-  enrollmentId    String
+  enrollmentId    String?
+  groupId         String?
   dayOfWeek       Int
   startTime       String
   durationMinutes Int
@@ -279,8 +284,23 @@ model RecurrenceRule {
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
-  enrollment Enrollment @relation(fields: [enrollmentId], references: [id], onDelete: Cascade)
+  enrollment Enrollment? @relation(fields: [enrollmentId], references: [id], onDelete: Cascade)
+  group      Group?      @relation(fields: [groupId], references: [id])
   sessions   Session[]
+}
+
+model Group {
+  id        String   @id @default(cuid())
+  name      String
+  tutorId   String
+  subjectId String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tutor           Tutor            @relation(fields: [tutorId], references: [id])
+  subject         Subject          @relation(fields: [subjectId], references: [id])
+  enrollments     Enrollment[]
+  recurrenceRules RecurrenceRule[]
 }
 
 model Session {
