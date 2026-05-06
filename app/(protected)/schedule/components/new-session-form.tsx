@@ -283,10 +283,11 @@ export function NewSessionForm({
   const [perDayTimes, setPerDayTimes] = useState<Record<string, string>>({});
   const [touchedDays, setTouchedDays] = useState<Set<string>>(new Set());
   const [recurringColor, setRecurringColor] = useState<string>("#6366f1");
-  type ActiveRule = GroupRule & { enrollment: { subject: { name: string } } };
+  type ActiveRule = GroupRule & { enrollment: { subject: { name: string } } | null };
+  type ActiveGroupRule = GroupRule & { group: { subject: { name: string } } | null };
   const [activeRules, setActiveRules] = useState<ActiveRule[]>([]);
   const [editingGroupOpen, setEditingGroupOpen] = useState(false);
-  const [activeGroupRules, setActiveGroupRules] = useState<any[]>([]);
+  const [activeGroupRules, setActiveGroupRules] = useState<ActiveGroupRule[]>([]);
   const [recurEnrollOpen, setRecurEnrollOpen] = useState(false);
   const [adHocEnrollOpen, setAdHocEnrollOpen] = useState(false);
 
@@ -890,6 +891,17 @@ export function NewSessionForm({
                               <CommandInput placeholder="Search..." />
                               <CommandEmpty>No results found.</CommandEmpty>
                               <CommandGroup heading="Individual Enrollments" className="max-h-40 overflow-y-auto">
+                                <CommandItem
+                                  value="clear"
+                                  onSelect={() => {
+                                    field.onChange("");
+                                    recurringForm.setValue("groupId", "");
+                                    setRecurEnrollOpen(false);
+                                  }}
+                                >
+                                  <CheckIcon className={cn("mr-2 h-4 w-4 shrink-0", !field.value && !recurringGroupId ? "opacity-100" : "opacity-0")} />
+                                  <span className="text-muted-foreground">No selection</span>
+                                </CommandItem>
                                 {enrollments.map((e) => (
                                   <CommandItem
                                     key={e.id}
@@ -1251,9 +1263,9 @@ export function NewSessionForm({
       </div>
 
       {/* Edit existing recurring schedule dialog */}
-      {editingGroupOpen && activeRules.length > 0 && (
+      {editingGroupOpen && activeRules.length > 0 && activeRules[0].enrollment && (
         <EditRecurringGroupDialog
-          rules={activeRules}
+          rules={activeRules.filter((r) => r.enrollment) as (typeof activeRules[0] & { enrollment: NonNullable<typeof activeRules[0]['enrollment']> })[]}
           subjectName={activeRules[0].enrollment.subject.name}
           enrollmentId={recurringEnrollmentId || undefined}
           open={editingGroupOpen}
