@@ -648,7 +648,7 @@ export function NewSessionForm({
                 />
 
                 {/* Tutor + Subject */}
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <FormField
                     control={adHocForm.control}
                     name="tutorId"
@@ -711,8 +711,8 @@ export function NewSessionForm({
                 </div>
 
                 {/* Date + Time + Duration */}
-                <div className="grid grid-cols-3 gap-3">
-                  <div className="col-span-2 space-y-1.5">
+                <div className="grid grid-cols-[2fr_1fr] gap-3">
+                  <div className="space-y-1.5">
                     <FormField
                       control={adHocForm.control}
                       name="scheduledFor"
@@ -769,7 +769,7 @@ export function NewSessionForm({
                 )}
 
                 {/* Duration + Room */}
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <FormField
                     control={adHocForm.control}
                     name="durationMinutes"
