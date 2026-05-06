@@ -91,6 +91,21 @@ export async function getActiveRecurrenceRulesForEnrollment(enrollmentId: string
     .sort((a, b) => a.dayOfWeek - b.dayOfWeek);
 }
 
+export async function getActiveRecurrenceRulesForGroup(groupId: string) {
+  const today = new Date();
+  return prisma.recurrenceRule.findMany({
+    where: {
+      groupId,
+      startsOn: { lte: today },
+      OR: [{ endsOn: null }, { endsOn: { gte: today } }],
+    },
+    include: {
+      group: { include: { subject: true } },
+    },
+    orderBy: { dayOfWeek: "asc" },
+  });
+}
+
 export async function createSession(data: {
   enrollmentId?: string;
   tutorId: string;
@@ -112,6 +127,12 @@ export async function createSessionAttendance(data: {
   return prisma.sessionAttendance.create({ data });
 }
 
+export async function createManySessionAttendances(
+  data: Array<{ sessionId: string; studentId: string; enrollmentId: string }>
+) {
+  return prisma.sessionAttendance.createMany({ data, skipDuplicates: true });
+}
+
 export async function getRecurrenceRulesForMonth(monthStart: Date) {
   const monthEnd = endOfMonth(monthStart);
   const rules = await prisma.recurrenceRule.findMany({
@@ -131,8 +152,34 @@ export async function getRecurrenceRulesForMonth(monthStart: Date) {
   return rules.filter((r) => !r.endsOn || r.endsOn >= r.startsOn);
 }
 
+export async function getGroupRecurrenceRulesForMonth(monthStart: Date) {
+  const monthEnd = endOfMonth(monthStart);
+  const rules = await prisma.recurrenceRule.findMany({
+    where: {
+      groupId: { not: null },
+      startsOn: { lte: monthEnd },
+      OR: [{ endsOn: null }, { endsOn: { gte: monthStart } }],
+    },
+    include: {
+      group: {
+        include: {
+          tutor: true,
+          subject: true,
+          enrollments: {
+            where: { status: { in: ["ACTIVE", "PAUSED"] } },
+            include: { student: true },
+          },
+        },
+      },
+    },
+    orderBy: { startsOn: "asc" },
+  });
+  return rules.filter((r) => !r.endsOn || r.endsOn >= r.startsOn);
+}
+
 export async function createRecurrenceRule(data: {
-  enrollmentId: string;
+  enrollmentId?: string;
+  groupId?: string;
   dayOfWeek: number;
   startTime: string;
   durationMinutes: number;
@@ -198,6 +245,22 @@ export async function deleteFutureSessionsForRecurrenceRule(
   });
 }
 
+export async function deleteFutureGroupAttendanceForStudent(
+  studentId: string,
+  fromDate: Date
+) {
+  return prisma.sessionAttendance.deleteMany({
+    where: {
+      studentId,
+      status: "SCHEDULED",
+      session: {
+        scheduledFor: { gte: startOfDay(fromDate) },
+        enrollmentId: null,
+      },
+    },
+  });
+}
+
 export async function detachSessionsFromRecurrenceRule(
   recurrenceRuleId: string
 ) {
@@ -231,8 +294,22 @@ export async function deleteRecurrenceRule(ruleId: string) {
 }
 
 export async function autoCompletePassedSessions() {
-  return prisma.session.updateMany({
+  const pastSessions = await prisma.session.findMany({
     where: { status: "SCHEDULED", scheduledFor: { lt: new Date() } },
+    select: { id: true },
+  });
+
+  if (pastSessions.length === 0) return { count: 0 };
+
+  const ids = pastSessions.map((s) => s.id);
+
+  await prisma.sessionAttendance.updateMany({
+    where: { sessionId: { in: ids }, status: "SCHEDULED" },
+    data: { status: "COMPLETED", billable: true },
+  });
+
+  return prisma.session.updateMany({
+    where: { id: { in: ids } },
     data: { status: "COMPLETED" },
   });
 }
@@ -259,6 +336,37 @@ export async function getRecurringRulesInRange(
     orderBy: { startsOn: "asc" },
   });
   // Exclude invalid rules (endsOn before startsOn — garbage from cascading splits)
+  return rules.filter((r) => !r.endsOn || r.endsOn >= r.startsOn);
+}
+
+export async function getGroupRecurringRulesInRange(
+  from: Date,
+  to: Date,
+  options?: { recurrenceRuleIds?: string[] }
+) {
+  const rules = await prisma.recurrenceRule.findMany({
+    where: {
+      groupId: { not: null },
+      id: options?.recurrenceRuleIds?.length
+        ? { in: options.recurrenceRuleIds }
+        : undefined,
+      startsOn: { lte: to },
+      OR: [{ endsOn: null }, { endsOn: { gte: from } }],
+    },
+    include: {
+      group: {
+        include: {
+          tutor: true,
+          subject: true,
+          enrollments: {
+            where: { status: { in: ["ACTIVE", "PAUSED"] } },
+            include: { student: true },
+          },
+        },
+      },
+    },
+    orderBy: { startsOn: "asc" },
+  });
   return rules.filter((r) => !r.endsOn || r.endsOn >= r.startsOn);
 }
 
