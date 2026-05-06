@@ -1027,7 +1027,7 @@ export function NewSessionForm({
                 />
 
                 {/* Time + Duration + Interval */}
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="grid grid-cols-3 gap-2">
                   <FormField
                     control={recurringForm.control}
                     name="startTime"
@@ -1215,31 +1215,28 @@ export function NewSessionForm({
                   </div>
                 )}
 
-                {/* Room + Color */}
-                <div className="flex items-end gap-3">
-                  <FormField
-                    control={recurringForm.control}
-                    name="room"
-                    render={({ field }) => (
-                      <FormItem className="flex-1">
-                        <FormLabel className="flex items-center gap-1.5">
-                          <DoorOpenIcon className="h-3.5 w-3.5 text-muted-foreground" />
-                          Room
-                          <span className="text-xs font-normal text-muted-foreground">(opt.)</span>
-                        </FormLabel>
-                        <FormControl>
-                          <Input {...field} placeholder="e.g. Room 1" />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
-                  <div className="space-y-1.5 pb-0.5">
-                    <label className="text-sm font-medium leading-none">Color</label>
-                    <div className="flex h-9 items-center">
-                      <ColorPicker value={recurringColor} onChange={setRecurringColor} />
-                    </div>
-                  </div>
+                {/* Room */}
+                <FormField
+                  control={recurringForm.control}
+                  name="room"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel className="flex items-center gap-1.5">
+                        <DoorOpenIcon className="h-3.5 w-3.5 text-muted-foreground" />
+                        Room
+                        <span className="text-xs font-normal text-muted-foreground">(opt.)</span>
+                      </FormLabel>
+                      <FormControl>
+                        <Input {...field} placeholder="e.g. Room 1" />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                {/* Color */}
+                <div className="flex items-center gap-3">
+                  <span className="text-sm font-medium leading-none">Color</span>
+                  <ColorPicker value={recurringColor} onChange={setRecurringColor} />
                 </div>
 
                 <Button
