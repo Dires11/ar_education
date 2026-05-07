@@ -120,7 +120,7 @@ export function DiscountManager({
               Add Discount
             </Button>
           </DialogTrigger>
-          <DialogContent>
+          <DialogContent className="sm:max-w-lg max-h-[90dvh] overflow-y-auto">
             <DialogHeader>
               <DialogTitle>Add Discount</DialogTitle>
             </DialogHeader>

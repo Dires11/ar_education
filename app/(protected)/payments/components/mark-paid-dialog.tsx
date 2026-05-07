@@ -60,7 +60,7 @@ export function MarkPaidDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-sm">
+      <DialogContent className="sm:max-w-sm max-h-[90dvh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Mark as Paid</DialogTitle>
           <DialogDescription>

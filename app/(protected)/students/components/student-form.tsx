@@ -242,7 +242,7 @@ export function StudentForm({ onSuccess }: { onSuccess?: () => void }) {
             <span className="text-destructive">*</span> Required fields
           </p>
 
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-2 gap-2 max-w-xs">
             <div
               className={`h-1.5 rounded-full ${step >= 1 ? "bg-foreground" : "bg-muted"}`}
             />

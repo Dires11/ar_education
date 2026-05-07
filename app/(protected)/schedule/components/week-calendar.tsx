@@ -180,7 +180,7 @@ function SessionDetailsDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent className="sm:max-w-lg max-h-[90dvh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{session.subject.name}</DialogTitle>
           <DialogDescription>
@@ -689,7 +689,7 @@ export function MonthCalendar({
 
                           {/* Status action buttons — only for SCHEDULED */}
                           {session.status === "SCHEDULED" && (
-                            <div className="grid grid-cols-2 gap-1 pt-1">
+                            <div className="grid grid-cols-2 gap-1 pt-1 min-w-0">
                               <Button
                                 size="sm"
                                 variant="outline"

@@ -39,7 +39,7 @@ export function ArchiveTutorButton({ tutorId }: { tutorId: string }) {
       <DialogTrigger asChild>
         <Button variant="outline" size="sm">Archive</Button>
       </DialogTrigger>
-      <DialogContent>
+      <DialogContent className="sm:max-w-sm max-h-[90dvh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Archive Tutor</DialogTitle>
           <DialogDescription>

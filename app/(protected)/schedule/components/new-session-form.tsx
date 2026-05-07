@@ -1084,7 +1084,7 @@ export function NewSessionForm({
                 {recurringDaysOfWeek.length > 1 && (
                   <div className="space-y-1.5">
                     <p className="text-xs font-medium text-muted-foreground">Per-day start times</p>
-                    <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-1.5">
                       {[...recurringDaysOfWeek]
                         .sort((a, b) => DAY_VALUES.indexOf(a) - DAY_VALUES.indexOf(b))
                         .map((dayVal) => {

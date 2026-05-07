@@ -110,7 +110,7 @@ export function SubjectsManager({ subjects }: { subjects: Subject[] }) {
                 Add Subject
               </Button>
             </DialogTrigger>
-            <DialogContent>
+            <DialogContent className="sm:max-w-sm max-h-[90dvh] overflow-y-auto">
               <DialogHeader>
                 <DialogTitle>Add Subject</DialogTitle>
               </DialogHeader>
@@ -199,7 +199,7 @@ export function SubjectsManager({ subjects }: { subjects: Subject[] }) {
                       <PencilIcon className="h-3.5 w-3.5" />
                     </Button>
                   </DialogTrigger>
-                  <DialogContent>
+                  <DialogContent className="sm:max-w-sm max-h-[90dvh] overflow-y-auto">
                     <DialogHeader>
                       <DialogTitle>Edit Subject</DialogTitle>
                     </DialogHeader>
