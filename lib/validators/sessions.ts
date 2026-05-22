@@ -36,6 +36,7 @@ export const markAttendanceSchema = z.object({
     z.object({
       studentId: z.string(),
       status: z.enum([
+        "SCHEDULED",
         "COMPLETED",
         "NO_SHOW",
         "CANCELLED_BY_TUTOR",

@@ -13,25 +13,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { NewSessionForm } from "./new-session-form";
-
-type Tutor = { id: string; name: string; subjectIds: string[] };
-type Subject = { id: string; name: string };
-type Enrollment = {
-  id: string;
-  label: string;
-  studentId: string;
-  tutorId: string;
-  subjectId: string;
-  sessionsPerWeek?: number | null;
-  packageName?: string | null;
-};
-type Group = {
-  id: string;
-  label: string;
-  tutorId: string;
-  subjectId: string;
-  memberCount: number;
-};
+import type { SessionEnrollment, SessionGroup, Subject, Tutor } from "./session-form-types";
 
 export function NewSessionDialog({
   tutors,
@@ -43,8 +25,8 @@ export function NewSessionDialog({
 }: {
   tutors: Tutor[];
   subjects: Subject[];
-  enrollments: Enrollment[];
-  groups: Group[];
+  enrollments: SessionEnrollment[];
+  groups: SessionGroup[];
   defaultDate?: Date;
   onSuccess?: () => void;
 }) {

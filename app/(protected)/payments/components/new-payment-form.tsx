@@ -28,9 +28,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-
-type Student = { id: string; name: string };
-type Enrollment = { id: string; studentId: string; label: string };
+import { DatePicker } from "@/components/date-picker";
+import type {
+  PaymentEnrollmentOption,
+  PaymentStudentOption,
+} from "./payment-form-types";
 
 export function NewPaymentForm({
   students,
@@ -38,8 +40,8 @@ export function NewPaymentForm({
   defaultStudentId,
   onSuccess,
 }: {
-  students: Student[];
-  enrollments: Enrollment[];
+  students: PaymentStudentOption[];
+  enrollments: PaymentEnrollmentOption[];
   defaultStudentId?: string;
   onSuccess?: () => void;
 }) {
@@ -159,7 +161,12 @@ export function NewPaymentForm({
             <FormItem>
               <FormLabel>Payment Date</FormLabel>
               <FormControl>
-                <Input type="date" {...field} />
+                <DatePicker
+                  value={field.value}
+                  onChange={field.onChange}
+                  placeholder="Pick payment date"
+                  clearable={false}
+                />
               </FormControl>
               <FormMessage />
             </FormItem>

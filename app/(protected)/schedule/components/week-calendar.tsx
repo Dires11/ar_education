@@ -42,6 +42,7 @@ import {
   deleteSessionAction,
   setSessionStatusAction,
   getActiveRecurrenceRulesAction,
+  getActiveRecurrenceRulesForGroupAction,
 } from "@/app/actions/sessions";
 import { toast } from "sonner";
 import { EditSessionDialog } from "./edit-session-dialog";
@@ -49,6 +50,7 @@ import {
   EditRecurringGroupDialog,
   type GroupRule,
 } from "./edit-recurring-group-dialog";
+import { AttendanceForm } from "./attendance-form";
 
 export type CalendarSession = {
   id: string;
@@ -60,8 +62,14 @@ export type CalendarSession = {
   tutor: { firstName: string; lastName: string };
   subject: { name: string };
   enrollmentStudent?: { firstName: string; lastName: string } | null;
-  attendance: Array<{ student: { firstName: string; lastName: string } }>;
+  attendance: Array<{
+    studentId?: string;
+    status?: string;
+    billable?: boolean;
+    student: { firstName: string; lastName: string };
+  }>;
   enrollmentId?: string | null;
+  groupId?: string | null;
   recurrenceRuleId?: string | null;
   virtual?: boolean;
   ruleId?: string | null;
@@ -168,16 +176,16 @@ function SessionDetailsDialog({
   session,
   open,
   onOpenChange,
+  onRefresh,
 }: {
   session: CalendarSession | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  onRefresh: () => void;
 }) {
   if (!session) return null;
 
   const scheduledFor = new Date(session.scheduledFor);
-  const students = getStudentNames(session);
-
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-lg max-h-[90dvh] overflow-y-auto">
@@ -226,10 +234,22 @@ function SessionDetailsDialog({
             </div>
           </div>
 
-          <div className="rounded-lg border p-3">
-            <p className="text-xs text-muted-foreground">Students</p>
-            <p className="mt-1 text-sm font-medium">{students}</p>
-          </div>
+          {!session.virtual && session.attendance.length > 0 && (
+            <div className="rounded-lg border p-3">
+              <p className="mb-3 text-xs text-muted-foreground">Attendance</p>
+              <AttendanceForm
+                sessionId={session.id}
+                isEditable
+                attendances={session.attendance.map((attendance) => ({
+                  studentId: attendance.studentId ?? "",
+                  studentName: `${attendance.student.firstName} ${attendance.student.lastName}`,
+                  status: attendance.status ?? session.status,
+                  billable: attendance.billable ?? false,
+                })).filter((attendance) => attendance.studentId)}
+                onSaved={onRefresh}
+              />
+            </div>
+          )}
 
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="rounded-lg border p-3">
@@ -289,7 +309,8 @@ export function MonthCalendar({
 
   useEffect(() => {
     const enrollmentId = editingRecurring?.enrollmentId;
-    if (!enrollmentId) {
+    const groupId = editingRecurring?.groupId;
+    if (!enrollmentId && !groupId) {
       setEditingRecurringRules([]);
       return;
     }
@@ -307,8 +328,12 @@ export function MonthCalendar({
         },
       ]);
     }
+    const loadRules = enrollmentId
+      ? getActiveRecurrenceRulesAction(enrollmentId)
+      : getActiveRecurrenceRulesForGroupAction(groupId!);
+
     // Then fetch all siblings and update
-    getActiveRecurrenceRulesAction(enrollmentId)
+    loadRules
       .then((rules) =>
         setEditingRecurringRules(
           rules.map((r) => ({
@@ -323,7 +348,17 @@ export function MonthCalendar({
         ),
       )
       .catch(() => {});
-  }, [editingRecurring?.enrollmentId]);
+  }, [
+    editingRecurring?.color,
+    editingRecurring?.dayOfWeek,
+    editingRecurring?.durationMinutes,
+    editingRecurring?.enrollmentId,
+    editingRecurring?.groupId,
+    editingRecurring?.intervalWeeks,
+    editingRecurring?.room,
+    editingRecurring?.ruleId,
+    editingRecurring?.startTime,
+  ]);
 
   function handleDaySelect(day: Date | null) {
     onDaySelect?.(day);
@@ -403,11 +438,11 @@ export function MonthCalendar({
           focusedRuleId={editingRecurring.ruleId}
           enrollmentId={editingRecurring.enrollmentId ?? undefined}
           open={!!editingRecurring}
+          onChanged={onRefresh}
           onOpenChange={(open) => {
             if (!open) {
               setEditingRecurring(null);
               setEditingRecurringRules([]);
-              onRefresh();
             }
           }}
         />
@@ -416,6 +451,7 @@ export function MonthCalendar({
       <SessionDetailsDialog
         session={detailSession}
         open={!!detailSession}
+        onRefresh={onRefresh}
         onOpenChange={(open) => {
           if (!open) setDetailSession(null);
         }}

@@ -12,17 +12,18 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { NewPaymentForm } from "./new-payment-form";
-
-type Student = { id: string; name: string };
-type Enrollment = { id: string; studentId: string; label: string };
+import type {
+  PaymentEnrollmentOption,
+  PaymentStudentOption,
+} from "./payment-form-types";
 
 export function NewPaymentDialog({
   students,
   enrollments,
   defaultStudentId,
 }: {
-  students: Student[];
-  enrollments: Enrollment[];
+  students: PaymentStudentOption[];
+  enrollments: PaymentEnrollmentOption[];
   defaultStudentId?: string;
 }) {
   const [open, setOpen] = useState(false);

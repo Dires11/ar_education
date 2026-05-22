@@ -28,10 +28,12 @@ export function AttendanceForm({
   sessionId,
   isEditable,
   attendances: initial,
+  onSaved,
 }: {
   sessionId: string;
   isEditable: boolean;
   attendances: AttendanceEntry[];
+  onSaved?: () => void;
 }) {
   const router = useRouter();
   const [attendances, setAttendances] = useState(initial);
@@ -66,6 +68,7 @@ export function AttendanceForm({
         attendances: attendances.map((a) => ({
           studentId: a.studentId,
           status: a.status as
+            | "SCHEDULED"
             | "COMPLETED"
             | "NO_SHOW"
             | "CANCELLED_BY_TUTOR"
@@ -74,6 +77,7 @@ export function AttendanceForm({
         })),
       });
       toast.success("Attendance saved");
+      onSaved?.();
       router.refresh();
     } catch {
       toast.error("Failed to save attendance");

@@ -33,26 +33,62 @@ import type {
   MarkAttendanceInput,
 } from "@/lib/validators/sessions";
 
+function friendlyScheduleError(error: unknown): Error {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === "P2002"
+  ) {
+    const target = "meta" in error &&
+      typeof error.meta === "object" &&
+      error.meta !== null &&
+      "target" in error.meta
+        ? error.meta.target
+        : null;
+
+    if (
+      Array.isArray(target) &&
+      target.includes("sessionId") &&
+      target.includes("studentId")
+    ) {
+      return new Error("That student is already on this session's attendance list.");
+    }
+
+    return new Error("This schedule item already exists.");
+  }
+
+  return error instanceof Error ? error : new Error("Something went wrong. Please try again.");
+}
+
 export async function createAdHocSessionAction(input: CreateAdHocSessionInput) {
   await requireAdmin();
-  const session = await createAdHocSession(input);
-  enqueueSessionReminder(session.id).catch(console.error);
-  revalidatePath("/schedule");
-  return { success: true, id: session.id };
+  try {
+    const session = await createAdHocSession(input);
+    enqueueSessionReminder(session.id).catch(console.error);
+    revalidatePath("/schedule");
+    return { success: true, id: session.id };
+  } catch (error) {
+    throw friendlyScheduleError(error);
+  }
 }
 
 export async function createRecurringScheduleAction(
   input: CreateRecurrenceInput
 ) {
   await requireAdmin();
-  const result = await createRecurringSchedule(input);
-  revalidatePath("/schedule");
-  return {
-    success: true,
-    rulesCreated: result.rulesCreated,
-    materializedSessions: result.materializedSessions,
-    preview: result.preview,
-  };
+  try {
+    const result = await createRecurringSchedule(input);
+    revalidatePath("/schedule");
+    return {
+      success: true,
+      rulesCreated: result.rulesCreated,
+      materializedSessions: result.materializedSessions,
+      preview: result.preview,
+    };
+  } catch (error) {
+    throw friendlyScheduleError(error);
+  }
 }
 
 export async function markAttendanceAction(
@@ -204,9 +240,13 @@ export async function fetchScheduleForMonth(monthParam: string) {
         }
       : null,
     attendance: s.attendance.map((a) => ({
+      studentId: a.studentId,
+      status: a.status,
+      billable: a.billable,
       student: { firstName: a.student.firstName, lastName: a.student.lastName },
     })),
     enrollmentId: s.enrollmentId,
+    groupId: s.recurrenceRule?.groupId ?? null,
     recurrenceRuleId: s.recurrenceRuleId,
     virtual: false as const,
     ruleId: s.recurrenceRuleId,

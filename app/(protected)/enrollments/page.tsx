@@ -5,6 +5,7 @@ import { listSubjects } from "@/lib/data/subjects";
 import { listPackages } from "@/lib/data/packages";
 import { Badge } from "@/components/ui/badge";
 import { NewEnrollmentDialog } from "./components/new-enrollment-dialog";
+import { ManageGroupsDialog } from "./components/manage-groups-dialog";
 import { PageHero } from "@/components/page-hero";
 import { ClipboardListIcon, UserCheckIcon, UsersIcon } from "lucide-react";
 import { EnrollmentsTable } from "./components/enrollments-table";
@@ -23,6 +24,17 @@ export default async function EnrollmentsPage() {
   const uniqueStudents = new Set(
     enrollments.map((e) => e.student.id)
   ).size;
+  const groupOptions = groups.map((g) => ({
+    id: g.id,
+    name: g.name,
+    tutorId: g.tutorId,
+    tutorName: `${g.tutor.firstName} ${g.tutor.lastName}`,
+    subjectId: g.subjectId,
+    subjectName: g.subject.name,
+    memberCount: g.enrollments.filter((e) =>
+      ["ACTIVE", "PAUSED"].includes(e.status)
+    ).length,
+  }));
 
   return (
     <div className="space-y-6">
@@ -49,33 +61,34 @@ export default async function EnrollmentsPage() {
           },
         ]}
         action={
-          <NewEnrollmentDialog
-            students={studentsData.students.map((s) => ({
-              id: s.id,
-              name: `${s.firstName} ${s.lastName}`,
-            }))}
-            tutors={tutorsData.tutors.map((t) => ({
-              id: t.id,
-              name: `${t.firstName} ${t.lastName}`,
-              subjectIds: t.subjects.map((ts) => ts.subjectId),
-            }))}
-            subjects={subjects}
-            packages={packages.map((p) => ({
-              id: p.id,
-              name: p.name,
-              type: p.type,
-              lessonType: p.lessonType,
-              basePrice: p.basePrice.toString(),
-              subjectId: p.subjectId,
-            }))}
-            groups={groups.map((g) => ({
-              id: g.id,
-              name: g.name,
-              tutorId: g.tutorId,
-              subjectId: g.subjectId,
-              memberCount: g.enrollments.filter((e) => e.status === "ACTIVE").length,
-            }))}
-          />
+          <div className="grid w-full grid-cols-1 gap-2 sm:flex sm:w-auto sm:flex-wrap">
+            <ManageGroupsDialog groups={groupOptions} />
+            <NewEnrollmentDialog
+              students={studentsData.students.map((s) => ({
+                id: s.id,
+                name: `${s.firstName} ${s.lastName}`,
+              }))}
+              tutors={tutorsData.tutors.map((t) => ({
+                id: t.id,
+                name: `${t.firstName} ${t.lastName}`,
+                subjectIds: t.subjects.map((ts) => ts.subjectId),
+              }))}
+              subjects={subjects}
+              packages={packages.map((p) => ({
+                id: p.id,
+                name: p.name,
+                type: p.type,
+                billingPeriod: p.billingPeriod,
+                lessonType: p.lessonType,
+                basePrice: p.basePrice.toString(),
+                sessionsPerWeek: p.sessionsPerWeek,
+                durationMinutes: p.durationMinutes,
+                subjectId: p.subjectId,
+                subjectName: p.subject?.name ?? null,
+              }))}
+              groups={groupOptions}
+            />
+          </div>
         }
       />
 

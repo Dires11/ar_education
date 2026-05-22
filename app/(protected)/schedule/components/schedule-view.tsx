@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useTransition, useRef } from "react";
-import { format } from "date-fns";
+import { format, isSameMonth } from "date-fns";
 import { MonthCalendar, type CalendarSession } from "./week-calendar";
 import { NewSessionDialog } from "./new-session-dialog";
 import { PageHero } from "@/components/page-hero";
@@ -13,25 +13,7 @@ import {
   AlertCircleIcon,
   UsersIcon,
 } from "lucide-react";
-
-type Tutor = { id: string; name: string; subjectIds: string[] };
-type Subject = { id: string; name: string };
-type Enrollment = {
-  id: string;
-  label: string;
-  studentId: string;
-  tutorId: string;
-  subjectId: string;
-  sessionsPerWeek?: number | null;
-  packageName?: string | null;
-};
-type Group = {
-  id: string;
-  label: string;
-  tutorId: string;
-  subjectId: string;
-  memberCount: number;
-};
+import type { SessionEnrollment, SessionGroup, Subject, Tutor } from "./session-form-types";
 
 function mergeAll(
   sessions: CalendarSession[],
@@ -62,15 +44,18 @@ export function ScheduleView({
   virtualSessions: VirtualSession[];
   tutors: Tutor[];
   subjects: Subject[];
-  enrollments: Enrollment[];
-  groups: Group[];
+  enrollments: SessionEnrollment[];
+  groups: SessionGroup[];
 }) {
   const [isPending, startTransition] = useTransition();
   const [monthStart, setMonthStart] = useState(initialMonthStart);
   const [allSessions, setAllSessions] = useState<CalendarSession[]>(
     mergeAll(initialSessions, initialVirtual)
   );
-  const [selectedDay, setSelectedDay] = useState<Date | null>(null);
+  const [selectedDay, setSelectedDay] = useState<Date | null>(() => {
+    const today = new Date();
+    return isSameMonth(today, initialMonthStart) ? today : null;
+  });
   const navVersion = useRef(0);
 
   function navigate(newMonth: Date) {

@@ -25,18 +25,16 @@ export function NewStudentDialog() {
           New Student
         </Button>
       </DialogTrigger>
-      <DialogContent className="max-h-[90dvh] overflow-y-auto p-0 sm:max-w-2xl">
-        <DialogHeader className="border-b bg-linear-to-br from-amber-50 via-background to-emerald-50 px-5 py-8">
+      <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-2xl">
+        <DialogHeader>
           <DialogTitle>New Student</DialogTitle>
         </DialogHeader>
-        <div className="px-5 py-4">
-          <StudentForm
-            onSuccess={() => {
-              setOpen(false);
-              router.refresh();
-            }}
-          />
-        </div>
+        <StudentForm
+          onSuccess={() => {
+            setOpen(false);
+            router.refresh();
+          }}
+        />
       </DialogContent>
     </Dialog>
   );

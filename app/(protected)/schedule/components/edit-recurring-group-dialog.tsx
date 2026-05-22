@@ -27,6 +27,7 @@ import {
   deleteRecurrenceRuleAction,
   updateEnrollmentRecurrenceColorAction,
 } from "@/app/actions/sessions";
+import { ColorPicker } from "./color-picker";
 
 const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const DAY_OPTIONS = [1, 2, 3, 4, 5, 6, 0]; // Mon–Sun display order
@@ -41,26 +42,6 @@ export type GroupRule = {
   color: string | null;
 };
 
-function ColorPicker({ value, onChange }: { value: string; onChange: (color: string) => void }) {
-  const hex = value || "#6366f1";
-  return (
-    <label className="flex w-fit cursor-pointer items-center gap-2">
-      <div
-        className="relative h-7 w-7 overflow-hidden rounded-full border-2 border-border"
-        style={{ backgroundColor: hex }}
-      >
-        <input
-          type="color"
-          value={hex}
-          onChange={(e) => onChange(e.target.value)}
-          className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-        />
-      </div>
-      <span className="font-mono text-xs text-muted-foreground">{hex}</span>
-    </label>
-  );
-}
-
 type ConfirmKind = "end" | "deleteAll" | null;
 
 export function EditRecurringGroupDialog({
@@ -71,6 +52,7 @@ export function EditRecurringGroupDialog({
   enrollmentId,
   open,
   onOpenChange,
+  onChanged,
 }: {
   rules: GroupRule[];
   subjectName: string;
@@ -79,6 +61,7 @@ export function EditRecurringGroupDialog({
   enrollmentId?: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  onChanged?: () => void;
 }) {
   // Sort rules Mon→Sun
   const sortedRules = [...rules].sort((a, b) => {
@@ -131,6 +114,7 @@ export function EditRecurringGroupDialog({
       toast.success(
         rules.length > 1 ? `Schedule updated for ${daysSummary}` : "Recurring schedule updated"
       );
+      onChanged?.();
       onOpenChange(false);
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : "Failed to update");
@@ -145,6 +129,7 @@ export function EditRecurringGroupDialog({
       await Promise.all(rules.map((r) => endRecurrenceRuleAction(r.id, splitDate.toISOString())));
       toast.success("Recurring schedule ended");
       setConfirm(null);
+      onChanged?.();
       onOpenChange(false);
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : "Failed to end recurrence");
@@ -159,6 +144,7 @@ export function EditRecurringGroupDialog({
       await Promise.all(rules.map((r) => deleteRecurrenceRuleAction(r.id)));
       toast.success("Recurring schedule deleted");
       setConfirm(null);
+      onChanged?.();
       onOpenChange(false);
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : "Failed to delete");

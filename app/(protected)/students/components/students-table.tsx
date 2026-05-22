@@ -104,14 +104,9 @@ export function StudentsTable({ students }: { students: StudentRow[] }) {
                           size="lg"
                           className="h-10 w-10 rounded-2xl"
                         />
-                        <div>
-                          <p className="font-medium">
-                            {student.firstName} {student.lastName}
-                          </p>
-                          <p className="text-xs text-muted-foreground">
-                            Added {formatDate(student.createdAt)}
-                          </p>
-                        </div>
+                        <p className="font-medium">
+                          {student.firstName} {student.lastName}
+                        </p>
                       </div>
                     </TableCell>
                     <TableCell>

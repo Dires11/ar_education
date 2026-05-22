@@ -15,9 +15,11 @@ export function useCloudinaryCleanup() {
   const committedRef = useRef(false);
 
   useEffect(() => {
+    const pendingUploads = pendingRef.current;
+
     return () => {
       if (committedRef.current) return;
-      pendingRef.current.forEach((publicId) => {
+      pendingUploads.forEach((publicId) => {
         fetch("/api/delete-cloudinary-image", {
           method: "POST",
           headers: { "Content-Type": "application/json" },

@@ -1,9 +1,15 @@
 import {
   createGroup,
+  deleteGroupIfNoActiveMembers,
   listGroupsByTutorAndSubject,
   getGroupWithMembers,
+  updateGroup,
 } from "@/lib/data/groups";
 import { deleteFutureGroupAttendanceForStudent } from "@/lib/data/sessions";
+import {
+  updateGroupSchema,
+  type UpdateGroupInput,
+} from "@/lib/validators/groups";
 
 export async function findOrCreateGroup(
   input:
@@ -26,11 +32,24 @@ export async function listGroupsForTutorSubject(
   return listGroupsByTutorAndSubject(tutorId, subjectId);
 }
 
+export async function updateExistingGroup(
+  groupId: string,
+  input: UpdateGroupInput
+) {
+  const parsed = updateGroupSchema.parse(input);
+  return updateGroup(groupId, { name: parsed.name });
+}
+
 export async function removeStudentFromGroup(
   studentId: string,
   fromDate: Date
 ) {
   await deleteFutureGroupAttendanceForStudent(studentId, fromDate);
+}
+
+export async function deleteGroupWhenEmpty(groupId: string | null | undefined) {
+  if (!groupId) return null;
+  return deleteGroupIfNoActiveMembers(groupId);
 }
 
 export { getGroupWithMembers };

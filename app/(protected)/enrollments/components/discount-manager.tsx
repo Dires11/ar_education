@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { DatePicker } from "@/components/date-picker";
 import {
   Select,
   SelectContent,
@@ -120,13 +121,13 @@ export function DiscountManager({
               Add Discount
             </Button>
           </DialogTrigger>
-          <DialogContent className="sm:max-w-lg max-h-[90dvh] overflow-y-auto">
+          <DialogContent className="max-h-[90dvh] overflow-y-auto p-0 sm:max-w-2xl">
             <DialogHeader>
-              <DialogTitle>Add Discount</DialogTitle>
+              <DialogTitle className="px-4 pt-4">Add Discount</DialogTitle>
             </DialogHeader>
             <Form {...form}>
-              <form onSubmit={form.handleSubmit(handleAdd)} className="space-y-1">
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <form onSubmit={form.handleSubmit(handleAdd)}>
+                <div className="grid gap-3 px-4 pb-4 sm:grid-cols-3">
                   <FormField
                     control={form.control}
                     name="kind"
@@ -134,7 +135,11 @@ export function DiscountManager({
                       <FormItem>
                         <FormLabel>Type</FormLabel>
                         <Select onValueChange={field.onChange} defaultValue={field.value}>
-                          <FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl>
+                          <FormControl>
+                            <SelectTrigger className="w-full">
+                              <SelectValue />
+                            </SelectTrigger>
+                          </FormControl>
                           <SelectContent>
                             {Object.entries(DISCOUNT_LABELS).map(([v, l]) => (
                               <SelectItem key={v} value={v}>{l}</SelectItem>
@@ -154,71 +159,101 @@ export function DiscountManager({
                           Value{kind === "PERCENT_OFF" ? " (%)" : kind === "FREE_SESSIONS" ? " (sessions)" : " ($)"}
                         </FormLabel>
                         <FormControl>
-                          <Input type="number" step="0.01" min="0" {...field} />
+                          <Input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            placeholder={
+                              kind === "PERCENT_OFF"
+                                ? "10"
+                                : kind === "FREE_SESSIONS"
+                                  ? "1"
+                                  : "25.00"
+                            }
+                            {...field}
+                          />
                         </FormControl>
                         <FormMessage />
                       </FormItem>
                     )}
                   />
-                </div>
-                <FormField
-                  control={form.control}
-                  name="temporary"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Duration</FormLabel>
-                      <Select
-                        onValueChange={(v) => field.onChange(v === "true")}
-                        defaultValue={field.value ? "true" : "false"}
-                      >
-                        <FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl>
-                        <SelectContent>
-                          <SelectItem value="false">Permanent</SelectItem>
-                          <SelectItem value="true">Temporary</SelectItem>
-                        </SelectContent>
-                      </Select>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-                {isTemporary && (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <FormField
+                    control={form.control}
+                    name="temporary"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Duration</FormLabel>
+                        <Select
+                          onValueChange={(v) => field.onChange(v === "true")}
+                          defaultValue={field.value ? "true" : "false"}
+                        >
+                          <FormControl>
+                            <SelectTrigger className="w-full">
+                              <SelectValue />
+                            </SelectTrigger>
+                          </FormControl>
+                          <SelectContent>
+                            <SelectItem value="false">Permanent</SelectItem>
+                            <SelectItem value="true">Temporary</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  {isTemporary && (
                     <FormField
                       control={form.control}
                       name="validFrom"
                       render={({ field }) => (
                         <FormItem>
                           <FormLabel>Valid From</FormLabel>
-                          <FormControl><Input type="date" {...field} /></FormControl>
+                          <FormControl>
+                            <DatePicker
+                              value={field.value}
+                              onChange={field.onChange}
+                              placeholder="Pick start date"
+                            />
+                          </FormControl>
                           <FormMessage />
                         </FormItem>
                       )}
                     />
+                  )}
+                  {isTemporary && (
                     <FormField
                       control={form.control}
                       name="validUntil"
                       render={({ field }) => (
                         <FormItem>
                           <FormLabel>Valid Until</FormLabel>
-                          <FormControl><Input type="date" {...field} /></FormControl>
+                          <FormControl>
+                            <DatePicker
+                              value={field.value}
+                              onChange={field.onChange}
+                              placeholder="Pick end date"
+                            />
+                          </FormControl>
                           <FormMessage />
                         </FormItem>
                       )}
                     />
-                  </div>
-                )}
-                <FormField
-                  control={form.control}
-                  name="notes"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Notes (optional)</FormLabel>
-                      <FormControl><Input {...field} /></FormControl>
-                      <FormMessage />
-                    </FormItem>
                   )}
-                />
-                <DialogFooter>
+                  <FormField
+                    control={form.control}
+                    name="notes"
+                    render={({ field }) => (
+                      <FormItem className="sm:col-span-3">
+                        <FormLabel>Notes (optional)</FormLabel>
+                        <FormControl>
+                          <Input placeholder="Reason or internal note" {...field} />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                </div>
+                <DialogFooter className="mx-0 mb-0 rounded-b-xl px-4 py-3">
                   <Button type="submit" disabled={form.formState.isSubmitting}>
                     Add Discount
                   </Button>

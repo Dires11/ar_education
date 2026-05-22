@@ -35,6 +35,9 @@ export default async function SchedulePage({
     listEnrollments({ status: "ACTIVE" }),
     listGroups(),
   ]);
+  const privateEnrollments = enrollments.filter(
+    (enrollment) => enrollment.package.lessonType === "PRIVATE"
+  );
 
   return (
     <ScheduleView
@@ -55,12 +58,16 @@ export default async function SchedulePage({
             }
           : null,
         attendance: s.attendance.map((a) => ({
+          studentId: a.studentId,
+          status: a.status,
+          billable: a.billable,
           student: {
             firstName: a.student.firstName,
             lastName: a.student.lastName,
           },
         })),
         enrollmentId: s.enrollmentId,
+        groupId: s.recurrenceRule?.groupId ?? null,
         recurrenceRuleId: s.recurrenceRuleId,
         virtual: false as const,
         ruleId: s.recurrenceRuleId,
@@ -82,20 +89,36 @@ export default async function SchedulePage({
         subjectIds: t.subjects.map((ts) => ts.subjectId),
       }))}
       subjects={subjects}
-      enrollments={enrollments.map((e) => ({
+      enrollments={privateEnrollments.map((e) => ({
         id: e.id,
-        label: `${e.student.firstName} ${e.student.lastName} — ${e.subject.name}`,
+        label: `${e.student.firstName} ${e.student.lastName} — ${e.package.name}`,
+        studentName: `${e.student.firstName} ${e.student.lastName}`,
         studentId: e.studentId,
         tutorId: e.tutorId,
+        tutorName: `${e.tutor.firstName} ${e.tutor.lastName}`,
         subjectId: e.subjectId,
+        subjectName: e.subject.name,
         sessionsPerWeek: e.package?.sessionsPerWeek ?? null,
         packageName: e.package?.name ?? null,
+        packageType: e.package.type,
+        lessonType: e.package.lessonType,
       }))}
       groups={groups.map((g) => ({
+        ...(() => {
+          const packageNames = [...new Set(g.enrollments.map((e) => e.package.name))];
+          const firstPackage = g.enrollments[0]?.package;
+          return {
+            packageName: packageNames.join(", "),
+            packageType: firstPackage?.type ?? null,
+            sessionsPerWeek: firstPackage?.sessionsPerWeek ?? null,
+          };
+        })(),
         id: g.id,
-        label: `${g.name} · ${g.enrollments.length} students`,
+        label: g.name,
         tutorId: g.tutorId,
+        tutorName: `${g.tutor.firstName} ${g.tutor.lastName}`,
         subjectId: g.subjectId,
+        subjectName: g.subject.name,
         memberCount: g.enrollments.length,
       }))}
     />

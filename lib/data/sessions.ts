@@ -124,7 +124,7 @@ export async function createSessionAttendance(data: {
   studentId: string;
   enrollmentId?: string;
 }) {
-  return prisma.sessionAttendance.create({ data });
+  return prisma.sessionAttendance.createMany({ data: [data], skipDuplicates: true });
 }
 
 export async function createManySessionAttendances(
@@ -196,14 +196,23 @@ export async function updateSessionStatus(
   sessionId: string,
   status: "SCHEDULED" | "COMPLETED" | "NO_SHOW" | "CANCELLED_BY_TUTOR" | "CANCELLED_BY_STUDENT"
 ) {
-  return prisma.session.update({ where: { id: sessionId }, data: { status } });
+  return prisma.$transaction([
+    prisma.session.update({ where: { id: sessionId }, data: { status } }),
+    prisma.sessionAttendance.updateMany({
+      where: { sessionId },
+      data: {
+        status,
+        billable: status === "COMPLETED",
+      },
+    }),
+  ]);
 }
 
 export async function updateAttendance(
   sessionId: string,
   attendances: Array<{
     studentId: string;
-    status: "COMPLETED" | "NO_SHOW" | "CANCELLED_BY_TUTOR" | "CANCELLED_BY_STUDENT";
+    status: "SCHEDULED" | "COMPLETED" | "NO_SHOW" | "CANCELLED_BY_TUTOR" | "CANCELLED_BY_STUDENT";
     billable: boolean;
   }>
 ) {

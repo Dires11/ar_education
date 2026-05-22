@@ -15,7 +15,7 @@ import {
   type CreateDiscountInput,
 } from "@/lib/validators/enrollments";
 import { prisma } from "@/lib/prisma";
-import { findOrCreateGroup } from "@/lib/services/groups";
+import { deleteGroupWhenEmpty, findOrCreateGroup } from "@/lib/services/groups";
 import { listGroups } from "@/lib/data/groups";
 
 export async function createEnrollmentForStudent(input: CreateEnrollmentInput) {
@@ -31,6 +31,19 @@ export async function createEnrollmentForStudent(input: CreateEnrollmentInput) {
   });
   if (!tutorSubject) {
     throw new Error("Tutor does not teach the selected subject");
+  }
+
+  const existing = await prisma.enrollment.findFirst({
+    where: {
+      studentId: parsed.studentId,
+      subjectId: parsed.subjectId,
+      status: "ACTIVE",
+    },
+  });
+  if (existing) {
+    throw new Error(
+      "This student already has an active enrollment for this subject"
+    );
   }
 
   const selectedPackage = await prisma.package.findUnique({
@@ -70,11 +83,18 @@ export async function updateEnrollmentStatus(
   input: UpdateEnrollmentInput
 ) {
   const parsed = updateEnrollmentSchema.parse(input);
-  return updateEnrollment(id, {
+  const enrollment = await getEnrollment(id);
+  const updated = await updateEnrollment(id, {
     status: parsed.status,
     endDate: parsed.endDate ? new Date(parsed.endDate) : undefined,
     customPriceOverride: parsed.customPriceOverride || null,
   });
+
+  if (["COMPLETED", "CANCELLED"].includes(parsed.status)) {
+    await deleteGroupWhenEmpty(enrollment?.groupId);
+  }
+
+  return updated;
 }
 
 export async function addDiscountToEnrollment(

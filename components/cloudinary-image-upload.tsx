@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import { useRef, useState } from "react";
 import { Loader2Icon } from "lucide-react";
 
@@ -93,44 +94,49 @@ export function CloudinaryImageUpload({
   }
 
   return (
-    <div className="flex items-center gap-4">
-      <div className="relative h-16 w-16 shrink-0 overflow-hidden rounded-xl border bg-muted">
-        {value ? (
-          <img
-            src={value}
-            alt={label ?? "photo"}
-            className="h-full w-full object-cover"
-          />
-        ) : (
-          fallback
-        )}
-        {uploading && (
-          <div className="absolute inset-0 flex items-center justify-center bg-background/60">
-            <Loader2Icon className="h-5 w-5 animate-spin text-muted-foreground" />
-          </div>
-        )}
-      </div>
+    <div className="space-y-2">
+      {label && <p className="text-sm font-medium leading-none">{label}</p>}
 
-      <div className="flex flex-col gap-1.5">
-        {label && <p className="text-sm font-medium leading-none">{label}</p>}
-        <button
-          type="button"
-          disabled={uploading}
-          onClick={() => inputRef.current?.click()}
-          className="inline-flex h-8 cursor-pointer items-center rounded-md border border-input bg-background px-3 text-xs font-medium shadow-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {uploading ? "Uploading…" : value ? "Change photo" : "Upload photo"}
-        </button>
-        <p className={`min-h-4 text-xs leading-4 text-destructive ${error ? "" : "invisible"}`}>
-          {error || " "}
-        </p>
-        <input
-          ref={inputRef}
-          type="file"
-          accept={ACCEPTED_ATTR}
-          className="sr-only"
-          onChange={handleFileChange}
-        />
+      <div className="flex items-center gap-4">
+        <div className="relative h-16 w-16 shrink-0 overflow-hidden rounded-xl border bg-muted">
+          {value ? (
+            <Image
+              src={value}
+              alt={label ?? "photo"}
+              fill
+              sizes="64px"
+              className="h-full w-full object-cover"
+            />
+          ) : (
+            fallback
+          )}
+          {uploading && (
+            <div className="absolute inset-0 flex items-center justify-center bg-background/60">
+              <Loader2Icon className="h-5 w-5 animate-spin text-muted-foreground" />
+            </div>
+          )}
+        </div>
+
+        <div className="flex flex-col gap-1.5">
+          <button
+            type="button"
+            disabled={uploading}
+            onClick={() => inputRef.current?.click()}
+            className="inline-flex h-8 cursor-pointer items-center rounded-md border border-input bg-background px-3 text-xs font-medium shadow-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {uploading ? "Uploading…" : value ? "Change photo" : "Upload photo"}
+          </button>
+          <p className={`min-h-4 text-xs leading-4 text-destructive ${error ? "" : "invisible"}`}>
+            {error || " "}
+          </p>
+          <input
+            ref={inputRef}
+            type="file"
+            accept={ACCEPTED_ATTR}
+            className="sr-only"
+            onChange={handleFileChange}
+          />
+        </div>
       </div>
     </div>
   );

@@ -1,8 +1,6 @@
 import {
   addDays,
-  endOfDay,
   format,
-  set,
   startOfDay,
   startOfMonth,
   startOfWeek,
@@ -25,25 +23,29 @@ import {
   updateAttendance,
   cancelSession,
   deleteSession,
-  checkTutorConflict,
-  getSession,
-  getSessionsByWeek,
   getSessionsByMonth,
   getRecurrenceRuleById,
   getRecurrenceRulesForMonth,
-  getRecurringRulesInRange,
-  getSessionsForRecurrenceRulesInRange,
   getNonCancelledEnrollmentSessionsInRange,
-  createManySessions,
   autoCompletePassedSessions,
   updateRecurrenceRulesColorForEnrollment,
-  getGroupRecurringRulesInRange,
-  getGroupRecurrenceRulesForMonth,
-  createManySessionAttendances,
-  getActiveRecurrenceRulesForGroup,
 } from "@/lib/data/sessions";
 import { getGroupWithMembers } from "@/lib/data/groups";
 import { prisma } from "@/lib/prisma";
+import {
+  combineDateAndTime,
+  getEnrollmentWeekKey,
+  getFirstMatchingDate,
+} from "@/lib/services/session-dates";
+import {
+  assertNoRecurringScheduleConflict,
+  assertNoScheduleConflict,
+  type ConflictStudent,
+} from "@/lib/services/session-conflicts";
+import {
+  materializeGroupSessions,
+  materializeSessions,
+} from "@/lib/services/session-materialization";
 import type {
   CreateAdHocSessionInput,
   CreateRecurrenceInput,
@@ -104,20 +106,16 @@ export async function createAdHocSession(input: CreateAdHocSessionInput) {
   const scheduledFor = new Date(input.scheduledFor);
   const duration = Number(input.durationMinutes);
 
-  const hasConflict = await checkTutorConflict(
-    input.tutorId,
-    scheduledFor,
-    duration
-  );
-  if (hasConflict) {
-    throw new Error("Tutor has a scheduling conflict at this time");
-  }
-
   // Resolve group members if groupId is provided
   let sessionEnrollmentId: string | undefined = input.enrollmentId || undefined;
+  let group: Awaited<ReturnType<typeof getGroupWithMembers>> | null = null;
+  let studentIds = input.studentIds;
 
   if (input.groupId) {
     sessionEnrollmentId = undefined;
+    group = await getGroupWithMembers(input.groupId);
+    if (!group) throw new Error("Group not found");
+    studentIds = group.enrollments.map((enrollment) => enrollment.studentId);
     // Skip monthly capacity check for group sessions
   } else {
     await assertEnrollmentHasMonthlyCapacity(
@@ -125,6 +123,14 @@ export async function createAdHocSession(input: CreateAdHocSessionInput) {
       scheduledFor
     );
   }
+
+  await assertNoScheduleConflict({
+    tutorId: input.tutorId,
+    subjectId: input.subjectId,
+    studentIds,
+    scheduledFor,
+    durationMinutes: duration,
+  });
 
   const session = await createSession({
     enrollmentId: sessionEnrollmentId,
@@ -137,9 +143,7 @@ export async function createAdHocSession(input: CreateAdHocSessionInput) {
   });
 
   if (input.groupId) {
-    const group = await getGroupWithMembers(input.groupId);
-    if (!group) throw new Error("Group not found");
-    for (const enrollment of group.enrollments) {
+    for (const enrollment of group!.enrollments) {
       await createSessionAttendance({
         sessionId: session.id,
         studentId: enrollment.studentId,
@@ -150,7 +154,7 @@ export async function createAdHocSession(input: CreateAdHocSessionInput) {
     const enrollment = sessionEnrollmentId
       ? await prisma.enrollment.findUnique({ where: { id: sessionEnrollmentId } })
       : null;
-    for (const studentId of input.studentIds) {
+    for (const studentId of studentIds) {
       await createSessionAttendance({
         sessionId: session.id,
         studentId,
@@ -181,18 +185,43 @@ export async function createRecurringSchedule(input: CreateRecurrenceInput) {
   let ruleEnrollmentId: string | undefined;
   let ruleGroupId: string | undefined;
   let ruleColor = input.color;
+  let scheduleTutorId: string;
+  let scheduleSubjectId: string;
+  let scheduleStudents: ConflictStudent[];
 
   if (input.groupId) {
     ruleGroupId = input.groupId;
+    const group = await getGroupWithMembers(input.groupId);
+    if (!group) throw new Error("Group not found");
+    scheduleTutorId = group.tutorId;
+    scheduleSubjectId = group.subjectId;
+    scheduleStudents = group.enrollments.map((enrollment) => enrollment.student);
     ruleColor = ruleColor ?? hashEnrollmentColor(input.groupId);
   } else {
     ruleEnrollmentId = input.enrollmentId;
     const enrollment = await prisma.enrollment.findUnique({
       where: { id: input.enrollmentId },
+      include: { student: true },
     });
     if (!enrollment) throw new Error("Enrollment not found");
+    scheduleTutorId = enrollment.tutorId;
+    scheduleSubjectId = enrollment.subjectId;
+    scheduleStudents = [enrollment.student];
     ruleColor = ruleColor ?? hashEnrollmentColor(input.enrollmentId!);
   }
+
+  await assertNoRecurringScheduleConflict({
+    tutorId: scheduleTutorId,
+    subjectId: scheduleSubjectId,
+    students: scheduleStudents,
+    daysOfWeek,
+    startTime: input.startTime,
+    startTimes: input.startTimes,
+    durationMinutes: duration,
+    intervalWeeks,
+    startsOn,
+    endsOn,
+  });
 
   const rules = [];
   for (const dayOfWeek of daysOfWeek) {
@@ -421,10 +450,6 @@ export type RecurringSchedulePreview = {
   existingPlannedInWeek: number;
 };
 
-function getEnrollmentWeekKey(enrollmentId: string, date: Date): string {
-  return `${enrollmentId}:${format(startOfWeek(date, { weekStartsOn: 1 }), "yyyy-MM-dd")}`;
-}
-
 async function assertEnrollmentHasMonthlyCapacity(
   enrollmentId: string | undefined,
   date: Date,
@@ -627,6 +652,7 @@ export async function markSessionAttendance(
 
   const allStatuses = input.attendances.map((a) => a.status);
   const hasCompleted = allStatuses.some((s) => s === "COMPLETED");
+  const allScheduled = allStatuses.every((s) => s === "SCHEDULED");
   const allNoShow = allStatuses.every((s) => s === "NO_SHOW");
   const allCancelledTutor = allStatuses.every((s) => s === "CANCELLED_BY_TUTOR");
   const allCancelledStudent = allStatuses.every(
@@ -639,7 +665,8 @@ export async function markSessionAttendance(
     | "CANCELLED_BY_TUTOR"
     | "CANCELLED_BY_STUDENT"
     | "SCHEDULED" = "SCHEDULED";
-  if (hasCompleted) sessionStatus = "COMPLETED";
+  if (allScheduled) sessionStatus = "SCHEDULED";
+  else if (hasCompleted) sessionStatus = "COMPLETED";
   else if (allNoShow) sessionStatus = "NO_SHOW";
   else if (allCancelledTutor) sessionStatus = "CANCELLED_BY_TUTOR";
   else if (allCancelledStudent) sessionStatus = "CANCELLED_BY_STUDENT";
@@ -852,211 +879,6 @@ export async function getMonthSchedule(monthStart: Date) {
   return { realSessions, virtualSessions, summaries, paidMonths };
 }
 
-// ─── Date helpers ─────────────────────────────────────────────────────────────
-
-export function getFirstMatchingDate(startDate: Date, dayOfWeek: number): Date {
-  const daysUntil = (dayOfWeek - startDate.getDay() + 7) % 7;
-  return addDays(startDate, daysUntil);
-}
-
-export function combineDateAndTime(date: Date, timeString: string): Date {
-  const [hours, minutes] = timeString.split(":").map(Number);
-  return set(new Date(date), { hours, minutes, seconds: 0, milliseconds: 0 });
-}
-
-// ─── Materialization ──────────────────────────────────────────────────────────
-
-export async function materializeSessions(
-  fromDate: Date,
-  toDate: Date,
-  options?: { recurrenceRuleIds?: string[] }
-): Promise<number> {
-  const rules = await getRecurringRulesInRange(fromDate, toDate, options);
-  if (rules.length === 0) return 0;
-
-  const sessions: Array<{
-    enrollmentId: string;
-    tutorId: string;
-    subjectId: string;
-    scheduledFor: Date;
-    durationMinutes: number;
-    room?: string;
-    recurrenceRuleId: string;
-  }> = [];
-
-  const existingSessions = await getSessionsForRecurrenceRulesInRange(
-    rules.map((rule) => rule.id),
-    fromDate,
-    toDate
-  );
-  const coveredSlots = new Set(
-    existingSessions
-      .filter((session) => session.recurrenceRuleId)
-      .map(
-        (session) =>
-          `${session.recurrenceRuleId}:${format(session.scheduledFor, "yyyyMMddHHmm")}`
-      )
-  );
-  const existingWeeklySessions = await getNonCancelledEnrollmentSessionsInRange(
-    [...new Set(rules.map((rule) => rule.enrollmentId).filter((id): id is string => id !== null))],
-    startOfWeek(fromDate, { weekStartsOn: 1 }),
-    endOfWeek(toDate, { weekStartsOn: 1 })
-  );
-  const weeklyCounts = new Map<string, number>();
-  for (const session of existingWeeklySessions) {
-    if (!session.enrollmentId) continue;
-
-    const key = getEnrollmentWeekKey(
-      session.enrollmentId,
-      new Date(session.scheduledFor)
-    );
-    weeklyCounts.set(key, (weeklyCounts.get(key) ?? 0) + 1);
-  }
-
-  for (const rule of rules) {
-    const { enrollment } = rule;
-    if (!enrollment || !rule.enrollmentId) continue;
-    const enrollmentId = rule.enrollmentId;
-    const searchStart =
-      new Date(rule.startsOn) > fromDate ? new Date(rule.startsOn) : fromDate;
-    let current = getFirstMatchingDate(searchStart, rule.dayOfWeek);
-
-    while (current <= toDate) {
-      if (rule.endsOn && current > new Date(rule.endsOn)) break;
-
-      const scheduledFor = combineDateAndTime(current, rule.startTime);
-      const slotKey = `${rule.id}:${format(scheduledFor, "yyyyMMddHHmm")}`;
-      const weekKey = getEnrollmentWeekKey(enrollmentId, scheduledFor);
-      const sessionsPerWeek = enrollment.package.sessionsPerWeek ?? null;
-
-      if (coveredSlots.has(slotKey)) {
-        current = addDays(current, rule.intervalWeeks * 7);
-        continue;
-      }
-      if (
-        sessionsPerWeek !== null &&
-        (weeklyCounts.get(weekKey) ?? 0) >= sessionsPerWeek
-      ) {
-        current = addDays(current, rule.intervalWeeks * 7);
-        continue;
-      }
-
-      sessions.push({
-        enrollmentId,
-        tutorId: enrollment.tutorId,
-        subjectId: enrollment.subjectId,
-        scheduledFor,
-        durationMinutes: rule.durationMinutes,
-        room: rule.room ?? undefined,
-        recurrenceRuleId: rule.id,
-      });
-      coveredSlots.add(slotKey);
-      weeklyCounts.set(weekKey, (weeklyCounts.get(weekKey) ?? 0) + 1);
-
-      current = addDays(current, rule.intervalWeeks * 7);
-    }
-  }
-
-  if (sessions.length === 0) return 0;
-
-  const result = await createManySessions(sessions);
-  console.log(`[materializeSessions] Materialized ${result.count} sessions (${fromDate.toISOString().slice(0, 10)} → ${toDate.toISOString().slice(0, 10)})`);
-  return result.count;
-}
-
-export async function materializeGroupSessions(
-  fromDate: Date,
-  toDate: Date,
-  options?: { recurrenceRuleIds?: string[] }
-): Promise<number> {
-  const rules = await getGroupRecurringRulesInRange(fromDate, toDate, options);
-  if (rules.length === 0) return 0;
-
-  const existingSessions = await getSessionsForRecurrenceRulesInRange(
-    rules.map((r) => r.id),
-    fromDate,
-    toDate
-  );
-  const coveredSlots = new Set(
-    existingSessions
-      .filter((s) => s.recurrenceRuleId)
-      .map((s) => `${s.recurrenceRuleId}:${format(s.scheduledFor, "yyyyMMddHHmm")}`)
-  );
-
-  const sessionsToCreate: Array<{
-    tutorId: string;
-    subjectId: string;
-    scheduledFor: Date;
-    durationMinutes: number;
-    room?: string;
-    recurrenceRuleId: string;
-  }> = [];
-
-  for (const rule of rules) {
-    if (!rule.group) continue;
-    const searchStart =
-      new Date(rule.startsOn) > fromDate ? new Date(rule.startsOn) : fromDate;
-    let current = getFirstMatchingDate(searchStart, rule.dayOfWeek);
-
-    while (current <= toDate) {
-      if (rule.endsOn && current > new Date(rule.endsOn)) break;
-      const scheduledFor = combineDateAndTime(current, rule.startTime);
-      const slotKey = `${rule.id}:${format(scheduledFor, "yyyyMMddHHmm")}`;
-      if (!coveredSlots.has(slotKey)) {
-        sessionsToCreate.push({
-          tutorId: rule.group.tutorId,
-          subjectId: rule.group.subjectId,
-          scheduledFor,
-          durationMinutes: rule.durationMinutes,
-          room: rule.room ?? undefined,
-          recurrenceRuleId: rule.id,
-        });
-        coveredSlots.add(slotKey);
-      }
-      current = addDays(current, rule.intervalWeeks * 7);
-    }
-  }
-
-  if (sessionsToCreate.length > 0) {
-    await createManySessions(sessionsToCreate);
-  }
-
-  // Fan-out attendance for all group sessions in range (including pre-existing ones)
-  const groupRuleIds = rules.map((r) => r.id);
-  const allGroupSessions = await prisma.session.findMany({
-    where: {
-      recurrenceRuleId: { in: groupRuleIds },
-      scheduledFor: { gte: startOfDay(fromDate), lte: endOfDay(toDate) },
-    },
-    select: { id: true, recurrenceRuleId: true },
-  });
-
-  const ruleById = new Map(rules.map((r) => [r.id, r]));
-  const attendanceRows: Array<{
-    sessionId: string;
-    studentId: string;
-    enrollmentId: string;
-  }> = [];
-
-  for (const session of allGroupSessions) {
-    const rule = ruleById.get(session.recurrenceRuleId!);
-    if (!rule?.group) continue;
-    for (const enrollment of rule.group.enrollments) {
-      attendanceRows.push({
-        sessionId: session.id,
-        studentId: enrollment.studentId,
-        enrollmentId: enrollment.id,
-      });
-    }
-  }
-
-  if (attendanceRows.length > 0) {
-    await createManySessionAttendances(attendanceRows);
-  }
-
-  return sessionsToCreate.length;
-}
-
 export async function updateEnrollmentRecurrenceColor(
   enrollmentId: string,
   color: string
@@ -1064,4 +886,12 @@ export async function updateEnrollmentRecurrenceColor(
   await updateRecurrenceRulesColorForEnrollment(enrollmentId, color);
 }
 
-export { getSession, getSessionsByWeek, getSessionsByMonth, autoCompletePassedSessions, getActiveRecurrenceRulesForGroup };
+export { combineDateAndTime, getFirstMatchingDate } from "@/lib/services/session-dates";
+export { materializeGroupSessions, materializeSessions } from "@/lib/services/session-materialization";
+export {
+  autoCompletePassedSessions,
+  getActiveRecurrenceRulesForGroup,
+  getSession,
+  getSessionsByMonth,
+  getSessionsByWeek,
+} from "@/lib/data/sessions";

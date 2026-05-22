@@ -6,7 +6,6 @@ import { useForm, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
 import {
-  BanknoteIcon,
   BookOpenIcon,
   CalendarIcon,
   CheckIcon,
@@ -33,6 +32,7 @@ import {
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { DatePicker } from "@/components/date-picker";
 import {
   Select,
   SelectContent,
@@ -41,58 +41,100 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
-import {
   Command,
   CommandEmpty,
   CommandGroup,
   CommandInput,
   CommandItem,
 } from "@/components/ui/command";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { SearchableSelect } from "@/components/searchable-select";
+import { MetaPill } from "@/components/meta-pill";
 import { cn } from "@/lib/utils";
+import type {
+  EnrollmentGroupOption,
+  EnrollmentPackageOption,
+  EnrollmentStudentOption,
+  EnrollmentSubjectOption,
+  EnrollmentTutorOption,
+} from "./enrollment-form-types";
 
-type Student = { id: string; name: string };
-type Tutor = { id: string; name: string; subjectIds: string[] };
-type Subject = { id: string; name: string };
-type Package = {
-  id: string;
-  name: string;
-  type: string;
-  lessonType: string;
-  basePrice: string;
-  subjectId: string | null;
-};
+function PackageMeta({
+  pkg,
+  compact = false,
+}: {
+  pkg: EnrollmentPackageOption;
+  compact?: boolean;
+}) {
+  return (
+    <MetaPill
+      compact={compact}
+      items={[
+        {
+          icon: pkg.lessonType === "GROUP" ? UsersIcon : UserRoundIcon,
+          label: pkg.lessonType === "GROUP" ? "Group" : "Private",
+          hideLabelOnMobile: true,
+        },
+        {
+          icon: pkg.type === "MONTHLY" ? RepeatIcon : ZapIcon,
+          label:
+            pkg.type === "MONTHLY"
+              ? `${pkg.sessionsPerWeek ?? "?"}/week`
+              : "Per session",
+          mobileLabel:
+            pkg.type === "MONTHLY" ? `${pkg.sessionsPerWeek ?? "?"}/wk` : "Per",
+        },
+        { icon: ClockIcon, label: `${pkg.durationMinutes}m` },
+        { icon: CircleDollarSign, label: pkg.basePrice },
+      ]}
+    />
+  );
+}
 
-type Group = {
-  id: string;
-  name: string;
-  tutorId: string;
-  subjectId: string;
-  memberCount: number;
-};
+function PackageChoice({ pkg }: { pkg: EnrollmentPackageOption }) {
+  return (
+    <div className="flex min-w-0 flex-1 flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+      <div className="min-w-0">
+        <div className="truncate font-medium">{pkg.name}</div>
+        <div className="mt-0.5 flex min-w-0 items-center gap-1 truncate text-xs text-muted-foreground">
+          <BookOpenIcon className="h-3.5 w-3.5 shrink-0" />
+          <span className="truncate">{pkg.subjectName ?? "Any subject"}</span>
+        </div>
+      </div>
+      <PackageMeta pkg={pkg} />
+    </div>
+  );
+}
 
-function SearchableSelect({
-  options,
+function SelectedPackageChoice({ pkg }: { pkg: EnrollmentPackageOption }) {
+  return (
+    <div className="flex min-w-0 flex-1 items-center justify-between gap-2 sm:gap-3">
+      <div className="min-w-0 text-left">
+        <div className="truncate font-medium">{pkg.name}</div>
+        <div className="truncate text-xs text-muted-foreground">
+          {pkg.subjectName ?? "Any subject"}
+        </div>
+      </div>
+      <PackageMeta pkg={pkg} compact />
+    </div>
+  );
+}
+
+function PackagePicker({
   value,
   onChange,
-  placeholder,
-  searchPlaceholder,
-  emptyText,
-  disabled,
+  packages,
 }: {
-  options: { value: string; label: string }[];
   value: string;
   onChange: (value: string) => void;
-  placeholder: string;
-  searchPlaceholder?: string;
-  emptyText?: string;
-  disabled?: boolean;
+  packages: EnrollmentPackageOption[];
 }) {
   const [open, setOpen] = useState(false);
-  const selected = options.find((o) => o.value === value);
+  const selectedPackage = packages.find((pkg) => pkg.id === value);
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -101,39 +143,43 @@ function SearchableSelect({
           variant="outline"
           role="combobox"
           aria-expanded={open}
-          disabled={disabled}
-          className="w-full justify-between font-normal"
+          className="h-auto min-h-14 w-full justify-between gap-2 py-2 font-normal"
         >
-          {selected?.label ?? (
-            <span className="text-muted-foreground">{placeholder}</span>
+          {selectedPackage ? (
+            <SelectedPackageChoice pkg={selectedPackage} />
+          ) : (
+            <span className="min-w-0 truncate text-left text-muted-foreground">
+              Search packages...
+            </span>
           )}
-          <ChevronsUpDownIcon className="ml-auto h-4 w-4 shrink-0 opacity-50" />
+          <ChevronsUpDownIcon className="ml-2 h-4 w-4 shrink-0 opacity-50" />
         </Button>
       </PopoverTrigger>
       <PopoverContent
-        className="w-[--radix-popover-trigger-width] p-0"
+        className="w-[var(--radix-popover-trigger-width)] max-w-[var(--radix-popover-trigger-width)] p-0"
         align="start"
       >
         <Command>
-          <CommandInput placeholder={searchPlaceholder ?? "Search..."} />
-          <CommandEmpty>{emptyText ?? "No options found."}</CommandEmpty>
-          <CommandGroup className="max-h-52 overflow-y-auto">
-            {options.map((o) => (
+          <CommandInput placeholder="Search packages..." />
+          <CommandEmpty>No packages found.</CommandEmpty>
+          <CommandGroup className="max-h-72 overflow-y-auto">
+            {packages.map((pkg) => (
               <CommandItem
-                key={o.value}
-                value={o.label}
+                key={pkg.id}
+                className="min-w-0"
+                value={`${pkg.name} ${pkg.subjectName ?? "any subject"} ${pkg.type} ${pkg.lessonType} ${pkg.billingPeriod}`}
                 onSelect={() => {
-                  onChange(o.value);
+                  onChange(pkg.id);
                   setOpen(false);
                 }}
               >
                 <CheckIcon
                   className={cn(
                     "mr-2 h-4 w-4 shrink-0",
-                    value === o.value ? "opacity-100" : "opacity-0",
+                    value === pkg.id ? "opacity-100" : "opacity-0",
                   )}
                 />
-                {o.label}
+                <PackageChoice pkg={pkg} />
               </CommandItem>
             ))}
           </CommandGroup>
@@ -152,11 +198,11 @@ export function NewEnrollmentForm({
   defaultStudentId,
   onSuccess,
 }: {
-  students: Student[];
-  tutors: Tutor[];
-  subjects: Subject[];
-  packages: Package[];
-  groups: Group[];
+  students: EnrollmentStudentOption[];
+  tutors: EnrollmentTutorOption[];
+  subjects: EnrollmentSubjectOption[];
+  packages: EnrollmentPackageOption[];
+  groups: EnrollmentGroupOption[];
   defaultStudentId?: string;
   onSuccess?: () => void;
 }) {
@@ -237,10 +283,6 @@ export function NewEnrollmentForm({
       ? tutors // package selected but no subject yet — show all
       : tutors;
 
-  const packageSubjectName = selectedPackage?.subjectId
-    ? subjects.find((s) => s.id === selectedPackage.subjectId)?.name
-    : null;
-
   async function onSubmit(values: CreateEnrollmentInput) {
     if (isGroupPackage && !values.groupId && !values.newGroupName) {
       form.setError("groupId", {
@@ -300,54 +342,13 @@ export function NewEnrollmentForm({
           render={({ field }) => (
             <FormItem>
               <FormLabel>Package</FormLabel>
-              <div className="flex items-center gap-2 flex-wrap">
-                <Select onValueChange={field.onChange} value={field.value}>
-                  <FormControl>
-                    <SelectTrigger className="flex-1">
-                      <SelectValue placeholder="Select a package" />
-                    </SelectTrigger>
-                  </FormControl>
-                  <SelectContent>
-                    {packages.map((p) => (
-                      <SelectItem key={p.id} value={p.id}>
-                        <span className="font-medium">{p.name}</span>
-                        <span className="ml-2 text-muted-foreground">
-                          ${p.basePrice}
-                          {p.type === "MONTHLY" ? "/period" : "/session"}
-                        </span>
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                {selectedPackage && (
-                  <div className="flex shrink-0 items-center gap-3 rounded-lg bg-muted px-3 py-2 text-xs text-muted-foreground">
-                    {selectedPackage.type === "MONTHLY" ? (
-                      <RepeatIcon className="h-3.5 w-3.5" />
-                    ) : (
-                      <ZapIcon className="h-3.5 w-3.5" />
-                    )}
-                    {selectedPackage.lessonType === "GROUP" ? (
-                      <UsersIcon className="h-3.5 w-3.5" />
-                    ) : (
-                      <UserRoundIcon className="h-3.5 w-3.5" />
-                    )}
-                    <span className="flex items-center gap-1">
-                      <CircleDollarSign className="h-3.5 w-3.5" />
-                      <span className="font-medium text-foreground">
-                        {selectedPackage.basePrice}
-                      </span>
-                    </span>
-                    {(packageSubjectName || isAnySubjectPackage) && (
-                      <span className="flex items-center gap-1">
-                        <BookOpenIcon className="h-3.5 w-3.5" />
-                        <span className="font-medium text-foreground">
-                          {packageSubjectName ?? "Any"}
-                        </span>
-                      </span>
-                    )}
-                  </div>
-                )}
-              </div>
+              <FormControl>
+                <PackagePicker
+                  value={field.value}
+                  onChange={field.onChange}
+                  packages={packages}
+                />
+              </FormControl>
               <FormMessage />
             </FormItem>
           )}
@@ -505,7 +506,12 @@ export function NewEnrollmentForm({
                   </div>
                 </FormLabel>
                 <FormControl>
-                  <Input type="date" {...field} />
+                  <DatePicker
+                    value={field.value}
+                    onChange={field.onChange}
+                    placeholder="Pick start date"
+                    clearable={false}
+                  />
                 </FormControl>
                 <FormMessage />
               </FormItem>
@@ -526,7 +532,11 @@ export function NewEnrollmentForm({
                   </div>
                 </FormLabel>
                 <FormControl>
-                  <Input type="date" {...field} />
+                  <DatePicker
+                    value={field.value}
+                    onChange={field.onChange}
+                    placeholder="Pick end date"
+                  />
                 </FormControl>
                 <FormMessage />
               </FormItem>

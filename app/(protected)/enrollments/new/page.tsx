@@ -43,9 +43,13 @@ export default async function NewEnrollmentPage({
           id: p.id,
           name: p.name,
           type: p.type,
+          billingPeriod: p.billingPeriod,
           lessonType: p.lessonType,
           basePrice: p.basePrice.toString(),
+          sessionsPerWeek: p.sessionsPerWeek,
+          durationMinutes: p.durationMinutes,
           subjectId: p.subjectId ?? null,
+          subjectName: p.subject?.name ?? null,
         }))}
         groups={groups.map((g) => ({
           id: g.id,

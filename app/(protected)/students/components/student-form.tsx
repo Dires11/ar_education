@@ -36,6 +36,7 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { CloudinaryImageUpload } from "@/components/cloudinary-image-upload";
+import { DatePicker } from "@/components/date-picker";
 import { GuardianAvatar, StudentAvatar } from "./entity-avatar";
 import { useCloudinaryCleanup } from "@/hooks/use-cloudinary-cleanup";
 
@@ -217,8 +218,8 @@ export function StudentForm({ onSuccess }: { onSuccess?: () => void }) {
 
   return (
     <Form {...form}>
-      <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-3">
-        <div className="space-y-3">
+      <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-1">
+        <div className="space-y-2">
           <div className="flex items-center justify-between">
             <div>
               <p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">
@@ -238,9 +239,6 @@ export function StudentForm({ onSuccess }: { onSuccess?: () => void }) {
               </div>
             )}
           </div>
-          <p className="text-xs text-muted-foreground">
-            <span className="text-destructive">*</span> Required fields
-          </p>
 
           <div className="grid grid-cols-2 gap-2 max-w-xs">
             <div
@@ -253,26 +251,28 @@ export function StudentForm({ onSuccess }: { onSuccess?: () => void }) {
         </div>
 
         {step === 1 && (
-          <section className="space-y-1 rounded-2xl border bg-card p-4 shadow-sm">
-            <CloudinaryImageUpload
-              value={studentAvatarUrl ?? ""}
-              publicId={studentAvatarPublicId ?? ""}
-              onChange={(url, publicId) => {
-                trackUpload(publicId);
-                form.setValue("avatarUrl", url, { shouldDirty: true });
-                form.setValue("avatarPublicId", publicId, {
-                  shouldDirty: true,
-                });
-              }}
-              label="Student photo"
-              fallback={
-                <StudentAvatar
-                  firstName={studentFirstName}
-                  lastName={studentLastName}
-                  className="h-full w-full rounded-none"
-                />
-              }
-            />
+          <section className="space-y-1">
+            <div className="pb-2 pt-2">
+              <CloudinaryImageUpload
+                value={studentAvatarUrl ?? ""}
+                publicId={studentAvatarPublicId ?? ""}
+                onChange={(url, publicId) => {
+                  trackUpload(publicId);
+                  form.setValue("avatarUrl", url, { shouldDirty: true });
+                  form.setValue("avatarPublicId", publicId, {
+                    shouldDirty: true,
+                  });
+                }}
+                label="Student photo"
+                fallback={
+                  <StudentAvatar
+                    firstName={studentFirstName}
+                    lastName={studentLastName}
+                    className="h-full w-full rounded-none after:rounded-none [&_[data-slot=avatar-fallback]]:rounded-none"
+                  />
+                }
+              />
+            </div>
 
             <div className="grid gap-3 sm:grid-cols-2">
               <FormField
@@ -311,7 +311,11 @@ export function StudentForm({ onSuccess }: { onSuccess?: () => void }) {
                   <FormItem>
                     <RequiredLabel>Date of Birth</RequiredLabel>
                     <FormControl>
-                      <Input type="date" {...field} value={field.value ?? ""} />
+                      <DatePicker
+                        value={field.value ?? ""}
+                        onChange={field.onChange}
+                        placeholder="Pick date of birth"
+                      />
                     </FormControl>
                     <FormMessage />
                   </FormItem>
@@ -363,7 +367,7 @@ export function StudentForm({ onSuccess }: { onSuccess?: () => void }) {
         )}
 
         {step === 2 && (
-          <section className="space-y-1 rounded-2xl border bg-card p-4 shadow-sm">
+          <section className="space-y-1">
             {isAdult ? (
               <div className="grid gap-3 sm:grid-cols-2">
                 <FormField
@@ -409,27 +413,29 @@ export function StudentForm({ onSuccess }: { onSuccess?: () => void }) {
               </div>
             ) : (
               <>
-                <CloudinaryImageUpload
-                  value={guardianAvatarUrl ?? ""}
-                  publicId={guardianAvatarPublicId ?? ""}
-                  onChange={(url, publicId) => {
-                    trackUpload(publicId);
-                    form.setValue("guardian.avatarUrl", url, {
-                      shouldDirty: true,
-                    });
-                    form.setValue("guardian.avatarPublicId", publicId, {
-                      shouldDirty: true,
-                    });
-                  }}
-                  label="Guardian photo"
-                  fallback={
-                    <GuardianAvatar
-                      firstName={guardianFirstName}
-                      lastName={guardianLastName}
-                      className="h-full w-full rounded-none"
-                    />
-                  }
-                />
+                <div className="pb-2">
+                  <CloudinaryImageUpload
+                    value={guardianAvatarUrl ?? ""}
+                    publicId={guardianAvatarPublicId ?? ""}
+                    onChange={(url, publicId) => {
+                      trackUpload(publicId);
+                      form.setValue("guardian.avatarUrl", url, {
+                        shouldDirty: true,
+                      });
+                      form.setValue("guardian.avatarPublicId", publicId, {
+                        shouldDirty: true,
+                      });
+                    }}
+                    label="Guardian photo"
+                    fallback={
+                      <GuardianAvatar
+                        firstName={guardianFirstName}
+                        lastName={guardianLastName}
+                        className="h-full w-full rounded-none after:rounded-none [&_[data-slot=avatar-fallback]]:rounded-none"
+                      />
+                    }
+                  />
+                </div>
                 <div className="grid gap-3 sm:grid-cols-2">
                   <FormField
                     control={form.control}
@@ -507,7 +513,7 @@ export function StudentForm({ onSuccess }: { onSuccess?: () => void }) {
                         value={field.value ?? "PARENT"}
                       >
                         <FormControl>
-                          <SelectTrigger>
+                          <SelectTrigger className="w-full">
                             <SelectValue />
                           </SelectTrigger>
                         </FormControl>
