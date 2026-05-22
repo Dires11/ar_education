@@ -49,7 +49,7 @@ export async function materializeSessions(
       .filter((session) => session.recurrenceRuleId)
       .map(
         (session) =>
-          `${session.recurrenceRuleId}:${format(session.scheduledFor, "yyyyMMddHHmm")}`
+          `${session.recurrenceRuleId}:${format(session.scheduledFor, "yyyyMMdd")}`
       )
   );
   const existingWeeklySessions = await getNonCancelledEnrollmentSessionsInRange(
@@ -80,7 +80,7 @@ export async function materializeSessions(
       if (rule.endsOn && current > new Date(rule.endsOn)) break;
 
       const scheduledFor = combineDateAndTime(current, rule.startTime);
-      const slotKey = `${rule.id}:${format(scheduledFor, "yyyyMMddHHmm")}`;
+      const slotKey = `${rule.id}:${format(scheduledFor, "yyyyMMdd")}`;
       const weekKey = getEnrollmentWeekKey(enrollmentId, scheduledFor);
       const sessionsPerWeek = enrollment.package.sessionsPerWeek ?? null;
 
@@ -162,7 +162,7 @@ export async function materializeGroupSessions(
   const coveredSlots = new Set(
     existingSessions
       .filter((s) => s.recurrenceRuleId)
-      .map((s) => `${s.recurrenceRuleId}:${format(s.scheduledFor, "yyyyMMddHHmm")}`)
+      .map((s) => `${s.recurrenceRuleId}:${format(s.scheduledFor, "yyyyMMdd")}`)
   );
 
   const sessionsToCreate: Array<{
@@ -183,7 +183,7 @@ export async function materializeGroupSessions(
     while (current <= toDate) {
       if (rule.endsOn && current > new Date(rule.endsOn)) break;
       const scheduledFor = combineDateAndTime(current, rule.startTime);
-      const slotKey = `${rule.id}:${format(scheduledFor, "yyyyMMddHHmm")}`;
+      const slotKey = `${rule.id}:${format(scheduledFor, "yyyyMMdd")}`;
       if (!coveredSlots.has(slotKey)) {
         sessionsToCreate.push({
           tutorId: rule.group.tutorId,
