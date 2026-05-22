@@ -9,6 +9,8 @@ import { listGroups } from "@/lib/data/groups";
 import { format, startOfMonth, parse } from "date-fns";
 import { ScheduleView } from "./components/schedule-view";
 
+export const dynamic = "force-dynamic";
+
 export default async function SchedulePage({
   searchParams,
 }: {
