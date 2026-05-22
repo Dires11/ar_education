@@ -27,15 +27,20 @@ import {
 import {
   ChevronLeftIcon,
   ChevronRightIcon,
+  ChevronDownIcon,
+  ChevronUpIcon,
   XIcon,
   PencilIcon,
   Trash2Icon,
   CheckIcon,
   BanIcon,
   UserXIcon,
+  UserIcon,
+  UsersIcon,
   RepeatIcon,
   ClockIcon,
   GraduationCapIcon,
+  BookOpenIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
@@ -70,6 +75,7 @@ export type CalendarSession = {
   }>;
   enrollmentId?: string | null;
   groupId?: string | null;
+  groupName?: string | null;
   recurrenceRuleId?: string | null;
   virtual?: boolean;
   ruleId?: string | null;
@@ -108,6 +114,27 @@ function resolveSessionColor(session: CalendarSession): string {
   return session.color ?? hashToColor(session.enrollmentId ?? session.id);
 }
 
+function hexToRgb(hex: string): [number, number, number] {
+  const n = parseInt(hex.replace("#", ""), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+function darkenHex(hex: string, amount = 0.35): string {
+  const [r, g, b] = hexToRgb(hex);
+  return `rgb(${Math.round(r * (1 - amount))}, ${Math.round(g * (1 - amount))}, ${Math.round(b * (1 - amount))})`;
+}
+
+function pillTextColor(hex: string): string {
+  const [r, g, b] = hexToRgb(hex);
+  // Relative luminance per WCAG
+  const toLinear = (c: number) => {
+    const s = c / 255;
+    return s <= 0.04045 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+  };
+  const L = 0.2126 * toLinear(r) + 0.7152 * toLinear(g) + 0.0722 * toLinear(b);
+  return L > 0.179 ? "#000000" : "#ffffff";
+}
+
 const STATUS_COLORS: Record<string, string> = {
   SCHEDULED: "bg-sky-50 border-sky-200 text-sky-900",
   RESCHEDULED: "bg-violet-50 border-violet-200 text-violet-900",
@@ -139,13 +166,20 @@ function getSessionPillStyle(session: CalendarSession): {
   const statusBorder = STATUS_BORDER_HEX[session.status];
   const isVirtual = !!session.virtual;
   const isUnpaid = session.isPaid === false;
-  const leftColor = isUnpaid ? "#f59e0b" : (statusBorder ?? enrollmentColor);
+  const leftColor = isUnpaid ? "#f59e0b" : (statusBorder ?? darkenHex(enrollmentColor));
+  // Blend enrollment color at ~8% on white to get the actual rendered background
+  const [r, g, b] = hexToRgb(enrollmentColor);
+  const alpha = 0x15 / 0xff;
+  const blended = `#${[r, g, b]
+    .map((c) => Math.round(255 * (1 - alpha) + c * alpha).toString(16).padStart(2, "0"))
+    .join("")}`;
+  const textColor = pillTextColor(blended);
 
   return {
     className: isVirtual || isUnpaid ? "border-dashed" : "",
     style: {
       backgroundColor: enrollmentColor + "15",
-      color: enrollmentColor,
+      color: textColor,
       borderColor: enrollmentColor + "50",
       borderLeftColor: leftColor,
       borderLeftWidth: "3px",
@@ -298,6 +332,15 @@ export function MonthCalendar({
   );
   const [editingRecurring, setEditingRecurring] =
     useState<CalendarSession | null>(null);
+  const [expandedCards, setExpandedCards] = useState<Set<string>>(new Set());
+
+  function toggleExpanded(id: string) {
+    setExpandedCards((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
   const [editingRecurringRules, setEditingRecurringRules] = useState<
     GroupRule[]
   >([]);
@@ -568,17 +611,11 @@ export function MonthCalendar({
                         style={getSessionPillStyle(session).style}
                       >
                         {format(new Date(session.scheduledFor), "h:mm")}{" "}
-                        {session.subject.name}
-                        {(session.attendance[0]?.student.lastName ??
-                        session.enrollmentStudent?.lastName) ? (
-                          <>
-                            {" "}
-                            ·{" "}
-                            {session.attendance[0]?.student.lastName ??
-                              session.enrollmentStudent?.lastName}
-                          </>
-                        ) : null}
-                        {session.isPaid === false && " · unpaid"}
+                        {session.groupId
+                          ? (session.groupName ?? "Group")
+                          : (session.attendance[0]?.student.lastName ??
+                            session.enrollmentStudent?.lastName ??
+                            session.subject.name)}
                       </div>
                     ))}
                     {overflow > 0 && (
@@ -651,15 +688,45 @@ export function MonthCalendar({
                               </span>
                             </div>
                           </div>
-                          <div className="font-medium">
-                            {session.subject.name}
+                          <div className="flex items-center gap-1.5">
+                            <BookOpenIcon className="h-3.5 w-3.5 opacity-50 shrink-0" />
+                            <span className="font-medium">{session.subject.name}</span>
                           </div>
-                          <div className="text-[12px] opacity-75">
-                            {getStudentNames(session)}
+                          <div className="flex items-center gap-1.5 text-[12px] opacity-70">
+                            <GraduationCapIcon className="h-3.5 w-3.5 shrink-0" />
+                            <span>{session.tutor.firstName} {session.tutor.lastName}</span>
                           </div>
-                          <div className="text-[12px] opacity-75">
-                            {session.tutor.firstName} {session.tutor.lastName}
-                          </div>
+                          {session.groupId ? (
+                            <div>
+                              <button
+                                className="flex w-full items-center gap-1.5 text-[12px] opacity-70 text-left"
+                                onClick={(e) => { e.stopPropagation(); toggleExpanded(session.id); }}
+                              >
+                                <UsersIcon className="h-3.5 w-3.5 shrink-0" />
+                                <span className="font-medium">{session.groupName ?? "Group"}</span>
+                                <span className="ml-auto rounded-full bg-black/10 px-1.5 py-0.5 text-[10px]">
+                                  {session.attendance.length}
+                                </span>
+                                {expandedCards.has(session.id)
+                                  ? <ChevronUpIcon className="h-3 w-3 shrink-0" />
+                                  : <ChevronDownIcon className="h-3 w-3 shrink-0" />}
+                              </button>
+                              {expandedCards.has(session.id) && (
+                                <div className="mt-1 pl-5 space-y-0.5">
+                                  {session.attendance.map((a, i) => (
+                                    <div key={i} className="text-[11px] opacity-60">
+                                      {a.student.firstName} {a.student.lastName}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-1.5 text-[12px] opacity-70">
+                              <UserIcon className="h-3.5 w-3.5 shrink-0" />
+                              <span>{getStudentNames(session)}</span>
+                            </div>
+                          )}
                           <div className="pt-1 flex gap-1.5">
                             <Button
                               size="sm"
@@ -689,7 +756,7 @@ export function MonthCalendar({
                             backgroundColor:
                               resolveSessionColor(session) + "15",
                             borderColor: resolveSessionColor(session) + "50",
-                            color: resolveSessionColor(session),
+                            color: "#111827",
                             borderLeftColor:
                               STATUS_BORDER_HEX[session.status] ??
                               resolveSessionColor(session),
@@ -713,15 +780,45 @@ export function MonthCalendar({
                               </span>
                             </div>
                           </div>
-                          <div className="font-medium">
-                            {session.subject.name}
+                          <div className="flex items-center gap-1.5">
+                            <BookOpenIcon className="h-3.5 w-3.5 opacity-50 shrink-0" />
+                            <span className="font-medium">{session.subject.name}</span>
                           </div>
-                          <div className="text-[12px] opacity-75">
-                            {getStudentNames(session)}
+                          <div className="flex items-center gap-1.5 text-[12px] opacity-70">
+                            <GraduationCapIcon className="h-3.5 w-3.5 shrink-0" />
+                            <span>{session.tutor.firstName} {session.tutor.lastName}</span>
                           </div>
-                          <div className="text-[12px] opacity-75">
-                            {session.tutor.firstName} {session.tutor.lastName}
-                          </div>
+                          {session.groupId ? (
+                            <div>
+                              <button
+                                className="flex w-full items-center gap-1.5 text-[12px] opacity-70 text-left"
+                                onClick={(e) => { e.stopPropagation(); toggleExpanded(session.id); }}
+                              >
+                                <UsersIcon className="h-3.5 w-3.5 shrink-0" />
+                                <span className="font-medium">{session.groupName ?? "Group"}</span>
+                                <span className="ml-auto rounded-full bg-black/10 px-1.5 py-0.5 text-[10px]">
+                                  {session.attendance.length}
+                                </span>
+                                {expandedCards.has(session.id)
+                                  ? <ChevronUpIcon className="h-3 w-3 shrink-0" />
+                                  : <ChevronDownIcon className="h-3 w-3 shrink-0" />}
+                              </button>
+                              {expandedCards.has(session.id) && (
+                                <div className="mt-1 pl-5 space-y-0.5">
+                                  {session.attendance.map((a, i) => (
+                                    <div key={i} className="text-[11px] opacity-60">
+                                      {a.student.firstName} {a.student.lastName}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-1.5 text-[12px] opacity-70">
+                              <UserIcon className="h-3.5 w-3.5 shrink-0" />
+                              <span>{getStudentNames(session)}</span>
+                            </div>
+                          )}
 
                           {/* Status action buttons — only for SCHEDULED */}
                           {session.status === "SCHEDULED" && (

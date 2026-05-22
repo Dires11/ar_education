@@ -33,7 +33,7 @@ export async function getSessionsByMonth(monthStart: Date) {
       tutor: true,
       subject: true,
       attendance: { include: { student: true } },
-      recurrenceRule: true,
+      recurrenceRule: { include: { group: true } },
       enrollment: { include: { package: true, student: true } },
     },
     orderBy: { scheduledFor: "asc" },

@@ -247,6 +247,7 @@ export async function fetchScheduleForMonth(monthParam: string) {
     })),
     enrollmentId: s.enrollmentId,
     groupId: s.recurrenceRule?.groupId ?? null,
+    groupName: s.recurrenceRule?.group?.name ?? null,
     recurrenceRuleId: s.recurrenceRuleId,
     virtual: false as const,
     ruleId: s.recurrenceRuleId,
@@ -263,7 +264,7 @@ export async function fetchScheduleForMonth(monthParam: string) {
     ...v,
     notes: null as string | null,
     recurrenceRuleId: null as string | null,
-    isPaid: paidMonths.has(`${v.enrollmentId}:${format(new Date(v.scheduledFor), "yyyy-MM")}`),
+    isPaid: v.enrollmentId ? paidMonths.has(`${v.enrollmentId}:${format(new Date(v.scheduledFor), "yyyy-MM")}`) : null,
   }));
 
   return { sessions, virtual };

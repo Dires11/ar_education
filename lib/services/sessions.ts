@@ -26,6 +26,7 @@ import {
   getSessionsByMonth,
   getRecurrenceRuleById,
   getRecurrenceRulesForMonth,
+  getGroupRecurrenceRulesForMonth,
   getNonCancelledEnrollmentSessionsInRange,
   autoCompletePassedSessions,
   updateRecurrenceRulesColorForEnrollment,
@@ -66,7 +67,9 @@ export type VirtualSession = {
   attendance: Array<{ student: { firstName: string; lastName: string } }>;
   virtual: true;
   ruleId: string;
-  enrollmentId: string;
+  enrollmentId: string | null;
+  groupId?: string | null;
+  groupName?: string | null;
   // Rule params — needed for edit dialog
   startTime: string;
   dayOfWeek: number;
@@ -374,6 +377,65 @@ export async function getVirtualSessionsForMonth(
         if (status === "VIRTUAL_UPCOMING") {
           plannedPerEnrollmentWeek.set(weekKey, weekCount + 1);
         }
+      }
+
+      current = addDays(current, rule.intervalWeeks * 7);
+    }
+  }
+
+  // ─── Group virtual sessions ────────────────────────────────────────────────
+  const groupRules = await getGroupRecurrenceRulesForMonth(monthStart);
+
+  for (const rule of groupRules) {
+    if (!rule.group) continue;
+
+    let current = new Date(rule.startsOn);
+    while (current.getDay() !== rule.dayOfWeek) {
+      current = addDays(current, 1);
+    }
+    while (current < monthStart) {
+      current = addDays(current, rule.intervalWeeks * 7);
+    }
+
+    while (current <= monthEnd) {
+      if (rule.endsOn && current > new Date(rule.endsOn)) break;
+
+      const scheduledFor = combineDateAndTime(current, rule.startTime);
+
+      const hasReal = realSessions.some(
+        (s) =>
+          s.recurrenceRuleId === rule.id &&
+          isSameDay(new Date(s.scheduledFor), scheduledFor),
+      );
+
+      if (!hasReal && !isBefore(scheduledFor, today)) {
+        virtual.push({
+          id: `virtual_${rule.id}_${format(scheduledFor, "yyyyMMddHHmm")}`,
+          scheduledFor: scheduledFor.toISOString(),
+          durationMinutes: rule.durationMinutes,
+          status: "VIRTUAL_UPCOMING",
+          room: rule.room,
+          color: rule.color ?? null,
+          tutor: {
+            firstName: rule.group.tutor.firstName,
+            lastName: rule.group.tutor.lastName,
+          },
+          subject: { name: rule.group.subject.name },
+          attendance: rule.group.enrollments.map((e) => ({
+            student: {
+              firstName: e.student.firstName,
+              lastName: e.student.lastName,
+            },
+          })),
+          virtual: true,
+          ruleId: rule.id,
+          enrollmentId: null,
+          groupId: rule.groupId,
+          groupName: rule.group.name,
+          startTime: rule.startTime,
+          dayOfWeek: rule.dayOfWeek,
+          intervalWeeks: rule.intervalWeeks,
+        });
       }
 
       current = addDays(current, rule.intervalWeeks * 7);

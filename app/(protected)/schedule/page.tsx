@@ -68,6 +68,7 @@ export default async function SchedulePage({
         })),
         enrollmentId: s.enrollmentId,
         groupId: s.recurrenceRule?.groupId ?? null,
+        groupName: s.recurrenceRule?.group?.name ?? null,
         recurrenceRuleId: s.recurrenceRuleId,
         virtual: false as const,
         ruleId: s.recurrenceRuleId,
@@ -81,7 +82,7 @@ export default async function SchedulePage({
       }))}
       virtualSessions={virtualSessions.map((v) => ({
         ...v,
-        isPaid: paidMonths.has(`${v.enrollmentId}:${format(new Date(v.scheduledFor), "yyyy-MM")}`),
+        isPaid: v.enrollmentId ? paidMonths.has(`${v.enrollmentId}:${format(new Date(v.scheduledFor), "yyyy-MM")}`) : null,
       }))}
       tutors={tutorsData.tutors.map((t) => ({
         id: t.id,
