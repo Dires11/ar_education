@@ -49,7 +49,7 @@ export async function getDashboardStats() {
 
     for (const enrollment of student.enrollments) {
       const effectivePrice = applyDiscounts(
-        enrollment.package.basePrice,
+        enrollment.customPriceOverride ?? enrollment.package.basePrice,
         enrollment.discounts
       );
 

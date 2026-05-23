@@ -12,7 +12,7 @@ import {
   createPaymentSchema,
   type CreatePaymentInput,
 } from "@/lib/validators/payments";
-import { getStudentBalance } from "@/lib/services/pricing";
+import { getStudentBalance, applyDiscounts } from "@/lib/services/pricing";
 import { sendEmail } from "@/lib/utils/email";
 import { substitutePlaceholders } from "@/lib/services/emails";
 
@@ -76,6 +76,7 @@ export async function getUpcomingPaymentDues(): Promise<PaymentDue[]> {
       },
       package: true,
       subject: true,
+      discounts: true,
       payments: {
         where: { coversMonth: { not: null } },
         select: { coversMonth: true },
@@ -90,8 +91,9 @@ export async function getUpcomingPaymentDues(): Promise<PaymentDue[]> {
     const recipientEmail =
       student.guardians[0]?.guardian.email ?? student.email ?? null;
     const studentName = `${student.firstName} ${student.lastName}`;
-    const amount = (
-      enrollment.customPriceOverride ?? enrollment.package.basePrice
+    const amount = applyDiscounts(
+      enrollment.customPriceOverride ?? enrollment.package.basePrice,
+      enrollment.discounts
     ).toString();
     const periodMonths = billingPeriodMonths(enrollment.package.billingPeriod);
     const enrollmentStart = startOfMonth(new Date(enrollment.startDate));
@@ -170,6 +172,7 @@ export async function sendPaymentReminderEmail(
         package: true,
         subject: true,
         tutor: true,
+        discounts: true,
       },
     }),
     prisma.emailTemplate.findFirst({
@@ -187,8 +190,9 @@ export async function sendPaymentReminderEmail(
   if (!recipientEmail)
     throw new Error("No email address found for this student");
 
-  const amount = (
-    enrollment.customPriceOverride ?? enrollment.package.basePrice
+  const amount = applyDiscounts(
+    enrollment.customPriceOverride ?? enrollment.package.basePrice,
+    enrollment.discounts
   ).toString();
   const monthLabel = format(new Date(month + "-01"), "MMMM yyyy");
 
