@@ -1,4 +1,4 @@
-import { addDays } from "date-fns";
+import { addDays, endOfDay, startOfDay } from "date-fns";
 import {
   getSessionsForDay,
   getActiveStudentCount,
@@ -9,6 +9,10 @@ import {
   getMonthlyRevenue,
 } from "@/lib/data/dashboard";
 import { applyDiscounts } from "@/lib/services/pricing";
+import {
+  materializeSessions,
+  materializeGroupSessions,
+} from "@/lib/services/session-materialization";
 import { Prisma } from "../../generated/prisma";
 
 function billingPeriodMonths(period: "MONTHLY" | "THREE_MONTHS" | "YEARLY") {
@@ -20,6 +24,13 @@ function billingPeriodMonths(period: "MONTHLY" | "THREE_MONTHS" | "YEARLY") {
 export async function getDashboardStats() {
   const today = new Date();
   const tomorrow = addDays(today, 1);
+
+  // Materialize today's + tomorrow's recurring sessions before querying,
+  // so the dashboard is accurate even without a prior schedule-page visit.
+  await Promise.all([
+    materializeSessions(startOfDay(today), endOfDay(tomorrow)),
+    materializeGroupSessions(startOfDay(today), endOfDay(tomorrow)),
+  ]);
 
   const [
     todaySessions,
