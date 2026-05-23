@@ -51,7 +51,7 @@ export function RevenueChart({ data }: RevenueChartProps) {
         <ChartTooltip
           content={
             <ChartTooltipContent
-              formatter={(value) => [`$${Number(value).toFixed(2)}`, "Revenue"]}
+              formatter={(value) => [`$${Number(value).toFixed(2)}`, ""]}
             />
           }
         />

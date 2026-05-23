@@ -18,7 +18,7 @@ export async function getSessionsForDay(date: Date) {
         gte: startOfDay(date),
         lte: endOfDay(date),
       },
-      status: "SCHEDULED",
+      status: { in: ["SCHEDULED", "COMPLETED"] },
     },
     include: {
       tutor: { select: { firstName: true, lastName: true } },

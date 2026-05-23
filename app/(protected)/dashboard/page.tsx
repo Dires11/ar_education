@@ -1,4 +1,6 @@
 import Link from "next/link";
+
+export const dynamic = "force-dynamic";
 import { getDashboardStats } from "@/lib/services/dashboard";
 import {
   Card,
