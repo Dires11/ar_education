@@ -195,10 +195,12 @@ export function NewSessionForm({
   const recurringEnrollment = enrollments.find(
     (e) => e.id === recurringEnrollmentId,
   );
+  const recurringGroup = groups.find((g) => g.id === recurringGroupId);
   const selectedAdHocGroup = groups.find((g) => g.id === adHocGroupId);
   const hasAutoFilledScheduleContext =
     !!selectedEnrollment || !!selectedAdHocGroup;
   const packageLimit = recurringEnrollment?.sessionsPerWeek ?? null;
+  const groupPackageLimit = recurringGroup?.sessionsPerWeek ?? null;
   const daysOverLimit =
     packageLimit !== null &&
     activeRules.length + recurringDaysOfWeek.length > packageLimit;
@@ -416,6 +418,7 @@ export function NewSessionForm({
               recurringColor={recurringColor}
               setRecurringColor={setRecurringColor}
               packageLimit={packageLimit}
+              groupPackageLimit={groupPackageLimit}
               daysOverLimit={daysOverLimit}
               recurringExceedsLimit={recurringExceedsLimit}
               activeRules={activeRules}

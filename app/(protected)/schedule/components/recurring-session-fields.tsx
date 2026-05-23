@@ -63,6 +63,7 @@ export function RecurringSessionFields({
   recurringColor,
   setRecurringColor,
   packageLimit,
+  groupPackageLimit,
   daysOverLimit,
   recurringExceedsLimit,
   activeRules,
@@ -89,6 +90,7 @@ export function RecurringSessionFields({
   recurringColor: string;
   setRecurringColor: (color: string) => void;
   packageLimit: number | null | undefined;
+  groupPackageLimit: number | null | undefined;
   daysOverLimit: boolean;
   recurringExceedsLimit: boolean;
   activeRules: ActiveEnrollmentRule[];
@@ -462,7 +464,7 @@ export function RecurringSessionFields({
             form.formState.isSubmitting ||
             (!recurringGroupId && recurringExceedsLimit) ||
             (!recurringGroupId && packageLimit !== null && activeRules.length >= packageLimit) ||
-            (!!recurringGroupId && activeGroupRules.length > 0)
+            (!!recurringGroupId && groupPackageLimit !== null && activeGroupRules.length >= groupPackageLimit)
           }
           className="w-full"
         >
