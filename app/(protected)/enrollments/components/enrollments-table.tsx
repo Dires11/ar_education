@@ -35,7 +35,9 @@ type EnrollmentRow = {
   package: {
     name: string;
     basePrice: string;
+    lessonType: string;
   };
+  group: { name: string } | null;
   tutor: {
     firstName: string;
     lastName: string;
@@ -112,8 +114,21 @@ export function EnrollmentsTable({
                 <TableCell className="text-sm">
                   {enrollment.subject.name}
                 </TableCell>
-                <TableCell className="text-sm text-muted-foreground">
-                  {enrollment.package.name}
+                <TableCell className="text-sm">
+                  <div className="space-y-0.5">
+                    <p className="text-muted-foreground">
+                      {enrollment.package.name}
+                    </p>
+                    {enrollment.package.lessonType === "GROUP" &&
+                      enrollment.group && (
+                        <p className="text-xs text-muted-foreground">
+                          Group:{" "}
+                          <span className="font-medium text-foreground">
+                            {enrollment.group.name}
+                          </span>
+                        </p>
+                      )}
+                  </div>
                 </TableCell>
                 <TableCell className="text-sm">
                   {enrollment.tutor.firstName} {enrollment.tutor.lastName}

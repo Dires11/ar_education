@@ -22,7 +22,6 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { CloudinaryImageUpload } from "@/components/cloudinary-image-upload";
-import { DatePicker } from "@/components/date-picker";
 import { StudentAvatar } from "./entity-avatar";
 import { useCloudinaryCleanup } from "@/hooks/use-cloudinary-cleanup";
 
@@ -120,10 +119,11 @@ export function StudentEditForm({
               <FormItem>
                 <FormLabel>Date of Birth</FormLabel>
                 <FormControl>
-                  <DatePicker
+                  <input
+                    type="date"
                     value={field.value ?? ""}
                     onChange={field.onChange}
-                    placeholder="Pick date of birth"
+                    className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
                   />
                 </FormControl>
                 <FormMessage />

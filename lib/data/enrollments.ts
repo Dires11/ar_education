@@ -18,6 +18,7 @@ export async function listEnrollments(filters?: {
       tutor: true,
       subject: true,
       discounts: true,
+      group: true,
     },
     orderBy: { createdAt: "desc" },
   });

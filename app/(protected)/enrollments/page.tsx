@@ -120,7 +120,9 @@ export default async function EnrollmentsPage() {
             package: {
               name: enrollment.package.name,
               basePrice: enrollment.package.basePrice.toString(),
+              lessonType: enrollment.package.lessonType,
             },
+            group: enrollment.group ? { name: enrollment.group.name } : null,
             tutor: {
               firstName: enrollment.tutor.firstName,
               lastName: enrollment.tutor.lastName,
