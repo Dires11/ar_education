@@ -100,6 +100,8 @@ export function RecurringSessionFields({
 }) {
   const hasExistingRecurring = activeRules.length > 0;
   const effectiveLimit = recurringGroupId ? groupPackageLimit : packageLimit;
+  const existingRuleCount = recurringGroupId ? activeGroupRules.length : activeRules.length;
+  const totalDays = existingRuleCount + recurringDaysOfWeek.length;
 
   return (
     <Form {...form}>
@@ -388,17 +390,38 @@ export function RecurringSessionFields({
             <div className="flex items-start gap-2">
               <AlertTriangleIcon className="mt-0.5 h-3.5 w-3.5 shrink-0" />
               <p>
-                You selected{" "}
-                <span className="font-semibold">
-                  {recurringDaysOfWeek.length} days/week
-                </span>{" "}
-                but the package only allows{" "}
-                <span className="font-semibold">
-                  {effectiveLimit} day{effectiveLimit !== 1 ? "s" : ""}/week
-                </span>.
+                {existingRuleCount > 0 ? (
+                  <>
+                    You already have{" "}
+                    <span className="font-semibold">
+                      {existingRuleCount} day{existingRuleCount !== 1 ? "s" : ""}
+                    </span>{" "}
+                    scheduled. Adding{" "}
+                    <span className="font-semibold">
+                      {recurringDaysOfWeek.length} more
+                    </span>{" "}
+                    would total{" "}
+                    <span className="font-semibold">{totalDays} days/week</span>,
+                    but the package only allows{" "}
+                    <span className="font-semibold">
+                      {effectiveLimit} day{effectiveLimit !== 1 ? "s" : ""}/week
+                    </span>.
+                  </>
+                ) : (
+                  <>
+                    You selected{" "}
+                    <span className="font-semibold">
+                      {recurringDaysOfWeek.length} days/week
+                    </span>{" "}
+                    but the package only allows{" "}
+                    <span className="font-semibold">
+                      {effectiveLimit} day{effectiveLimit !== 1 ? "s" : ""}/week
+                    </span>.
+                  </>
+                )}
                 {recurEndDate
                   ? " This schedule will stop on the selected end date, so it stays temporary."
-                  : " Keep the weekly schedule within the package limit, or make this extra schedule temporary."}
+                  : " Reduce the selection or make this extra schedule temporary."}
               </p>
             </div>
             {!recurEndDate && (
