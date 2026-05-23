@@ -151,7 +151,7 @@ export function RecurringSessionFields({
               <AlertTriangleIcon className="mt-0.5 h-3.5 w-3.5 shrink-0" />
               <div>
                 <p className="font-medium">
-                  {packageLimit !== null && activeRules.length >= packageLimit
+                  {packageLimit != null && activeRules.length >= packageLimit
                     ? "Package limit reached"
                     : "Existing recurring schedule"}
                 </p>
@@ -164,7 +164,7 @@ export function RecurringSessionFields({
                       </span>
                     </span>
                   ))}
-                  {packageLimit !== null && (
+                  {packageLimit != null && (
                     <span className="ml-1">
                       ({activeRules.length}/{packageLimit} days/week used)
                     </span>
@@ -487,8 +487,8 @@ export function RecurringSessionFields({
           disabled={
             form.formState.isSubmitting ||
             (!recurringGroupId && recurringExceedsLimit) ||
-            (!recurringGroupId && packageLimit !== null && activeRules.length >= packageLimit) ||
-            (!!recurringGroupId && groupPackageLimit !== null && activeGroupRules.length >= groupPackageLimit)
+            (!recurringGroupId && packageLimit != null && activeRules.length >= packageLimit) ||
+            (!!recurringGroupId && groupPackageLimit != null && activeGroupRules.length >= groupPackageLimit)
           }
           className="w-full"
         >
