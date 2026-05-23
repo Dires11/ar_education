@@ -61,7 +61,6 @@ export function ScheduleView({
   function navigate(newMonth: Date) {
     setSelectedDay(null);
     const param = format(newMonth, "yyyy-MM-dd");
-    window.history.replaceState(null, "", `/schedule?month=${param}`);
     const version = ++navVersion.current;
     startTransition(async () => {
       const data = await fetchScheduleForMonth(param);
