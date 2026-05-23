@@ -200,7 +200,8 @@ export function NewSessionForm({
     !!selectedEnrollment || !!selectedAdHocGroup;
   const packageLimit = recurringEnrollment?.sessionsPerWeek ?? null;
   const daysOverLimit =
-    packageLimit !== null && recurringDaysOfWeek.length > packageLimit;
+    packageLimit !== null &&
+    activeRules.length + recurringDaysOfWeek.length > packageLimit;
   const recurringExceedsLimit = daysOverLimit && !recurEndDate;
 
   // ── Sessions remaining for selected enrollment + date ─────────────

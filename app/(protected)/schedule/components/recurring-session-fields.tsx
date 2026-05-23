@@ -145,7 +145,11 @@ export function RecurringSessionFields({
             <div className="flex items-start gap-2">
               <AlertTriangleIcon className="mt-0.5 h-3.5 w-3.5 shrink-0" />
               <div>
-                <p className="font-medium">Recurring schedule already exists</p>
+                <p className="font-medium">
+                  {packageLimit !== null && activeRules.length >= packageLimit
+                    ? "Package limit reached"
+                    : "Existing recurring schedule"}
+                </p>
                 <p className="mt-0.5 text-orange-800">
                   {activeRules.map((rule, index) => (
                     <span key={rule.id}>
@@ -155,6 +159,11 @@ export function RecurringSessionFields({
                       </span>
                     </span>
                   ))}
+                  {packageLimit !== null && (
+                    <span className="ml-1">
+                      ({activeRules.length}/{packageLimit} days/week used)
+                    </span>
+                  )}
                 </p>
               </div>
             </div>
@@ -452,7 +461,7 @@ export function RecurringSessionFields({
           disabled={
             form.formState.isSubmitting ||
             (!recurringGroupId && recurringExceedsLimit) ||
-            (!recurringGroupId && hasExistingRecurring) ||
+            (!recurringGroupId && packageLimit !== null && activeRules.length >= packageLimit) ||
             (!!recurringGroupId && activeGroupRules.length > 0)
           }
           className="w-full"
