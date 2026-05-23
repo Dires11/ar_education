@@ -6,21 +6,13 @@ import { listTutors } from "@/lib/data/tutors";
 import { listSubjects } from "@/lib/data/subjects";
 import { listEnrollments } from "@/lib/data/enrollments";
 import { listGroups } from "@/lib/data/groups";
-import { format, startOfMonth, parse } from "date-fns";
+import { format, startOfMonth } from "date-fns";
 import { ScheduleView } from "./components/schedule-view";
 
 export const dynamic = "force-dynamic";
 
-export default async function SchedulePage({
-  searchParams,
-}: {
-  searchParams: Promise<{ month?: string }>;
-}) {
-  const params = await searchParams;
-
-  const monthStart = params.month
-    ? startOfMonth(parse(params.month, "yyyy-MM-dd", new Date()))
-    : startOfMonth(new Date());
+export default async function SchedulePage() {
+  const monthStart = startOfMonth(new Date());
 
   autoCompletePassedSessions().catch(console.error); // fire-and-forget
 
