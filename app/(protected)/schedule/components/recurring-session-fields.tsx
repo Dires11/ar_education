@@ -99,6 +99,7 @@ export function RecurringSessionFields({
   onSubmit: (values: CreateRecurrenceInput) => void | Promise<void>;
 }) {
   const hasExistingRecurring = activeRules.length > 0;
+  const effectiveLimit = recurringGroupId ? groupPackageLimit : packageLimit;
 
   return (
     <Form {...form}>
@@ -393,7 +394,7 @@ export function RecurringSessionFields({
                 </span>{" "}
                 but the package only allows{" "}
                 <span className="font-semibold">
-                  {packageLimit} day{packageLimit !== 1 ? "s" : ""}/week
+                  {effectiveLimit} day{effectiveLimit !== 1 ? "s" : ""}/week
                 </span>.
                 {recurEndDate
                   ? " This schedule will stop on the selected end date, so it stays temporary."
@@ -409,10 +410,10 @@ export function RecurringSessionFields({
                   className="h-7 border-amber-300 bg-white/70 px-2 text-[11px] text-amber-900 hover:bg-white"
                   onClick={() => {
                     const current = form.getValues("daysOfWeek");
-                    form.setValue("daysOfWeek", current.slice(0, packageLimit!));
+                    form.setValue("daysOfWeek", current.slice(0, effectiveLimit!));
                   }}
                 >
-                  Trim to {packageLimit} day{packageLimit !== 1 ? "s" : ""}
+                  Trim to {effectiveLimit} day{effectiveLimit !== 1 ? "s" : ""}
                 </Button>
                 <Button
                   type="button"
