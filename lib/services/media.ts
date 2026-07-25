@@ -5,7 +5,7 @@ import { isCloudinaryImageReferenced } from "@/lib/data/media";
 
 export const AVATAR_FOLDER = "ar_education/avatars";
 
-export function createCloudinaryUploadSignature() {
+function getCloudinaryConfig() {
   const cloudName =
     process.env.CLOUDINARY_CLOUD_NAME ??
     process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME;
@@ -18,6 +18,11 @@ export function createCloudinaryUploadSignature() {
     throw new Error("Cloudinary environment variables are not configured");
   }
 
+  return { cloudName, apiKey, apiSecret };
+}
+
+export function createCloudinaryUploadSignature() {
+  const { cloudName, apiKey, apiSecret } = getCloudinaryConfig();
   const timestamp = Math.floor(Date.now() / 1000);
   const signature = cloudinary.utils.api_sign_request(
     { folder: AVATAR_FOLDER, timestamp },
@@ -34,15 +39,7 @@ export function createCloudinaryUploadSignature() {
 }
 
 export async function deleteCloudinaryImage(publicId: string) {
-  const cloudName =
-    process.env.CLOUDINARY_CLOUD_NAME ??
-    process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME;
-  const apiKey =
-    process.env.CLOUDINARY_API_KEY ??
-    process.env.NEXT_PUBLIC_CLOUDINARY_API_KEY;
-  const apiSecret = process.env.CLOUDINARY_API_SECRET;
-  if (!cloudName || !apiKey || !apiSecret) return;
-
+  const { cloudName, apiKey, apiSecret } = getCloudinaryConfig();
   cloudinary.config({
     cloud_name: cloudName,
     api_key: apiKey,

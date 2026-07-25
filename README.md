@@ -29,6 +29,9 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000) to view the app.
 
+See [docs/security.md](docs/security.md) for the current production dependency
+audit and documented upstream residuals.
+
 ### Access and scheduled jobs
 
 - CRM access is invite-only. Owners invite staff from the Team page.
