@@ -1,7 +1,15 @@
-import { addDays, endOfDay, format, startOfDay } from "date-fns";
-import { prisma } from "@/lib/prisma";
+import "server-only";
+
+import { format } from "date-fns";
 import {
+  getRecurringSchedulesForConflictWindow as getRecurringSchedulesForConflictWindowData,
+  getSessionsForConflictWindow,
+} from "@/lib/data/sessions";
+import {
+  addCalendarDays,
   combineDateAndTime,
+  getCalendarDateInTimeZone,
+  getDayRangeInTimeZone,
   getFirstMatchingDate,
 } from "@/lib/services/session-dates";
 
@@ -42,21 +50,19 @@ export async function assertNoScheduleConflict(input: {
   scheduledFor: Date;
   durationMinutes: number;
   checkRecurringRules?: boolean;
+  excludeSessionId?: string;
+  excludeRecurrenceRuleId?: string;
+  excludeRuleOccurrence?: { ruleId: string; occurrenceFor: Date };
 }) {
-  const dayStart = startOfDay(input.scheduledFor);
-  const dayEnd = endOfDay(input.scheduledFor);
-  const existingSessions = await prisma.session.findMany({
-    where: {
-      status: { notIn: ["CANCELLED_BY_TUTOR", "CANCELLED_BY_STUDENT"] },
-      scheduledFor: { gte: dayStart, lte: dayEnd },
-    },
-    include: {
-      tutor: true,
-      subject: true,
-      attendance: { include: { student: true } },
-      enrollment: { include: { student: true } },
-    },
-  });
+  const { start: dayStart, end: dayEnd } = getDayRangeInTimeZone(
+    input.scheduledFor,
+  );
+  const existingSessions = await getSessionsForConflictWindow(
+    dayStart,
+    dayEnd,
+    input.excludeSessionId,
+    input.excludeRecurrenceRuleId,
+  );
 
   const requestedStudentIds = new Set(input.studentIds);
 
@@ -95,7 +101,10 @@ export async function assertNoScheduleConflict(input: {
   }
 
   if (input.checkRecurringRules !== false) {
-    await assertNoRecurringRuleConflictForOccurrence(input);
+    await assertNoRecurringRuleConflictForOccurrence({
+      ...input,
+      excludeRuleOccurrence: input.excludeRuleOccurrence,
+    });
   }
 }
 
@@ -133,27 +142,7 @@ function throwIfConflict(input: {
 }
 
 async function getRecurringSchedulesForConflictWindow(from: Date, to: Date) {
-  const rules = await prisma.recurrenceRule.findMany({
-    where: {
-      startsOn: { lte: to },
-      OR: [{ endsOn: null }, { endsOn: { gte: from } }],
-    },
-    include: {
-      enrollment: {
-        include: { student: true, tutor: true, subject: true },
-      },
-      group: {
-        include: {
-          tutor: true,
-          subject: true,
-          enrollments: {
-            where: { status: { in: ["ACTIVE", "PAUSED"] } },
-            include: { student: true },
-          },
-        },
-      },
-    },
-  });
+  const rules = await getRecurringSchedulesForConflictWindowData(from, to);
 
   return rules.filter((rule) => !rule.endsOn || rule.endsOn >= rule.startsOn);
 }
@@ -195,16 +184,44 @@ async function assertNoRecurringRuleConflictForOccurrence(input: {
   studentIds: string[];
   scheduledFor: Date;
   durationMinutes: number;
+  excludeRuleOccurrence?: { ruleId: string; occurrenceFor: Date };
 }) {
+  const { start, end } = getDayRangeInTimeZone(input.scheduledFor);
   const rules = await getRecurringSchedulesForConflictWindow(
-    startOfDay(input.scheduledFor),
-    endOfDay(input.scheduledFor)
+    start,
+    end,
   );
   const requestedStudentIds = new Set(input.studentIds);
 
   for (const rule of rules) {
-    if (rule.dayOfWeek !== input.scheduledFor.getDay()) continue;
-    const occurrence = combineDateAndTime(input.scheduledFor, rule.startTime);
+    const calendarDate = getCalendarDateInTimeZone(
+      input.scheduledFor,
+      rule.timeZone,
+    );
+    const firstOccurrence = getFirstMatchingDate(
+      new Date(rule.startsOn),
+      rule.dayOfWeek,
+    );
+    const daysFromStart = Math.round(
+      (calendarDate.getTime() - firstOccurrence.getTime()) / 86_400_000,
+    );
+    if (
+      daysFromStart < 0 ||
+      daysFromStart % (rule.intervalWeeks * 7) !== 0
+    ) {
+      continue;
+    }
+    const occurrence = combineDateAndTime(
+      calendarDate,
+      rule.startTime,
+      rule.timeZone,
+    );
+    if (
+      input.excludeRuleOccurrence?.ruleId === rule.id &&
+      input.excludeRuleOccurrence.occurrenceFor.getTime() === occurrence.getTime()
+    ) {
+      continue;
+    }
     if (
       !rangesOverlap(
         input.scheduledFor,
@@ -238,16 +255,23 @@ export async function assertNoRecurringScheduleConflict(input: {
   intervalWeeks: number;
   startsOn: Date;
   endsOn?: Date;
+  timeZone?: string;
+  excludeRecurrenceRuleId?: string;
 }) {
-  const windowEnd = input.endsOn && input.endsOn < addDays(input.startsOn, 90)
+  const windowEnd =
+    input.endsOn && input.endsOn < addCalendarDays(input.startsOn, 90)
     ? input.endsOn
-    : addDays(input.startsOn, 90);
+    : addCalendarDays(input.startsOn, 90);
 
   for (const dayOfWeek of input.daysOfWeek) {
     let current = getFirstMatchingDate(input.startsOn, dayOfWeek);
     const startTime = input.startTimes?.[String(dayOfWeek)] ?? input.startTime;
     while (current <= windowEnd) {
-      const scheduledFor = combineDateAndTime(current, startTime);
+      const scheduledFor = combineDateAndTime(
+        current,
+        startTime,
+        input.timeZone,
+      );
       await assertNoScheduleConflict({
         tutorId: input.tutorId,
         subjectId: input.subjectId,
@@ -255,8 +279,9 @@ export async function assertNoRecurringScheduleConflict(input: {
         scheduledFor,
         durationMinutes: input.durationMinutes,
         checkRecurringRules: false,
+        excludeRecurrenceRuleId: input.excludeRecurrenceRuleId,
       });
-      current = addDays(current, input.intervalWeeks * 7);
+      current = addCalendarDays(current, input.intervalWeeks * 7);
     }
   }
 
@@ -267,20 +292,30 @@ export async function assertNoRecurringScheduleConflict(input: {
     let current = getFirstMatchingDate(input.startsOn, dayOfWeek);
     const startTime = input.startTimes?.[String(dayOfWeek)] ?? input.startTime;
     while (current <= windowEnd) {
-      occurrences.push(combineDateAndTime(current, startTime));
-      current = addDays(current, input.intervalWeeks * 7);
+      occurrences.push(
+        combineDateAndTime(current, startTime, input.timeZone),
+      );
+      current = addCalendarDays(current, input.intervalWeeks * 7);
     }
     return occurrences;
   });
 
   for (const rule of existingRules) {
-    const searchStart = new Date(rule.startsOn) > input.startsOn
-      ? new Date(rule.startsOn)
-      : input.startsOn;
-    let current = getFirstMatchingDate(searchStart, rule.dayOfWeek);
+    if (rule.id === input.excludeRecurrenceRuleId) continue;
+    let current = getFirstMatchingDate(
+      new Date(rule.startsOn),
+      rule.dayOfWeek,
+    );
+    while (current < input.startsOn) {
+      current = addCalendarDays(current, rule.intervalWeeks * 7);
+    }
     while (current <= windowEnd) {
       if (rule.endsOn && current > new Date(rule.endsOn)) break;
-      const existingOccurrence = combineDateAndTime(current, rule.startTime);
+      const existingOccurrence = combineDateAndTime(
+        current,
+        rule.startTime,
+        rule.timeZone,
+      );
       const matchingOccurrence = proposedOccurrences.find((scheduledFor) =>
         rangesOverlap(
           scheduledFor,
@@ -290,13 +325,13 @@ export async function assertNoRecurringScheduleConflict(input: {
         )
       );
       if (!matchingOccurrence) {
-        current = addDays(current, rule.intervalWeeks * 7);
+        current = addCalendarDays(current, rule.intervalWeeks * 7);
         continue;
       }
 
       const existing = getConflictScheduleForRule(rule, existingOccurrence);
       if (!existing) {
-        current = addDays(current, rule.intervalWeeks * 7);
+        current = addCalendarDays(current, rule.intervalWeeks * 7);
         continue;
       }
       throwIfConflict({
@@ -306,7 +341,7 @@ export async function assertNoRecurringScheduleConflict(input: {
         existing,
       });
 
-      current = addDays(current, rule.intervalWeeks * 7);
+      current = addCalendarDays(current, rule.intervalWeeks * 7);
     }
   }
 }

@@ -1,3 +1,5 @@
+import "server-only";
+
 import { prisma } from "@/lib/prisma";
 import {
   startOfDay,
@@ -93,10 +95,12 @@ export async function getStudentsWithBalance() {
     include: {
       payments: { select: { amount: true } },
       enrollments: {
-        where: { status: "ACTIVE" },
         include: {
-          package: { select: { type: true, billingPeriod: true, basePrice: true } },
-          sessionAttendance: { where: { billable: true }, select: { id: true } },
+          package: { select: { type: true, billingPeriod: true } },
+          sessionAttendance: {
+            where: { billable: true },
+            select: { session: { select: { scheduledFor: true } } },
+          },
           discounts: {
             select: {
               kind: true,

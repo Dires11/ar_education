@@ -18,7 +18,6 @@ import {
   getActiveRecurrenceRulesAction,
   getActiveRecurrenceRulesForGroupAction,
 } from "@/app/actions/sessions";
-import { localTimeToUTC } from "@/lib/utils/time";
 import type { EnrollmentMonthSummary } from "@/lib/services/sessions";
 import { EditRecurringGroupDialog } from "./edit-recurring-group-dialog";
 import {
@@ -288,7 +287,13 @@ export function NewSessionForm({
     setTouchedDays((prev) => {
       const next = new Set(prev);
       for (const day of [...prev]) {
-        if (!recurringDaysOfWeek.includes(day)) next.delete(day);
+        if (
+          !recurringDaysOfWeek.includes(
+            day as CreateRecurrenceInput["daysOfWeek"][number],
+          )
+        ) {
+          next.delete(day);
+        }
       }
       return next;
     });
@@ -325,16 +330,15 @@ export function NewSessionForm({
 
   async function onRecurringSubmit(values: CreateRecurrenceInput) {
     try {
-      const utcPerDayTimes =
+      const selectedPerDayTimes =
         values.daysOfWeek.length > 1
           ? Object.fromEntries(
-              Object.entries(perDayTimes).map(([day, t]) => [day, localTimeToUTC(t)])
-            )
+              values.daysOfWeek.map((day) => [day, perDayTimes[day]]),
+            ) as CreateRecurrenceInput["startTimes"]
           : undefined;
       const submitValues: CreateRecurrenceInput = {
         ...values,
-        startTime: localTimeToUTC(values.startTime),
-        startTimes: utcPerDayTimes,
+        startTimes: selectedPerDayTimes,
         color: recurringColor,
       };
       const result = await createRecurringScheduleAction(submitValues);

@@ -19,6 +19,8 @@ import type {
   UpdateStudentInput,
   GuardianInput,
 } from "@/lib/validators/students";
+import { idSchema } from "@/lib/validators/common";
+import { z } from "zod";
 
 export async function createStudentAction(input: CreateStudentInput) {
   await requireAdmin();
@@ -32,6 +34,7 @@ export async function updateStudentAction(
   input: UpdateStudentInput
 ) {
   await requireAdmin();
+  id = idSchema.parse(id);
   await updateStudentProfile(id, input);
   revalidatePath("/students");
   revalidatePath(`/students/${id}`);
@@ -40,6 +43,7 @@ export async function updateStudentAction(
 
 export async function archiveStudentAction(id: string) {
   await requireAdmin();
+  id = idSchema.parse(id);
   await archiveStudentById(id);
   revalidatePath("/students");
   revalidatePath(`/students/${id}`);
@@ -51,7 +55,11 @@ export async function updateStudentStatusAction(
   status: PersonStatus
 ) {
   await requireAdmin();
-  await updateStudentStatusById(id, status);
+  id = idSchema.parse(id);
+  await updateStudentStatusById(
+    id,
+    z.enum(["ACTIVE", "PAUSED", "INACTIVE"]).parse(status),
+  );
   revalidatePath("/students");
   revalidatePath(`/students/${id}`);
   return { success: true };
@@ -59,6 +67,7 @@ export async function updateStudentStatusAction(
 
 export async function deleteStudentAction(id: string) {
   await requireAdmin();
+  id = idSchema.parse(id);
   await deleteStudentById(id);
   revalidatePath("/students");
   return { success: true };
@@ -69,6 +78,7 @@ export async function addGuardianAction(
   input: GuardianInput
 ) {
   await requireAdmin();
+  studentId = idSchema.parse(studentId);
   const guardian = await addGuardianToStudent(studentId, input);
   revalidatePath(`/students/${studentId}`);
   return { success: true, id: guardian.id };
@@ -80,6 +90,8 @@ export async function updateGuardianAction(
   input: Partial<GuardianInput>
 ) {
   await requireAdmin();
+  guardianId = idSchema.parse(guardianId);
+  studentId = idSchema.parse(studentId);
   await updateGuardianDetails(guardianId, studentId, input);
   revalidatePath("/students");
   revalidatePath(`/students/${studentId}`);
@@ -88,6 +100,8 @@ export async function updateGuardianAction(
 
 export async function removeGuardianAction(studentId: string, guardianId: string) {
   await requireAdmin();
+  studentId = idSchema.parse(studentId);
+  guardianId = idSchema.parse(guardianId);
   await removeGuardianFromStudent(studentId, guardianId);
   revalidatePath("/students");
   revalidatePath(`/students/${studentId}`);
@@ -96,6 +110,7 @@ export async function removeGuardianAction(studentId: string, guardianId: string
 
 export async function getStudentAction(studentId: string) {
   await requireAdmin();
+  studentId = idSchema.parse(studentId);
   const student = await getStudent(studentId);
   if (!student) return null;
   // Prisma Decimal fields (e.g. package.basePrice, tutor.hourlyRate) are not

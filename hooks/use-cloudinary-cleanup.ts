@@ -33,7 +33,17 @@ export function useCloudinaryCleanup() {
     pendingRef.current.add(publicId);
   }
 
-  function commit() {
+  function commit(keptPublicIds: Array<string | undefined> = []) {
+    const kept = new Set(keptPublicIds.filter(Boolean));
+    pendingRef.current.forEach((publicId) => {
+      if (kept.has(publicId)) return;
+      fetch("/api/delete-cloudinary-image", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ publicId }),
+      }).catch(() => {});
+    });
+    pendingRef.current.clear();
     committedRef.current = true;
   }
 

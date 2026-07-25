@@ -16,14 +16,6 @@ import {
   addMinutes,
 } from "date-fns";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-} from "@/components/ui/dialog";
 import {
   ChevronLeftIcon,
   ChevronRightIcon,
@@ -38,7 +30,6 @@ import {
   UserIcon,
   UsersIcon,
   RepeatIcon,
-  ClockIcon,
   GraduationCapIcon,
   BookOpenIcon,
 } from "lucide-react";
@@ -55,36 +46,10 @@ import {
   EditRecurringGroupDialog,
   type GroupRule,
 } from "./edit-recurring-group-dialog";
-import { AttendanceForm } from "./attendance-form";
+import type { CalendarSession } from "./calendar-session";
+import { SessionDetailsDialog } from "./session-details-dialog";
 
-export type CalendarSession = {
-  id: string;
-  scheduledFor: string;
-  durationMinutes: number;
-  status: string;
-  room: string | null;
-  notes?: string | null;
-  tutor: { firstName: string; lastName: string };
-  subject: { name: string };
-  enrollmentStudent?: { firstName: string; lastName: string } | null;
-  attendance: Array<{
-    studentId?: string;
-    status?: string;
-    billable?: boolean;
-    student: { firstName: string; lastName: string };
-  }>;
-  enrollmentId?: string | null;
-  groupId?: string | null;
-  groupName?: string | null;
-  recurrenceRuleId?: string | null;
-  virtual?: boolean;
-  ruleId?: string | null;
-  startTime?: string | null;
-  dayOfWeek?: number | null;
-  intervalWeeks?: number | null;
-  isPaid?: boolean | null;
-  color?: string | null;
-};
+export type { CalendarSession } from "./calendar-session";
 
 const ENROLLMENT_PALETTE = [
   "#ef4444",
@@ -206,110 +171,6 @@ function getStudentNames(session: CalendarSession) {
   return "No students";
 }
 
-function SessionDetailsDialog({
-  session,
-  open,
-  onOpenChange,
-  onRefresh,
-}: {
-  session: CalendarSession | null;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  onRefresh: () => void;
-}) {
-  if (!session) return null;
-
-  const scheduledFor = new Date(session.scheduledFor);
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg max-h-[90dvh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>{session.subject.name}</DialogTitle>
-          <DialogDescription>
-            {format(scheduledFor, "EEEE, MMMM d, yyyy 'at' h:mm a")}
-          </DialogDescription>
-        </DialogHeader>
-
-        <div className="space-y-4">
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="outline" className="rounded-full capitalize">
-              {statusLabel(session)}
-            </Badge>
-            {session.virtual && (
-              <Badge variant="outline" className="rounded-full border-dashed">
-                Virtual
-              </Badge>
-            )}
-            {session.isPaid === false && (
-              <Badge className="rounded-full bg-amber-100 text-amber-800">
-                Unpaid
-              </Badge>
-            )}
-          </div>
-
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div className="rounded-lg border bg-muted/30 p-3">
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <ClockIcon className="h-3.5 w-3.5" />
-                Duration
-              </div>
-              <p className="mt-1 text-sm font-medium">
-                {session.durationMinutes} minutes
-              </p>
-            </div>
-            <div className="rounded-lg border bg-muted/30 p-3">
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <GraduationCapIcon className="h-3.5 w-3.5" />
-                Tutor
-              </div>
-              <p className="mt-1 text-sm font-medium">
-                {session.tutor.firstName} {session.tutor.lastName}
-              </p>
-            </div>
-          </div>
-
-          {!session.virtual && session.attendance.length > 0 && (
-            <div className="rounded-lg border p-3">
-              <p className="mb-3 text-xs text-muted-foreground">Attendance</p>
-              <AttendanceForm
-                sessionId={session.id}
-                isEditable
-                attendances={session.attendance.map((attendance) => ({
-                  studentId: attendance.studentId ?? "",
-                  studentName: `${attendance.student.firstName} ${attendance.student.lastName}`,
-                  status: attendance.status ?? session.status,
-                  billable: attendance.billable ?? false,
-                })).filter((attendance) => attendance.studentId)}
-                onSaved={onRefresh}
-              />
-            </div>
-          )}
-
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div className="rounded-lg border p-3">
-              <p className="text-xs text-muted-foreground">Room</p>
-              <p className="mt-1 text-sm font-medium">{session.room || "—"}</p>
-            </div>
-            <div className="rounded-lg border p-3">
-              <p className="text-xs text-muted-foreground">Schedule Type</p>
-              <p className="mt-1 text-sm font-medium">
-                {session.ruleId ? "Recurring" : "One-time"}
-              </p>
-            </div>
-          </div>
-
-          {session.notes && (
-            <div className="rounded-lg border p-3">
-              <p className="text-xs text-muted-foreground">Notes</p>
-              <p className="mt-1 text-sm">{session.notes}</p>
-            </div>
-          )}
-        </div>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
 export function MonthCalendar({
   monthStart,
   sessions,
@@ -337,7 +198,11 @@ export function MonthCalendar({
   function toggleExpanded(id: string) {
     setExpandedCards((prev) => {
       const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
       return next;
     });
   }

@@ -1,5 +1,8 @@
+import "server-only";
+
 import { prisma } from "@/lib/prisma";
-import { addMonths, format, parse, startOfMonth, endOfMonth, subMonths } from "date-fns";
+import { Prisma } from "../../generated/prisma";
+import { startOfMonth, endOfMonth, subMonths } from "date-fns";
 
 export type PaymentFilters = {
   studentId?: string;
@@ -65,22 +68,76 @@ export async function createPayment(data: {
   return prisma.payment.create({ data });
 }
 
+export function createOutstandingPaymentForPeriod(input: {
+  studentId: string;
+  method: "CASH" | "BANK_TRANSFER" | "CARD" | "OTHER";
+  paidAt: Date;
+  recordedById: string;
+  enrollmentId: string;
+  coversMonth: string;
+  amountDue: Prisma.Decimal;
+}) {
+  return prisma.$transaction(
+    async (tx) => {
+      await tx.$queryRaw`
+        SELECT "id"
+        FROM "Enrollment"
+        WHERE "id" = ${input.enrollmentId}
+        FOR UPDATE
+      `;
+      const paid = await tx.payment.aggregate({
+        where: {
+          enrollmentId: input.enrollmentId,
+          coversMonth: input.coversMonth,
+        },
+        _sum: { amount: true },
+      });
+      const outstanding = Prisma.Decimal.max(
+        new Prisma.Decimal(0),
+        input.amountDue.sub(paid._sum.amount ?? 0),
+      );
+      if (outstanding.isZero()) {
+        throw new Error("This billing period is already paid");
+      }
+      return tx.payment.create({
+        data: {
+          studentId: input.studentId,
+          amount: outstanding,
+          method: input.method,
+          paidAt: input.paidAt,
+          recordedById: input.recordedById,
+          enrollmentId: input.enrollmentId,
+          coversMonth: input.coversMonth,
+        },
+      });
+    },
+    { isolationLevel: "Serializable" },
+  );
+}
+
 export async function deletePayment(id: string) {
   return prisma.payment.delete({ where: { id } });
 }
 
-export async function getEnrollmentPaidMonths(
+export async function getEnrollmentPaymentCoverage(
   enrollmentIds: string[],
   months: string[] // ["yyyy-MM", ...]
-): Promise<Array<{ enrollmentId: string; coversMonth: string }>> {
+){
   if (enrollmentIds.length === 0) return [];
   if (months.length === 0) return [];
 
   const earliestMonth = months.reduce((min, month) =>
     month < min ? month : min
   );
+  const [earliestYear, earliestMonthNumber] = earliestMonth
+    .split("-")
+    .map(Number);
   const coverageStarts = Array.from({ length: 12 }, (_, index) =>
-    format(addMonths(parse(`${earliestMonth}-01`, "yyyy-MM-dd", new Date()), -index), "yyyy-MM")
+    new Date(
+      Date.UTC(earliestYear, earliestMonthNumber - 1 - index, 1),
+    )
+      .toISOString()
+      .slice(0, 7),
   );
 
   const rows = await prisma.payment.findMany({
@@ -91,33 +148,19 @@ export async function getEnrollmentPaidMonths(
     select: {
       enrollmentId: true,
       coversMonth: true,
-      enrollment: { select: { package: { select: { billingPeriod: true } } } },
+      amount: true,
+      enrollment: {
+        select: {
+          startDate: true,
+          priceAtEnrollment: true,
+          customPriceOverride: true,
+          package: { select: { billingPeriod: true } },
+          discounts: true,
+        },
+      },
     },
   });
-
-  const wantedMonths = new Set(months);
-  const paid: Array<{ enrollmentId: string; coversMonth: string }> = [];
-
-  for (const row of rows) {
-    if (!row.enrollmentId || !row.coversMonth) continue;
-
-    const periodMonths =
-      row.enrollment?.package.billingPeriod === "YEARLY"
-        ? 12
-        : row.enrollment?.package.billingPeriod === "THREE_MONTHS"
-        ? 3
-        : 1;
-    const periodStart = parse(`${row.coversMonth}-01`, "yyyy-MM-dd", new Date());
-
-    for (let offset = 0; offset < periodMonths; offset++) {
-      const coveredMonth = format(addMonths(periodStart, offset), "yyyy-MM");
-      if (wantedMonths.has(coveredMonth)) {
-        paid.push({ enrollmentId: row.enrollmentId, coversMonth: coveredMonth });
-      }
-    }
-  }
-
-  return paid;
+  return rows;
 }
 
 export async function getPaymentStats() {
@@ -146,4 +189,64 @@ export async function getPaymentStats() {
     lastMonthTotal: Number(lastMonth._sum.amount ?? 0),
     total,
   };
+}
+
+export function getEnrollmentStudentForPayment(id: string) {
+  return prisma.enrollment.findUnique({
+    where: { id },
+    select: { studentId: true },
+  });
+}
+
+export function getEnrollmentPaymentDue(id: string) {
+  return prisma.enrollment.findUnique({
+    where: { id },
+    include: {
+      package: true,
+      discounts: true,
+    },
+  });
+}
+
+export function getActiveSubscriptionEnrollments() {
+  return prisma.enrollment.findMany({
+    where: { status: "ACTIVE", package: { type: "MONTHLY" } },
+    include: {
+      student: {
+        include: {
+          guardians: {
+            where: { isPrimary: true },
+            include: { guardian: true },
+          },
+        },
+      },
+      package: true,
+      subject: true,
+      discounts: true,
+      payments: {
+        where: { coversMonth: { not: null } },
+        select: { coversMonth: true, amount: true },
+      },
+    },
+  });
+}
+
+export function getEnrollmentForPaymentReminder(id: string) {
+  return prisma.enrollment.findUnique({
+    where: { id },
+    include: {
+      student: {
+        include: {
+          guardians: {
+            where: { isPrimary: true },
+            include: { guardian: true },
+          },
+        },
+      },
+      package: true,
+      subject: true,
+      tutor: true,
+      discounts: true,
+    },
+  });
 }

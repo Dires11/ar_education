@@ -37,7 +37,6 @@ import {
   rescheduleOccurrenceAction,
   updateSessionAction,
 } from "@/app/actions/sessions";
-import { localTimeToUTC, utcTimeToLocal } from "@/lib/utils/time";
 
 type VirtualSessionInfo = {
   ruleId: string;
@@ -66,7 +65,7 @@ export function EditRecurringDialog({
   const [tab, setTab] = useState<"series" | "once">("series");
 
   // Series edit state
-  const [time, setTime] = useState(utcTimeToLocal(session.startTime));
+  const [time, setTime] = useState(session.startTime);
   const [duration, setDuration] = useState(String(session.durationMinutes));
   const [room, setRoom] = useState(session.room ?? "");
   const [intervalWeeks, setIntervalWeeks] = useState(String(session.intervalWeeks));
@@ -75,7 +74,9 @@ export function EditRecurringDialog({
   const [reschedDate, setReschedDate] = useState<Date | undefined>(
     new Date(session.scheduledFor)
   );
-  const [reschedTime, setReschedTime] = useState(utcTimeToLocal(session.startTime));
+  const [reschedTime, setReschedTime] = useState(
+    format(new Date(session.scheduledFor), "HH:mm"),
+  );
   const [reschedDuration, setReschedDuration] = useState(String(session.durationMinutes));
   const [reschedRoom, setReschedRoom] = useState(session.room ?? "");
   const [calOpen, setCalOpen] = useState(false);
@@ -90,7 +91,7 @@ export function EditRecurringDialog({
     setSaving(true);
     try {
       await splitRecurrenceRuleAction(session.ruleId, date.toISOString(), {
-        startTime: localTimeToUTC(time),
+        startTime: time,
         durationMinutes: Number(duration),
         room: room || null,
         intervalWeeks: Number(intervalWeeks),
@@ -122,10 +123,15 @@ export function EditRecurringDialog({
         });
       } else {
         // Virtual session — materialize a rescheduled real session
-        await rescheduleOccurrenceAction(session.ruleId, newDate.toISOString(), {
-          durationMinutes: Number(reschedDuration),
-          room: reschedRoom || null,
-        });
+        await rescheduleOccurrenceAction(
+          session.ruleId,
+          session.scheduledFor,
+          newDate.toISOString(),
+          {
+            durationMinutes: Number(reschedDuration),
+            room: reschedRoom || null,
+          },
+        );
       }
       toast.success("Session updated");
       onOpenChange(false);

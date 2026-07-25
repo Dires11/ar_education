@@ -48,7 +48,7 @@ export function TutorEditForm({
   async function onSubmit(values: UpdateTutorInput) {
     try {
       await updateTutorAction(tutorId, values);
-      commit();
+      commit([values.avatarPublicId]);
       toast.success("Tutor updated");
       if (onSuccess) {
         onSuccess();

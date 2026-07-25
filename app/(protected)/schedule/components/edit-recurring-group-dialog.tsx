@@ -27,7 +27,6 @@ import {
   deleteRecurrenceRuleAction,
   updateEnrollmentRecurrenceColorAction,
 } from "@/app/actions/sessions";
-import { localTimeToUTC, utcTimeToLocal } from "@/lib/utils/time";
 import { ColorPicker } from "./color-picker";
 
 const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -78,7 +77,7 @@ export function EditRecurringGroupDialog({
     Object.fromEntries(rules.map((r) => [r.id, String(r.dayOfWeek)]))
   );
   const [perRuleTimes, setPerRuleTimes] = useState<Record<string, string>>(
-    Object.fromEntries(rules.map((r) => [r.id, utcTimeToLocal(r.startTime)]))
+    Object.fromEntries(rules.map((r) => [r.id, r.startTime]))
   );
 
   // ── Shared params ──────────────────────────────────────────────────
@@ -101,7 +100,7 @@ export function EditRecurringGroupDialog({
       await Promise.all(
         rules.map((r) =>
           splitRecurrenceRuleAction(r.id, splitDate.toISOString(), {
-            startTime: localTimeToUTC(perRuleTimes[r.id] ?? utcTimeToLocal(r.startTime)),
+            startTime: perRuleTimes[r.id] ?? r.startTime,
             durationMinutes: Number(seriesDuration),
             room: seriesRoom || null,
             intervalWeeks: Number(seriesInterval),

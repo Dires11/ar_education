@@ -3,18 +3,18 @@
 import { revalidatePath } from "next/cache";
 import { requireAdmin } from "@/lib/utils/auth";
 import {
+  createTemplate,
+  deleteTemplate,
   listEmailTemplates,
-  createEmailTemplate,
-  updateEmailTemplate,
-  deleteEmailTemplate,
-} from "@/lib/data/emails";
-import { sendEmailToStudents } from "@/lib/services/emails";
+  sendEmailToStudents,
+  updateTemplate,
+} from "@/lib/services/emails";
 import {
-  emailTemplateSchema,
   sendEmailSchema,
   type EmailTemplateInput,
   type SendEmailInput,
 } from "@/lib/validators/emails";
+import { idSchema } from "@/lib/validators/common";
 
 export async function listEmailTemplatesAction() {
   await requireAdmin();
@@ -23,8 +23,7 @@ export async function listEmailTemplatesAction() {
 
 export async function createEmailTemplateAction(input: EmailTemplateInput) {
   await requireAdmin();
-  const parsed = emailTemplateSchema.parse(input);
-  const template = await createEmailTemplate(parsed);
+  const template = await createTemplate(input);
   revalidatePath("/emails");
   return { success: true, id: template.id };
 }
@@ -34,15 +33,14 @@ export async function updateEmailTemplateAction(
   input: EmailTemplateInput
 ) {
   await requireAdmin();
-  const parsed = emailTemplateSchema.parse(input);
-  await updateEmailTemplate(id, parsed);
+  await updateTemplate(idSchema.parse(id), input);
   revalidatePath("/emails");
   return { success: true };
 }
 
 export async function deleteEmailTemplateAction(id: string) {
   await requireAdmin();
-  await deleteEmailTemplate(id);
+  await deleteTemplate(idSchema.parse(id));
   revalidatePath("/emails");
   return { success: true };
 }

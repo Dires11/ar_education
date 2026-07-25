@@ -1,6 +1,18 @@
+import "server-only";
+
 import { format } from "date-fns";
-import { prisma } from "@/lib/prisma";
 import { sendEmail } from "@/lib/utils/email";
+import { getStudentsForEmail } from "@/lib/data/emails";
+import {
+  createEmailTemplate,
+  deleteEmailTemplate,
+  listEmailTemplates,
+  updateEmailTemplate,
+} from "@/lib/data/emails";
+import {
+  emailTemplateSchema,
+  type EmailTemplateInput,
+} from "@/lib/validators/emails";
 
 // ─── Placeholder substitution ────────────────────────────────────────────────
 // Supported: @name @fullname @guardian @tutor @subject @amount @month @center
@@ -38,21 +50,7 @@ export async function sendEmailToStudents({
   subject: string;
   body: string;
 }) {
-  const students = await prisma.student.findMany({
-    where: { id: { in: studentIds } },
-    include: {
-      guardians: {
-        where: { isPrimary: true },
-        include: { guardian: true },
-      },
-      enrollments: {
-        where: { status: "ACTIVE" },
-        include: { tutor: true, subject: true, package: true },
-        take: 1,
-        orderBy: { createdAt: "desc" },
-      },
-    },
-  });
+  const students = await getStudentsForEmail(studentIds);
 
   const results: { studentId: string; email: string; success: boolean }[] = [];
 
@@ -69,7 +67,10 @@ export async function sendEmailToStudents({
         ? `${student.enrollments[0].tutor.firstName} ${student.enrollments[0].tutor.lastName}`
         : undefined,
       subjectName: student.enrollments[0]?.subject.name,
-      amount: student.enrollments[0]?.package.basePrice.toString(),
+      amount: (
+        student.enrollments[0]?.customPriceOverride ??
+        student.enrollments[0]?.priceAtEnrollment
+      )?.toString(),
       month: format(new Date(), "MMMM yyyy"),
     };
 
@@ -99,3 +100,17 @@ export async function sendEmailToStudents({
 }
 
 export { substitutePlaceholders };
+
+export { listEmailTemplates };
+
+export function createTemplate(input: EmailTemplateInput) {
+  return createEmailTemplate(emailTemplateSchema.parse(input));
+}
+
+export function updateTemplate(id: string, input: EmailTemplateInput) {
+  return updateEmailTemplate(id, emailTemplateSchema.parse(input));
+}
+
+export function deleteTemplate(id: string) {
+  return deleteEmailTemplate(id);
+}

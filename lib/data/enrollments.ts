@@ -1,3 +1,5 @@
+import "server-only";
+
 import { prisma } from "@/lib/prisma";
 import { EnrollmentStatus } from "../../generated/prisma";
 
@@ -53,10 +55,23 @@ export async function createEnrollment(data: {
   subjectId: string;
   startDate: Date;
   endDate?: Date | null;
+  priceAtEnrollment: string;
   customPriceOverride?: string | null;
   groupId?: string | null;
 }) {
   return prisma.enrollment.create({ data });
+}
+
+export async function createEnrollmentWithNewGroup(
+  data: Omit<Parameters<typeof createEnrollment>[0], "groupId">,
+  group: { name: string; tutorId: string; subjectId: string },
+) {
+  return prisma.$transaction(async (tx) => {
+    const createdGroup = await tx.group.create({ data: group });
+    return tx.enrollment.create({
+      data: { ...data, groupId: createdGroup.id },
+    });
+  });
 }
 
 export async function updateEnrollment(
@@ -86,4 +101,27 @@ export async function createDiscount(data: {
 
 export async function deleteDiscount(id: string) {
   return prisma.discount.delete({ where: { id } });
+}
+
+export function getTutorSubjectAssignment(tutorId: string, subjectId: string) {
+  return prisma.tutorSubject.findUnique({
+    where: { tutorId_subjectId: { tutorId, subjectId } },
+  });
+}
+
+export function findActiveEnrollmentForSubject(
+  studentId: string,
+  subjectId: string,
+) {
+  return prisma.enrollment.findFirst({
+    where: { studentId, subjectId, status: "ACTIVE" },
+  });
+}
+
+export function getPackageForEnrollment(id: string) {
+  return prisma.package.findUnique({ where: { id } });
+}
+
+export function getGroupAssignment(id: string) {
+  return prisma.group.findUnique({ where: { id } });
 }

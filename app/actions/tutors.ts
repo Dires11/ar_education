@@ -7,12 +7,14 @@ import {
   updateTutorProfile,
   updateTutorSubjectsList,
   archiveTutorById,
+  getTutor,
 } from "@/lib/services/tutors";
-import { getTutor } from "@/lib/data/tutors";
 import type {
   CreateTutorInput,
   UpdateTutorInput,
 } from "@/lib/validators/tutors";
+import { idSchema } from "@/lib/validators/common";
+import { z } from "zod";
 
 export async function createTutorAction(input: CreateTutorInput) {
   await requireAdmin();
@@ -23,6 +25,7 @@ export async function createTutorAction(input: CreateTutorInput) {
 
 export async function updateTutorAction(id: string, input: UpdateTutorInput) {
   await requireAdmin();
+  id = idSchema.parse(id);
   await updateTutorProfile(id, input);
   revalidatePath("/tutors");
   revalidatePath(`/tutors/${id}`);
@@ -34,13 +37,18 @@ export async function updateTutorSubjectsAction(
   subjectIds: string[]
 ) {
   await requireAdmin();
-  await updateTutorSubjectsList(id, subjectIds);
+  id = idSchema.parse(id);
+  await updateTutorSubjectsList(
+    id,
+    z.array(idSchema).min(1).max(100).parse(subjectIds),
+  );
   revalidatePath(`/tutors/${id}`);
   return { success: true };
 }
 
 export async function archiveTutorAction(id: string) {
   await requireAdmin();
+  id = idSchema.parse(id);
   await archiveTutorById(id);
   revalidatePath("/tutors");
   revalidatePath(`/tutors/${id}`);
@@ -49,6 +57,7 @@ export async function archiveTutorAction(id: string) {
 
 export async function getTutorAction(id: string) {
   await requireAdmin();
+  id = idSchema.parse(id);
   const tutor = await getTutor(id);
   return JSON.parse(JSON.stringify(tutor)) as typeof tutor;
 }

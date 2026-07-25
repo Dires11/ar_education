@@ -1,5 +1,8 @@
+import "server-only";
+
 import { prisma } from "@/lib/prisma";
 import { addDays, startOfDay, endOfDay, endOfMonth } from "date-fns";
+import { Prisma } from "../../generated/prisma";
 
 export async function getSessionsByWeek(weekStart: Date) {
   const weekEnd = addDays(weekStart, 6);
@@ -55,6 +58,30 @@ export async function getSession(id: string) {
 
 export async function getRecurrenceRuleById(id: string) {
   return prisma.recurrenceRule.findUnique({ where: { id } });
+}
+
+export function getEnrollmentForSession(id: string) {
+  return prisma.enrollment.findUnique({
+    where: { id },
+    include: { package: true, student: true },
+  });
+}
+
+export async function getRecurrenceRuleWithParticipants(id: string) {
+  return prisma.recurrenceRule.findUnique({
+    where: { id },
+    include: {
+      enrollment: { include: { student: true } },
+      group: {
+        include: {
+          enrollments: {
+            where: { status: { in: ["ACTIVE", "PAUSED"] } },
+            include: { student: true },
+          },
+        },
+      },
+    },
+  });
 }
 
 export async function getActiveRecurrenceRulesForEnrollment(enrollmentId: string) {
@@ -115,8 +142,44 @@ export async function createSession(data: {
   room?: string;
   notes?: string;
   recurrenceRuleId?: string;
+  recurrenceOccurrenceFor?: Date;
+  status?:
+    | "SCHEDULED"
+    | "COMPLETED"
+    | "NO_SHOW"
+    | "CANCELLED_BY_TUTOR"
+    | "CANCELLED_BY_STUDENT";
 }) {
   return prisma.session.create({ data });
+}
+
+export async function createSessionWithAttendances(
+  sessionData: Parameters<typeof createSession>[0],
+  attendances: Array<{
+    studentId: string;
+    enrollmentId?: string;
+    status?:
+      | "SCHEDULED"
+      | "COMPLETED"
+      | "NO_SHOW"
+      | "CANCELLED_BY_TUTOR"
+      | "CANCELLED_BY_STUDENT";
+    billable?: boolean;
+  }>,
+) {
+  return prisma.$transaction(async (tx) => {
+    const session = await tx.session.create({ data: sessionData });
+    if (attendances.length > 0) {
+      await tx.sessionAttendance.createMany({
+        data: attendances.map((attendance) => ({
+          sessionId: session.id,
+          ...attendance,
+        })),
+        skipDuplicates: true,
+      });
+    }
+    return session;
+  });
 }
 
 export async function createSessionAttendance(data: {
@@ -177,19 +240,30 @@ export async function getGroupRecurrenceRulesForMonth(monthStart: Date) {
   return rules.filter((r) => !r.endsOn || r.endsOn >= r.startsOn);
 }
 
-export async function createRecurrenceRule(data: {
+export type RecurrenceRuleCreateData = {
   enrollmentId?: string;
   groupId?: string;
   dayOfWeek: number;
   startTime: string;
+  timeZone: string;
   durationMinutes: number;
   intervalWeeks?: number;
   room?: string;
   color?: string;
   startsOn: Date;
   endsOn?: Date;
-}) {
+};
+
+export async function createRecurrenceRule(data: RecurrenceRuleCreateData) {
   return prisma.recurrenceRule.create({ data });
+}
+
+export async function createRecurrenceRules(
+  rules: RecurrenceRuleCreateData[],
+) {
+  return prisma.$transaction(
+    rules.map((data) => prisma.recurrenceRule.create({ data })),
+  );
 }
 
 export async function updateSessionStatus(
@@ -206,6 +280,21 @@ export async function updateSessionStatus(
       },
     }),
   ]);
+}
+
+export function updateSessionStatusOnly(
+  sessionId: string,
+  status:
+    | "SCHEDULED"
+    | "COMPLETED"
+    | "NO_SHOW"
+    | "CANCELLED_BY_TUTOR"
+    | "CANCELLED_BY_STUDENT",
+) {
+  return prisma.session.update({
+    where: { id: sessionId },
+    data: { status },
+  });
 }
 
 export async function updateAttendance(
@@ -226,16 +315,43 @@ export async function updateAttendance(
   );
 }
 
+export function updateAttendanceAndSessionStatus(
+  sessionId: string,
+  attendances: Parameters<typeof updateAttendance>[1],
+  sessionStatus:
+    | "SCHEDULED"
+    | "COMPLETED"
+    | "NO_SHOW"
+    | "CANCELLED_BY_TUTOR"
+    | "CANCELLED_BY_STUDENT",
+) {
+  return prisma.$transaction([
+    ...attendances.map((attendance) =>
+      prisma.sessionAttendance.updateMany({
+        where: { sessionId, studentId: attendance.studentId },
+        data: {
+          status: attendance.status,
+          billable: attendance.billable,
+        },
+      }),
+    ),
+    prisma.session.update({
+      where: { id: sessionId },
+      data: { status: sessionStatus },
+    }),
+  ]);
+}
+
 export async function cancelSession(
   id: string,
   cancelledBy: "TUTOR" | "STUDENT"
 ) {
-  return prisma.session.update({
-    where: { id },
-    data: {
-      status: cancelledBy === "TUTOR" ? "CANCELLED_BY_TUTOR" : "CANCELLED_BY_STUDENT",
-    },
-  });
+  return updateSessionStatus(
+    id,
+    cancelledBy === "TUTOR"
+      ? "CANCELLED_BY_TUTOR"
+      : "CANCELLED_BY_STUDENT",
+  );
 }
 
 export async function deleteSession(id: string) {
@@ -249,7 +365,13 @@ export async function deleteFutureSessionsForRecurrenceRule(
   return prisma.session.deleteMany({
     where: {
       recurrenceRuleId,
-      scheduledFor: { gte: startOfDay(fromDate) },
+      OR: [
+        { recurrenceOccurrenceFor: { gte: fromDate } },
+        {
+          recurrenceOccurrenceFor: null,
+          scheduledFor: { gte: fromDate },
+        },
+      ],
     },
   });
 }
@@ -298,29 +420,103 @@ export async function closeRecurrenceRule(ruleId: string, endsOn: Date) {
   });
 }
 
-export async function deleteRecurrenceRule(ruleId: string) {
-  return prisma.recurrenceRule.delete({ where: { id: ruleId } });
+export function updateRecurrenceRule(
+  ruleId: string,
+  data: {
+    startTime?: string;
+    durationMinutes?: number;
+    room?: string | null;
+    intervalWeeks?: number;
+    dayOfWeek?: number;
+  },
+) {
+  return prisma.recurrenceRule.update({
+    where: { id: ruleId },
+    data,
+  });
 }
 
-export async function autoCompletePassedSessions() {
-  const pastSessions = await prisma.session.findMany({
-    where: { status: "SCHEDULED", scheduledFor: { lt: new Date() } },
-    select: { id: true },
+type RecurrenceRuleUpdateData = Parameters<typeof updateRecurrenceRule>[1];
+
+function futureRecurrenceSessionsWhere(
+  recurrenceRuleId: string,
+  cutoff: Date,
+): Prisma.SessionWhereInput {
+  return {
+    recurrenceRuleId,
+    OR: [
+      { recurrenceOccurrenceFor: { gte: cutoff } },
+      {
+        recurrenceOccurrenceFor: null,
+        scheduledFor: { gte: cutoff },
+      },
+    ],
+  };
+}
+
+export function splitRecurrenceRuleData(input: {
+  ruleId: string;
+  cutoff: Date;
+  updateInPlace: boolean;
+  update: RecurrenceRuleUpdateData;
+  oldRuleEndsOn?: Date;
+  newRule?: RecurrenceRuleCreateData;
+}) {
+  return prisma.$transaction(async (tx) => {
+    await tx.session.deleteMany({
+      where: futureRecurrenceSessionsWhere(input.ruleId, input.cutoff),
+    });
+    if (input.updateInPlace) {
+      return tx.recurrenceRule.update({
+        where: { id: input.ruleId },
+        data: input.update,
+      });
+    }
+    if (!input.oldRuleEndsOn || !input.newRule) {
+      throw new Error("Split recurrence data is incomplete");
+    }
+    await tx.recurrenceRule.update({
+      where: { id: input.ruleId },
+      data: { endsOn: input.oldRuleEndsOn },
+    });
+    return tx.recurrenceRule.create({ data: input.newRule });
   });
+}
 
-  if (pastSessions.length === 0) return { count: 0 };
-
-  const ids = pastSessions.map((s) => s.id);
-
-  await prisma.sessionAttendance.updateMany({
-    where: { sessionId: { in: ids }, status: "SCHEDULED" },
-    data: { status: "COMPLETED", billable: true },
+export function endRecurrenceRuleData(input: {
+  ruleId: string;
+  cutoff: Date;
+  endsOn: Date;
+}) {
+  return prisma.$transaction(async (tx) => {
+    await tx.session.deleteMany({
+      where: futureRecurrenceSessionsWhere(input.ruleId, input.cutoff),
+    });
+    return tx.recurrenceRule.update({
+      where: { id: input.ruleId },
+      data: { endsOn: input.endsOn },
+    });
   });
+}
 
-  return prisma.session.updateMany({
-    where: { id: { in: ids } },
-    data: { status: "COMPLETED" },
+export function deleteRecurringScheduleData(
+  ruleId: string,
+  cutoff: Date,
+) {
+  return prisma.$transaction(async (tx) => {
+    await tx.session.deleteMany({
+      where: futureRecurrenceSessionsWhere(ruleId, cutoff),
+    });
+    await tx.session.updateMany({
+      where: { recurrenceRuleId: ruleId },
+      data: { recurrenceRuleId: null },
+    });
+    return tx.recurrenceRule.delete({ where: { id: ruleId } });
   });
+}
+
+export async function deleteRecurrenceRule(ruleId: string) {
+  return prisma.recurrenceRule.delete({ where: { id: ruleId } });
 }
 
 export async function getRecurringRulesInRange(
@@ -389,13 +585,27 @@ export async function getSessionsForRecurrenceRulesInRange(
   return prisma.session.findMany({
     where: {
       recurrenceRuleId: { in: recurrenceRuleIds },
-      scheduledFor: {
-        gte: startOfDay(from),
-        lte: endOfDay(to),
-      },
+      OR: [
+        {
+          recurrenceOccurrenceFor: {
+            gte: startOfDay(from),
+            lte: endOfDay(to),
+          },
+        },
+        {
+          recurrenceOccurrenceFor: null,
+          scheduledFor: {
+            gte: startOfDay(from),
+            lte: endOfDay(to),
+          },
+        },
+      ],
     },
     select: {
+      id: true,
+      enrollmentId: true,
       recurrenceRuleId: true,
+      recurrenceOccurrenceFor: true,
       scheduledFor: true,
     },
   });
@@ -452,6 +662,7 @@ export async function createManySessions(
     room?: string;
     notes?: string;
     recurrenceRuleId?: string;
+    recurrenceOccurrenceFor?: Date;
   }>
 ) {
   return prisma.session.createMany({ data, skipDuplicates: true });
@@ -494,4 +705,98 @@ export async function checkTutorConflict(
   });
 
   return !!conflict;
+}
+
+export function getSessionsForConflictWindow(
+  from: Date,
+  to: Date,
+  excludeSessionId?: string,
+  excludeRecurrenceRuleId?: string,
+) {
+  return prisma.session.findMany({
+    where: {
+      id: excludeSessionId ? { not: excludeSessionId } : undefined,
+      recurrenceRuleId: excludeRecurrenceRuleId
+        ? { not: excludeRecurrenceRuleId }
+        : undefined,
+      status: { notIn: ["CANCELLED_BY_TUTOR", "CANCELLED_BY_STUDENT"] },
+      scheduledFor: { gte: from, lte: to },
+    },
+    include: {
+      tutor: true,
+      subject: true,
+      attendance: { include: { student: true } },
+      enrollment: { include: { student: true } },
+    },
+  });
+}
+
+export function getRecurringSchedulesForConflictWindow(
+  from: Date,
+  to: Date,
+) {
+  return prisma.recurrenceRule.findMany({
+    where: {
+      startsOn: { lte: to },
+      OR: [{ endsOn: null }, { endsOn: { gte: from } }],
+    },
+    include: {
+      enrollment: {
+        include: { student: true, tutor: true, subject: true },
+      },
+      group: {
+        include: {
+          tutor: true,
+          subject: true,
+          enrollments: {
+            where: { status: { in: ["ACTIVE", "PAUSED"] } },
+            include: { student: true },
+          },
+        },
+      },
+    },
+  });
+}
+
+export async function getEnrollmentWeekScheduleData(
+  enrollmentId: string,
+  weekStart: Date,
+  weekEnd: Date,
+) {
+  const [realCount, rules, realForDedup] = await Promise.all([
+    prisma.session.count({
+      where: {
+        enrollmentId,
+        status: { notIn: ["CANCELLED_BY_TUTOR", "CANCELLED_BY_STUDENT"] },
+        scheduledFor: { gte: weekStart, lte: weekEnd },
+      },
+    }),
+    prisma.recurrenceRule.findMany({
+      where: {
+        enrollmentId,
+        startsOn: { lte: weekEnd },
+        OR: [{ endsOn: null }, { endsOn: { gte: weekStart } }],
+      },
+    }),
+    prisma.session.findMany({
+      where: {
+        enrollmentId,
+        OR: [
+          {
+            recurrenceOccurrenceFor: { gte: weekStart, lte: weekEnd },
+          },
+          {
+            recurrenceOccurrenceFor: null,
+            scheduledFor: { gte: weekStart, lte: weekEnd },
+          },
+        ],
+      },
+      select: {
+        scheduledFor: true,
+        recurrenceRuleId: true,
+        recurrenceOccurrenceFor: true,
+      },
+    }),
+  ]);
+  return { realCount, rules, realForDedup };
 }

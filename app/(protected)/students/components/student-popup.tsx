@@ -143,7 +143,7 @@ function GuardianForm({
       <form
         onSubmit={form.handleSubmit(async (values) => {
           await onSubmit(values);
-          commit();
+          commit([values.avatarPublicId]);
         })}
         className="space-y-4"
       >

@@ -1,3 +1,5 @@
+import "server-only";
+
 import { prisma } from "@/lib/prisma";
 import type { EmailTemplateType } from "../../generated/prisma";
 
@@ -27,4 +29,51 @@ export async function updateEmailTemplate(
 
 export async function deleteEmailTemplate(id: string) {
   return prisma.emailTemplate.delete({ where: { id } });
+}
+
+export async function getEmailRecipientContext(studentIds: string[]) {
+  return Promise.all([
+    prisma.studentGuardian.findMany({
+      where: { isPrimary: true, studentId: { in: studentIds } },
+      include: {
+        guardian: { select: { email: true, firstName: true } },
+      },
+    }),
+    prisma.enrollment.findMany({
+      where: { studentId: { in: studentIds }, status: "ACTIVE" },
+      include: {
+        tutor: { select: { firstName: true, lastName: true } },
+        subject: { select: { name: true } },
+        package: { select: { name: true } },
+      },
+      orderBy: { createdAt: "desc" },
+    }),
+  ]);
+}
+
+export async function getStudentsForEmail(studentIds: string[]) {
+  return prisma.student.findMany({
+    where: { id: { in: studentIds } },
+    include: {
+      guardians: {
+        where: { isPrimary: true },
+        include: { guardian: true },
+      },
+      enrollments: {
+        where: { status: "ACTIVE" },
+        include: { tutor: true, subject: true, package: true },
+        take: 1,
+        orderBy: { createdAt: "desc" },
+      },
+    },
+  });
+}
+
+export function getLatestEmailTemplate(
+  type: "PAYMENT_REMINDER" | "SESSION_REMINDER" | "ANNOUNCEMENT" | "CUSTOM",
+) {
+  return prisma.emailTemplate.findFirst({
+    where: { type },
+    orderBy: { updatedAt: "desc" },
+  });
 }

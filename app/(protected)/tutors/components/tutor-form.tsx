@@ -62,7 +62,7 @@ export function TutorForm({
     try {
       const result = await createTutorAction(values);
       if (result.success) {
-        commit();
+        commit([values.avatarPublicId]);
         toast.success("Tutor created");
         if (onSuccess) {
           onSuccess();

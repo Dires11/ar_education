@@ -204,18 +204,18 @@ model TutorSubject {
 // ─── Packages & Enrollments ───────────────────────────────────────────────────
 
 model Package {
-  id               String      @id @default(cuid())
-  name             String
-  type             PackageType
-  billingPeriod    BillingPeriod @default(MONTHLY)
-  lessonType       LessonType  @default(PRIVATE)
-  subjectId        String?
-  basePrice        Decimal     @db.Decimal(10, 2)
-  sessionsPerWeek  Int?
-  durationMinutes  Int
-  isActive         Boolean     @default(true)
-  createdAt        DateTime    @default(now())
-  updatedAt        DateTime    @updatedAt
+  id              String        @id @default(cuid())
+  name            String
+  type            PackageType
+  billingPeriod   BillingPeriod @default(MONTHLY)
+  lessonType      LessonType    @default(PRIVATE)
+  subjectId       String?
+  basePrice       Decimal       @db.Decimal(10, 2)
+  sessionsPerWeek Int?
+  durationMinutes Int
+  isActive        Boolean       @default(true)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
 
   subject     Subject?     @relation(fields: [subjectId], references: [id])
   enrollments Enrollment[]
@@ -230,6 +230,7 @@ model Enrollment {
   startDate           DateTime         @db.Date
   endDate             DateTime?        @db.Date
   status              EnrollmentStatus @default(ACTIVE)
+  priceAtEnrollment   Decimal          @db.Decimal(10, 2)
   customPriceOverride Decimal?         @db.Decimal(10, 2)
   createdAt           DateTime         @default(now())
   updatedAt           DateTime         @updatedAt
@@ -275,6 +276,7 @@ model RecurrenceRule {
   groupId         String?
   dayOfWeek       Int
   startTime       String
+  timeZone        String    @default("America/Los_Angeles")
   durationMinutes Int
   intervalWeeks   Int       @default(1)
   room            String?
@@ -302,24 +304,25 @@ model Group {
   enrollments     Enrollment[]
   recurrenceRules RecurrenceRule[]
 
+  @@unique([tutorId, name])
   @@index([tutorId])
   @@index([subjectId])
-  @@unique([tutorId, name])
 }
 
 model Session {
-  id               String        @id @default(cuid())
-  enrollmentId     String?
-  tutorId          String
-  subjectId        String
-  scheduledFor     DateTime
-  durationMinutes  Int
-  room             String?
-  status           SessionStatus @default(SCHEDULED)
-  recurrenceRuleId String?
-  notes            String?
-  createdAt        DateTime      @default(now())
-  updatedAt        DateTime      @updatedAt
+  id                      String        @id @default(cuid())
+  enrollmentId            String?
+  tutorId                 String
+  subjectId               String
+  scheduledFor            DateTime
+  durationMinutes         Int
+  room                    String?
+  status                  SessionStatus @default(SCHEDULED)
+  recurrenceRuleId        String?
+  recurrenceOccurrenceFor DateTime?
+  notes                   String?
+  createdAt               DateTime      @default(now())
+  updatedAt               DateTime      @updatedAt
 
   enrollment     Enrollment?         @relation(fields: [enrollmentId], references: [id])
   tutor          Tutor               @relation(fields: [tutorId], references: [id])
@@ -328,7 +331,7 @@ model Session {
   attendance     SessionAttendance[]
   reminders      Reminder[]
 
-  @@unique([recurrenceRuleId, scheduledFor])
+  @@unique([recurrenceRuleId, recurrenceOccurrenceFor])
   @@index([scheduledFor])
   @@index([tutorId, scheduledFor])
 }
@@ -370,6 +373,7 @@ model Payment {
   enrollment Enrollment? @relation(fields: [enrollmentId], references: [id])
 
   @@index([studentId, paidAt])
+  @@index([enrollmentId, coversMonth])
 }
 
 // ─── Notifications ────────────────────────────────────────────────────────────
@@ -398,5 +402,6 @@ model Reminder {
 
   session Session? @relation(fields: [sessionId], references: [id])
 
+  @@unique([sessionId, recipientEmail, type])
   @@index([scheduledFor, status])
 }

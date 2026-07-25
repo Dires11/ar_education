@@ -4,11 +4,12 @@ import { revalidatePath } from "next/cache";
 import { requireAdmin } from "@/lib/utils/auth";
 import {
   recordPayment,
+  recordPaymentForDue,
   deletePaymentById,
   sendPaymentReminderEmail,
 } from "@/lib/services/payments";
-import { createPayment } from "@/lib/data/payments";
 import type { CreatePaymentInput } from "@/lib/validators/payments";
+import { idSchema, monthSchema } from "@/lib/validators/common";
 
 export async function createPaymentAction(input: CreatePaymentInput) {
   const admin = await requireAdmin();
@@ -26,15 +27,7 @@ export async function markPaymentPaidAction(data: {
   month: string;
 }) {
   const admin = await requireAdmin();
-  await createPayment({
-    studentId: data.studentId,
-    amount: data.amount,
-    method: data.method,
-    paidAt: new Date(),
-    recordedById: admin.id,
-    enrollmentId: data.enrollmentId,
-    coversMonth: data.month,
-  });
+  await recordPaymentForDue(data, admin.id);
   revalidatePath("/payments");
   revalidatePath(`/students/${data.studentId}`);
   return { success: true };
@@ -45,7 +38,10 @@ export async function sendPaymentReminderAction(
   month: string
 ) {
   await requireAdmin();
-  await sendPaymentReminderEmail(enrollmentId, month);
+  await sendPaymentReminderEmail(
+    idSchema.parse(enrollmentId),
+    monthSchema.parse(month),
+  );
   return { success: true };
 }
 
@@ -54,8 +50,8 @@ export async function deletePaymentAction(
   studentId: string
 ) {
   await requireAdmin();
-  await deletePaymentById(paymentId);
+  await deletePaymentById(idSchema.parse(paymentId));
   revalidatePath("/payments");
-  revalidatePath(`/students/${studentId}`);
+  revalidatePath(`/students/${idSchema.parse(studentId)}`);
   return { success: true };
 }

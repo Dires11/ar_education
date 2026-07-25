@@ -1,3 +1,5 @@
+import "server-only";
+
 import { addDays, endOfDay, startOfDay } from "date-fns";
 import {
   getSessionsForDay,
@@ -8,18 +10,12 @@ import {
   getWeeklySessionsByDay,
   getMonthlyRevenue,
 } from "@/lib/data/dashboard";
-import { applyDiscounts } from "@/lib/services/pricing";
+import { calculateEnrollmentCharges } from "@/lib/services/pricing-calculator";
 import {
   materializeSessions,
   materializeGroupSessions,
 } from "@/lib/services/session-materialization";
 import { Prisma } from "../../generated/prisma";
-
-function billingPeriodMonths(period: "MONTHLY" | "THREE_MONTHS" | "YEARLY") {
-  if (period === "YEARLY") return 12;
-  if (period === "THREE_MONTHS") return 3;
-  return 1;
-}
 
 export async function getDashboardStats() {
   const today = new Date();
@@ -59,27 +55,9 @@ export async function getDashboardStats() {
     let totalCharged = new Prisma.Decimal(0);
 
     for (const enrollment of student.enrollments) {
-      const effectivePrice = applyDiscounts(
-        enrollment.customPriceOverride ?? enrollment.package.basePrice,
-        enrollment.discounts
+      totalCharged = totalCharged.add(
+        calculateEnrollmentCharges(enrollment),
       );
-
-      if (enrollment.package.type === "PER_SESSION") {
-        const billableCount = enrollment.sessionAttendance.length;
-        totalCharged = totalCharged.add(effectivePrice.mul(billableCount));
-      } else {
-        // Subscription packages charge once per billing period.
-        const start = new Date(enrollment.startDate);
-        const end = new Date();
-        const months =
-          (end.getFullYear() - start.getFullYear()) * 12 +
-          (end.getMonth() - start.getMonth()) +
-          1;
-        const periods = Math.ceil(
-          Math.max(1, months) / billingPeriodMonths(enrollment.package.billingPeriod)
-        );
-        totalCharged = totalCharged.add(effectivePrice.mul(periods));
-      }
     }
 
     const totalPaid = student.payments.reduce(

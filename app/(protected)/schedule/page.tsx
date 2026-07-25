@@ -1,7 +1,4 @@
-import {
-  getMonthSchedule,
-  autoCompletePassedSessions,
-} from "@/lib/services/sessions";
+import { getMonthSchedule } from "@/lib/services/sessions";
 import { listTutors } from "@/lib/data/tutors";
 import { listSubjects } from "@/lib/data/subjects";
 import { listEnrollments } from "@/lib/data/enrollments";
@@ -13,8 +10,6 @@ export const dynamic = "force-dynamic";
 
 export default async function SchedulePage() {
   const monthStart = startOfMonth(new Date());
-
-  autoCompletePassedSessions().catch(console.error); // fire-and-forget
 
   const [
     { realSessions: sessions, virtualSessions, paidMonths },

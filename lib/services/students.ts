@@ -1,15 +1,17 @@
+import "server-only";
+
 import {
-  createStudent,
+  createStudentWithGuardianData,
   updateStudent,
   updateStudentStatus,
   deleteStudent,
   archiveStudent,
-  createGuardian,
-  linkGuardian,
+  createGuardianAndLink,
   updateGuardian,
   unlinkGuardian,
   setGuardianPrimary,
   getStudent,
+  getGuardian,
 } from "@/lib/data/students";
 import {
   createStudentSchema,
@@ -17,35 +19,41 @@ import {
   type CreateStudentInput,
   type UpdateStudentInput,
   type GuardianInput,
+  guardianSchema,
 } from "@/lib/validators/students";
 import { PersonStatus } from "@/generated/prisma";
+import { deleteCloudinaryImageIfUnreferenced } from "@/lib/services/media";
 
 export async function createStudentWithGuardian(input: CreateStudentInput) {
   const parsed = createStudentSchema.parse(input);
 
   const dob = parsed.dob ? new Date(parsed.dob) : null;
 
-  const student = await createStudent({
-    firstName: parsed.firstName,
-    lastName: parsed.lastName,
-    avatarUrl: parsed.avatarUrl || undefined,
-    avatarPublicId: parsed.avatarPublicId || undefined,
-    dob,
-    email: parsed.email || undefined,
-    phone: parsed.phone || undefined,
-    school: parsed.school,
-    gradeLevel: parsed.gradeLevel,
-    notes: parsed.notes,
-  });
+  const guardianData = parsed.guardian
+    ? {
+        ...parsed.guardian,
+        email: parsed.guardian.email || undefined,
+        avatarUrl: parsed.guardian.avatarUrl || undefined,
+        avatarPublicId: parsed.guardian.avatarPublicId || undefined,
+        isPrimary: parsed.guardian.isPrimary ?? true,
+      }
+    : undefined;
 
-  if (parsed.guardian) {
-    const { isPrimary, ...guardianData } = parsed.guardian;
-    const email = guardianData.email || undefined;
-    const guardian = await createGuardian({ ...guardianData, email });
-    await linkGuardian(student.id, guardian.id, isPrimary ?? true);
-  }
-
-  return student;
+  return createStudentWithGuardianData(
+    {
+      firstName: parsed.firstName,
+      lastName: parsed.lastName,
+      avatarUrl: parsed.avatarUrl || undefined,
+      avatarPublicId: parsed.avatarPublicId || undefined,
+      dob,
+      email: parsed.email || undefined,
+      phone: parsed.phone || undefined,
+      school: parsed.school,
+      gradeLevel: parsed.gradeLevel,
+      notes: parsed.notes,
+    },
+    guardianData,
+  );
 }
 
 export async function updateStudentProfile(
@@ -54,14 +62,25 @@ export async function updateStudentProfile(
 ) {
   const parsed = updateStudentSchema.parse(input);
   const dob = parsed.dob ? new Date(parsed.dob) : undefined;
-  return updateStudent(id, {
+  const existing = await getStudent(id);
+  if (!existing) throw new Error("Student not found");
+  const updated = await updateStudent(id, {
     ...parsed,
     dob,
-    avatarUrl: parsed.avatarUrl || undefined,
-    avatarPublicId: parsed.avatarPublicId || undefined,
+    avatarUrl: parsed.avatarUrl || null,
+    avatarPublicId: parsed.avatarPublicId || null,
     email: parsed.email || undefined,
     phone: parsed.phone || undefined,
   });
+  if (
+    existing.avatarPublicId &&
+    existing.avatarPublicId !== updated.avatarPublicId
+  ) {
+    deleteCloudinaryImageIfUnreferenced(
+      existing.avatarPublicId,
+    ).catch(console.error);
+  }
+  return updated;
 }
 
 export async function archiveStudentById(id: string) {
@@ -85,12 +104,11 @@ export async function addGuardianToStudent(
 ) {
   const { isPrimary = false, ...guardianData } = input;
   const email = input.email || undefined;
-  const guardian = await createGuardian({ ...guardianData, email });
-  await linkGuardian(studentId, guardian.id, isPrimary);
-  if (isPrimary) {
-    await setGuardianPrimary(studentId, guardian.id, true);
-  }
-  return guardian;
+  return createGuardianAndLink(
+    studentId,
+    { ...guardianData, email },
+    isPrimary,
+  );
 }
 
 export async function updateGuardianDetails(
@@ -98,20 +116,36 @@ export async function updateGuardianDetails(
   studentId: string,
   input: Partial<GuardianInput>
 ) {
-  const email = input.email || undefined;
-  await updateGuardian(guardianId, {
-    firstName: input.firstName,
-    lastName: input.lastName,
-    avatarUrl: input.avatarUrl,
-    avatarPublicId: input.avatarPublicId,
-    phone: input.phone,
+  const parsed = guardianSchema.partial().parse(input);
+  const existing = await getGuardian(guardianId);
+  if (!existing) throw new Error("Guardian not found");
+  const email = parsed.email || undefined;
+  const updated = await updateGuardian(guardianId, {
+    firstName: parsed.firstName,
+    lastName: parsed.lastName,
+    avatarUrl:
+      parsed.avatarUrl === undefined ? undefined : parsed.avatarUrl || null,
+    avatarPublicId:
+      parsed.avatarPublicId === undefined
+        ? undefined
+        : parsed.avatarPublicId || null,
+    phone: parsed.phone,
     email,
-    relationship: input.relationship,
-    notes: input.notes,
+    relationship: parsed.relationship,
+    notes: parsed.notes,
   });
-  if (input.isPrimary !== undefined) {
-    await setGuardianPrimary(studentId, guardianId, input.isPrimary);
+  if (parsed.isPrimary !== undefined) {
+    await setGuardianPrimary(studentId, guardianId, parsed.isPrimary);
   }
+  if (
+    existing.avatarPublicId &&
+    existing.avatarPublicId !== updated.avatarPublicId
+  ) {
+    deleteCloudinaryImageIfUnreferenced(
+      existing.avatarPublicId,
+    ).catch(console.error);
+  }
+  return updated;
 }
 
 export async function removeGuardianFromStudent(
