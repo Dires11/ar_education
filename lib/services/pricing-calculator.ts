@@ -1,4 +1,5 @@
 import { Prisma } from "../../generated/prisma";
+import { getCalendarDateInTimeZone } from "@/lib/services/session-dates";
 
 export type DiscountRow = {
   kind:
@@ -113,6 +114,8 @@ export function applyDiscounts(
 export type EnrollmentForPricing = {
   startDate: Date;
   endDate: Date | null;
+  status: "ACTIVE" | "PAUSED" | "COMPLETED" | "CANCELLED";
+  updatedAt: Date;
   priceAtEnrollment: Prisma.Decimal;
   customPriceOverride: Prisma.Decimal | null;
   package: {
@@ -125,18 +128,53 @@ export type EnrollmentForPricing = {
   }>;
 };
 
+function endOfUtcCalendarDay(date: Date): Date {
+  return new Date(
+    Date.UTC(
+      date.getUTCFullYear(),
+      date.getUTCMonth(),
+      date.getUTCDate(),
+      23,
+      59,
+      59,
+      999,
+    ),
+  );
+}
+
+function getBillingCutoff(enrollment: EnrollmentForPricing): Date | null {
+  if (
+    enrollment.status === "COMPLETED" ||
+    enrollment.status === "CANCELLED"
+  ) {
+    // updatedAt is a defensive fallback for legacy rows created before
+    // terminal enrollments were required to have an endDate.
+    return (
+      enrollment.endDate ??
+      getCalendarDateInTimeZone(enrollment.updatedAt)
+    );
+  }
+  return enrollment.endDate;
+}
+
 export function calculateEnrollmentCharges(
   enrollment: EnrollmentForPricing,
   throughDate = new Date(),
 ): Prisma.Decimal {
   const basePrice =
     enrollment.customPriceOverride ?? enrollment.priceAtEnrollment;
+  const billingCutoff = getBillingCutoff(enrollment);
+  const cutoffEnd = billingCutoff
+    ? endOfUtcCalendarDay(billingCutoff)
+    : null;
+  const effectiveEnd =
+    cutoffEnd && cutoffEnd < throughDate ? cutoffEnd : throughDate;
 
   if (enrollment.package.type === "PER_SESSION") {
     const billableAttendances = enrollment.sessionAttendance
       .filter(
         (attendance) =>
-          attendance.session.scheduledFor <= throughDate &&
+          attendance.session.scheduledFor <= effectiveEnd &&
           attendance.session.scheduledFor >= enrollment.startDate,
       )
       .sort(
@@ -157,10 +195,6 @@ export function calculateEnrollmentCharges(
     );
   }
 
-  const effectiveEnd =
-    enrollment.endDate && enrollment.endDate < throughDate
-      ? enrollment.endDate
-      : throughDate;
   if (enrollment.startDate > effectiveEnd) return new Prisma.Decimal(0);
 
   const periodMonths = billingPeriodMonths(enrollment.package.billingPeriod);

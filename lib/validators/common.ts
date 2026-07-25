@@ -5,10 +5,17 @@ export const idSchema = z.string().trim().min(1).max(128);
 export const dateSchema = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD")
-  .refine(
-    (value) => !Number.isNaN(Date.parse(`${value}T00:00:00.000Z`)),
-    "Invalid date",
-  );
+  .refine((value) => {
+    const [year, month, day] = value.split("-").map(Number);
+    const parsed = new Date(0);
+    parsed.setUTCHours(0, 0, 0, 0);
+    parsed.setUTCFullYear(year, month - 1, day);
+    return (
+      parsed.getUTCFullYear() === year &&
+      parsed.getUTCMonth() === month - 1 &&
+      parsed.getUTCDate() === day
+    );
+  }, "Invalid date");
 
 export const isoDateTimeSchema = z
   .string()

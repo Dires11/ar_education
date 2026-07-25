@@ -22,6 +22,7 @@ import {
   type CreateDiscountInput,
 } from "@/lib/validators/enrollments";
 import { deleteGroupWhenEmpty } from "@/lib/services/groups";
+import { resolveEnrollmentEndDate } from "@/lib/services/enrollment-dates";
 import { listGroups } from "@/lib/data/groups";
 
 export async function createEnrollmentForStudent(input: CreateEnrollmentInput) {
@@ -106,14 +107,29 @@ export async function updateEnrollmentStatus(
 ) {
   const parsed = updateEnrollmentSchema.parse(input);
   const enrollment = await getEnrollment(id);
-  const updated = await updateEnrollment(id, {
+  if (!enrollment) {
+    throw new Error("Enrollment not found");
+  }
+
+  const isTerminal = ["COMPLETED", "CANCELLED"].includes(parsed.status);
+  const endDate = resolveEnrollmentEndDate({
     status: parsed.status,
-    endDate: parsed.endDate ? new Date(parsed.endDate) : undefined,
-    customPriceOverride: parsed.customPriceOverride || null,
+    startDate: enrollment.startDate,
+    currentEndDate: enrollment.endDate,
+    requestedEndDate: parsed.endDate ? new Date(parsed.endDate) : undefined,
   });
 
-  if (["COMPLETED", "CANCELLED"].includes(parsed.status)) {
-    await deleteGroupWhenEmpty(enrollment?.groupId);
+  const updated = await updateEnrollment(id, {
+    status: parsed.status,
+    endDate,
+    customPriceOverride:
+      parsed.customPriceOverride === undefined
+        ? undefined
+        : parsed.customPriceOverride || null,
+  });
+
+  if (isTerminal) {
+    await deleteGroupWhenEmpty(enrollment.groupId);
   }
 
   return updated;
