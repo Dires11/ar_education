@@ -1,5 +1,7 @@
+import "server-only";
+
 import {
-  createTutor,
+  createTutorWithSubjectsData,
   updateTutor,
   archiveTutor,
   setTutorSubjects,
@@ -13,17 +15,27 @@ import {
   type UpdateTutorInput,
 } from "@/lib/validators/tutors";
 import { Prisma } from "../../generated/prisma";
+import { deleteCloudinaryImageIfUnreferenced } from "@/lib/services/media";
 
 export async function createTutorWithSubjects(input: CreateTutorInput) {
   const parsed = createTutorSchema.parse(input);
-  const tutor = await createTutor(parsed);
-  await setTutorSubjects(tutor.id, parsed.subjectIds);
-  return tutor;
+  return createTutorWithSubjectsData(parsed, parsed.subjectIds);
 }
 
 export async function updateTutorProfile(id: string, input: UpdateTutorInput) {
   const parsed = updateTutorSchema.parse(input);
-  return updateTutor(id, parsed);
+  const existing = await getTutor(id);
+  if (!existing) throw new Error("Tutor not found");
+  const updated = await updateTutor(id, parsed);
+  if (
+    existing.avatarPublicId &&
+    existing.avatarPublicId !== updated.avatarPublicId
+  ) {
+    deleteCloudinaryImageIfUnreferenced(
+      existing.avatarPublicId,
+    ).catch(console.error);
+  }
+  return updated;
 }
 
 export async function updateTutorSubjectsList(

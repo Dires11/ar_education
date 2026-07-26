@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { dateSchema } from "@/lib/validators/common";
 
 export const guardianRelationshipValues = [
   "PARENT",
@@ -9,42 +10,42 @@ export const guardianRelationshipValues = [
 const guardianRelationshipSchema = z.enum(guardianRelationshipValues);
 
 export const guardianSchema = z.object({
-  firstName: z.string().min(1, "First name is required"),
-  lastName: z.string().min(1, "Last name is required"),
-  avatarUrl: z.string().url("Invalid image URL").optional().or(z.literal("")),
-  avatarPublicId: z.string().optional(),
-  email: z.string().email("Invalid email").optional().or(z.literal("")),
-  phone: z.string().min(1, "Phone is required"),
+  firstName: z.string().trim().min(1, "First name is required").max(100),
+  lastName: z.string().trim().min(1, "Last name is required").max(100),
+  avatarUrl: z.string().url("Invalid image URL").max(2_000).optional().or(z.literal("")),
+  avatarPublicId: z.string().trim().max(255).optional(),
+  email: z.string().trim().email("Invalid email").max(320).optional().or(z.literal("")),
+  phone: z.string().trim().min(1, "Phone is required").max(50),
   relationship: guardianRelationshipSchema.default("PARENT"),
-  notes: z.string().optional(),
+  notes: z.string().trim().max(2_000).optional(),
   isPrimary: z.boolean().default(true),
 });
 
 export const createStudentSchema = z.object({
-  firstName: z.string().min(1, "First name is required"),
-  lastName: z.string().min(1, "Last name is required"),
-  avatarUrl: z.string().url("Invalid image URL").optional().or(z.literal("")),
-  avatarPublicId: z.string().optional(),
-  dob: z.string().min(1, "Date of birth is required"),
-  email: z.string().email("Invalid email").optional().or(z.literal("")),
-  phone: z.string().optional(),
-  school: z.string().optional(),
-  gradeLevel: z.string().optional(),
-  notes: z.string().optional(),
+  firstName: z.string().trim().min(1, "First name is required").max(100),
+  lastName: z.string().trim().min(1, "Last name is required").max(100),
+  avatarUrl: z.string().url("Invalid image URL").max(2_000).optional().or(z.literal("")),
+  avatarPublicId: z.string().trim().max(255).optional(),
+  dob: dateSchema,
+  email: z.string().trim().email("Invalid email").max(320).optional().or(z.literal("")),
+  phone: z.string().trim().max(50).optional(),
+  school: z.string().trim().max(200).optional(),
+  gradeLevel: z.string().trim().max(100).optional(),
+  notes: z.string().trim().max(2_000).optional(),
   guardian: guardianSchema.optional(),
 });
 
 export const updateStudentSchema = z.object({
-  firstName: z.string().min(1, "First name is required"),
-  lastName: z.string().min(1, "Last name is required"),
-  avatarUrl: z.string().url("Invalid image URL").optional().or(z.literal("")),
-  avatarPublicId: z.string().optional(),
-  dob: z.string().min(1, "Date of birth is required"),
-  email: z.string().email("Invalid email").optional().or(z.literal("")),
-  phone: z.string().optional(),
-  school: z.string().optional(),
-  gradeLevel: z.string().optional(),
-  notes: z.string().optional(),
+  firstName: z.string().trim().min(1, "First name is required").max(100),
+  lastName: z.string().trim().min(1, "Last name is required").max(100),
+  avatarUrl: z.string().url("Invalid image URL").max(2_000).optional().or(z.literal("")),
+  avatarPublicId: z.string().trim().max(255).optional(),
+  dob: dateSchema,
+  email: z.string().trim().email("Invalid email").max(320).optional().or(z.literal("")),
+  phone: z.string().trim().max(50).optional(),
+  school: z.string().trim().max(200).optional(),
+  gradeLevel: z.string().trim().max(100).optional(),
+  notes: z.string().trim().max(2_000).optional(),
 });
 
 export type CreateStudentFormValues = z.input<typeof createStudentSchema>;

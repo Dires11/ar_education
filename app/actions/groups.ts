@@ -4,12 +4,14 @@ import { revalidatePath } from "next/cache";
 import { requireAdmin } from "@/lib/utils/auth";
 import { updateExistingGroup } from "@/lib/services/groups";
 import type { UpdateGroupInput } from "@/lib/validators/groups";
+import { idSchema } from "@/lib/validators/common";
 
 export async function updateGroupAction(
   groupId: string,
   input: UpdateGroupInput
 ) {
   await requireAdmin();
+  groupId = idSchema.parse(groupId);
   try {
     const group = await updateExistingGroup(groupId, input);
     revalidatePath("/enrollments");

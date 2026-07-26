@@ -1,7 +1,6 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { format, startOfMonth, parse } from "date-fns";
 import { requireAdmin } from "@/lib/utils/auth";
 import {
   createAdHocSession,
@@ -16,22 +15,43 @@ import {
   endRecurrenceFromDate,
   cancelVirtualOccurrence,
   rescheduleVirtualOccurrence,
-  autoCompletePassedSessions,
   deleteRecurringSchedule,
   updateEnrollmentRecurrenceColor,
-} from "@/lib/services/sessions";
-import {
-  updateSession,
+  updateScheduledSession,
   updateSessionStatus,
   getActiveRecurrenceRulesForEnrollment,
   getActiveRecurrenceRulesForGroup,
-} from "@/lib/data/sessions";
-import { enqueueSessionReminder } from "@/lib/services/notifications";
+} from "@/lib/services/sessions";
 import type {
   CreateAdHocSessionInput,
   CreateRecurrenceInput,
   MarkAttendanceInput,
 } from "@/lib/validators/sessions";
+import {
+  recurrenceOccurrenceSchema,
+  rescheduleOccurrenceSchema,
+  splitRecurrenceSchema,
+  updateSessionSchema,
+} from "@/lib/validators/sessions";
+import {
+  idSchema,
+  isoDateTimeSchema,
+  monthSchema,
+} from "@/lib/validators/common";
+import {
+  getCalendarMonthKey,
+  getConfiguredCenterTimeZone,
+} from "@/lib/services/session-dates";
+import { z } from "zod";
+import { getSchedulePaymentStatus } from "@/lib/services/schedule-payment-status";
+
+const sessionStatusSchema = z.enum([
+  "SCHEDULED",
+  "COMPLETED",
+  "NO_SHOW",
+  "CANCELLED_BY_TUTOR",
+  "CANCELLED_BY_STUDENT",
+]);
 
 function friendlyScheduleError(error: unknown): Error {
   if (
@@ -65,7 +85,6 @@ export async function createAdHocSessionAction(input: CreateAdHocSessionInput) {
   await requireAdmin();
   try {
     const session = await createAdHocSession(input);
-    enqueueSessionReminder(session.id).catch(console.error);
     revalidatePath("/schedule");
     return { success: true, id: session.id };
   } catch (error) {
@@ -96,6 +115,7 @@ export async function markAttendanceAction(
   input: MarkAttendanceInput
 ) {
   await requireAdmin();
+  sessionId = idSchema.parse(sessionId);
   await markSessionAttendance(sessionId, input);
   revalidatePath("/schedule");
   revalidatePath(`/schedule/${sessionId}`);
@@ -107,7 +127,10 @@ export async function setSessionStatusAction(
   status: "SCHEDULED" | "COMPLETED" | "NO_SHOW" | "CANCELLED_BY_TUTOR" | "CANCELLED_BY_STUDENT"
 ) {
   await requireAdmin();
-  await updateSessionStatus(sessionId, status);
+  await updateSessionStatus(
+    idSchema.parse(sessionId),
+    sessionStatusSchema.parse(status),
+  );
   revalidatePath("/schedule");
   return { success: true };
 }
@@ -117,7 +140,10 @@ export async function cancelSessionAction(
   cancelledBy: "TUTOR" | "STUDENT"
 ) {
   await requireAdmin();
-  await cancelSessionById(sessionId, cancelledBy);
+  await cancelSessionById(
+    idSchema.parse(sessionId),
+    z.enum(["TUTOR", "STUDENT"]).parse(cancelledBy),
+  );
   revalidatePath("/schedule");
   revalidatePath(`/schedule/${sessionId}`);
   return { success: true };
@@ -125,7 +151,7 @@ export async function cancelSessionAction(
 
 export async function deleteSessionAction(sessionId: string) {
   await requireAdmin();
-  await deleteSessionById(sessionId);
+  await deleteSessionById(idSchema.parse(sessionId));
   revalidatePath("/schedule");
   return { success: true };
 }
@@ -140,11 +166,14 @@ export async function updateSessionAction(
   }
 ) {
   await requireAdmin();
-  await updateSession(sessionId, {
-    scheduledFor: data.scheduledFor ? new Date(data.scheduledFor) : undefined,
-    durationMinutes: data.durationMinutes,
-    room: data.room ?? null,
-    notes: data.notes ?? null,
+  const parsed = updateSessionSchema.parse(data);
+  await updateScheduledSession(idSchema.parse(sessionId), {
+    scheduledFor: parsed.scheduledFor
+      ? new Date(parsed.scheduledFor)
+      : undefined,
+    durationMinutes: parsed.durationMinutes,
+    room: parsed.room,
+    notes: parsed.notes,
   });
   revalidatePath("/schedule");
   return { success: true };
@@ -162,39 +191,71 @@ export async function splitRecurrenceRuleAction(
   }
 ) {
   await requireAdmin();
-  await splitRecurrenceRule(ruleId, new Date(splitDateStr), newParams);
+  const parsed = splitRecurrenceSchema.parse({
+    ruleId,
+    splitDate: splitDateStr,
+    params: newParams,
+  });
+  await splitRecurrenceRule(
+    parsed.ruleId,
+    new Date(parsed.splitDate),
+    parsed.params,
+  );
   revalidatePath("/schedule");
   return { success: true };
 }
 
 export async function endRecurrenceRuleAction(ruleId: string, fromDateStr: string) {
   await requireAdmin();
-  await endRecurrenceFromDate(ruleId, new Date(fromDateStr));
+  const parsed = recurrenceOccurrenceSchema.parse({
+    ruleId,
+    occurrenceFor: fromDateStr,
+  });
+  await endRecurrenceFromDate(parsed.ruleId, new Date(parsed.occurrenceFor));
   revalidatePath("/schedule");
   return { success: true };
 }
 
 export async function cancelOccurrenceAction(ruleId: string, dateStr: string) {
   await requireAdmin();
-  await cancelVirtualOccurrence(ruleId, new Date(dateStr));
+  const parsed = recurrenceOccurrenceSchema.parse({
+    ruleId,
+    occurrenceFor: dateStr,
+  });
+  await cancelVirtualOccurrence(
+    parsed.ruleId,
+    new Date(parsed.occurrenceFor),
+  );
   revalidatePath("/schedule");
   return { success: true };
 }
 
 export async function rescheduleOccurrenceAction(
   ruleId: string,
+  originalScheduledForStr: string,
   newScheduledForStr: string,
   overrides: { durationMinutes?: number; room?: string | null }
 ) {
   await requireAdmin();
-  await rescheduleVirtualOccurrence(ruleId, new Date(newScheduledForStr), overrides);
+  const parsed = rescheduleOccurrenceSchema.parse({
+    ruleId,
+    occurrenceFor: originalScheduledForStr,
+    newScheduledFor: newScheduledForStr,
+    overrides,
+  });
+  await rescheduleVirtualOccurrence(
+    parsed.ruleId,
+    new Date(parsed.occurrenceFor),
+    new Date(parsed.newScheduledFor),
+    parsed.overrides,
+  );
   revalidatePath("/schedule");
   return { success: true };
 }
 
 export async function deleteRecurrenceRuleAction(ruleId: string) {
   await requireAdmin();
-  await deleteRecurringSchedule(ruleId);
+  await deleteRecurringSchedule(idSchema.parse(ruleId));
   revalidatePath("/schedule");
   return { success: true };
 }
@@ -204,7 +265,10 @@ export async function getEnrollmentMonthSummaryAction(
   dateStr: string
 ) {
   await requireAdmin();
-  return getEnrollmentMonthSummary(enrollmentId, new Date(dateStr));
+  return getEnrollmentMonthSummary(
+    idSchema.parse(enrollmentId),
+    new Date(isoDateTimeSchema.parse(dateStr)),
+  );
 }
 
 export async function getRecurringSchedulePreviewAction(
@@ -219,10 +283,16 @@ export async function getRecurringSchedulePreviewAction(
 export async function fetchScheduleForMonth(monthParam: string) {
   await requireAdmin();
 
-  const monthStart = startOfMonth(parse(monthParam, "yyyy-MM-dd", new Date()));
-  autoCompletePassedSessions().catch(() => {});
+  const monthKey = monthSchema.parse(monthParam);
+  const centerTimeZone = getConfiguredCenterTimeZone();
 
-  const { realSessions, virtualSessions, paidMonths } = await getMonthSchedule(monthStart);
+  const {
+    realSessions,
+    virtualSessions,
+    paidMonths,
+    subscriptionEnrollmentIds,
+  } =
+    await getMonthSchedule(monthKey);
 
   const sessions = realSessions.map((s) => ({
     id: s.id,
@@ -255,16 +325,30 @@ export async function fetchScheduleForMonth(monthParam: string) {
     dayOfWeek: s.recurrenceRule?.dayOfWeek ?? null,
     intervalWeeks: s.recurrenceRule?.intervalWeeks ?? null,
     color: s.recurrenceRule?.color ?? null,
-    isPaid: s.enrollmentId
-      ? paidMonths.has(`${s.enrollmentId}:${format(s.scheduledFor, "yyyy-MM")}`)
-      : null as boolean | null,
+    isPaid: getSchedulePaymentStatus({
+      enrollmentId: s.enrollmentId,
+      monthKey: getCalendarMonthKey(
+        s.scheduledFor,
+        centerTimeZone,
+      ),
+      subscriptionEnrollmentIds,
+      paidMonths,
+    }),
   }));
 
   const virtual = virtualSessions.map((v) => ({
     ...v,
     notes: null as string | null,
     recurrenceRuleId: null as string | null,
-    isPaid: v.enrollmentId ? paidMonths.has(`${v.enrollmentId}:${format(new Date(v.scheduledFor), "yyyy-MM")}`) : null,
+    isPaid: getSchedulePaymentStatus({
+      enrollmentId: v.enrollmentId,
+      monthKey: getCalendarMonthKey(
+        new Date(v.scheduledFor),
+        centerTimeZone,
+      ),
+      subscriptionEnrollmentIds,
+      paidMonths,
+    }),
   }));
 
   return { sessions, virtual };
@@ -272,7 +356,7 @@ export async function fetchScheduleForMonth(monthParam: string) {
 
 export async function getActiveRecurrenceRulesAction(enrollmentId: string) {
   await requireAdmin();
-  return getActiveRecurrenceRulesForEnrollment(enrollmentId);
+  return getActiveRecurrenceRulesForEnrollment(idSchema.parse(enrollmentId));
 }
 
 export async function updateEnrollmentRecurrenceColorAction(
@@ -280,12 +364,15 @@ export async function updateEnrollmentRecurrenceColorAction(
   color: string
 ) {
   await requireAdmin();
-  await updateEnrollmentRecurrenceColor(enrollmentId, color);
+  await updateEnrollmentRecurrenceColor(
+    idSchema.parse(enrollmentId),
+    z.string().regex(/^#[0-9a-fA-F]{6}$/).parse(color),
+  );
   revalidatePath("/schedule");
   return { success: true };
 }
 
 export async function getActiveRecurrenceRulesForGroupAction(groupId: string) {
   await requireAdmin();
-  return getActiveRecurrenceRulesForGroup(groupId);
+  return getActiveRecurrenceRulesForGroup(idSchema.parse(groupId));
 }

@@ -1,3 +1,5 @@
+import "server-only";
+
 import { prisma } from "@/lib/prisma";
 import { EnrollmentStatus } from "../../generated/prisma";
 
@@ -53,21 +55,95 @@ export async function createEnrollment(data: {
   subjectId: string;
   startDate: Date;
   endDate?: Date | null;
+  priceAtEnrollment: string;
   customPriceOverride?: string | null;
   groupId?: string | null;
 }) {
   return prisma.enrollment.create({ data });
 }
 
-export async function updateEnrollment(
-  id: string,
+export async function createEnrollmentWithNewGroup(
+  data: Omit<Parameters<typeof createEnrollment>[0], "groupId">,
+  group: { name: string; tutorId: string; subjectId: string },
+) {
+  return prisma.$transaction(async (tx) => {
+    const createdGroup = await tx.group.create({ data: group });
+    return tx.enrollment.create({
+      data: { ...data, groupId: createdGroup.id },
+    });
+  });
+}
+
+export async function updateEnrollmentLifecycle(input: {
+  id: string;
   data: {
     endDate?: Date | null;
     status?: EnrollmentStatus;
     customPriceOverride?: string | null;
-  }
-) {
-  return prisma.enrollment.update({ where: { id }, data });
+  };
+  scheduleCutoffExclusive?: Date;
+  closeRecurrencesOn?: Date;
+  groupId?: string | null;
+}) {
+  return prisma.$transaction(async (tx) => {
+    const updated = await tx.enrollment.update({
+      where: { id: input.id },
+      data: input.data,
+    });
+
+    if (input.scheduleCutoffExclusive) {
+      await tx.sessionAttendance.deleteMany({
+        where: {
+          enrollmentId: input.id,
+          status: "SCHEDULED",
+          session: {
+            scheduledFor: { gte: input.scheduleCutoffExclusive },
+          },
+        },
+      });
+      await tx.session.deleteMany({
+        where: {
+          enrollmentId: input.id,
+          status: "SCHEDULED",
+          scheduledFor: { gte: input.scheduleCutoffExclusive },
+        },
+      });
+
+      if (input.groupId) {
+        await tx.session.deleteMany({
+          where: {
+            enrollmentId: null,
+            status: "SCHEDULED",
+            scheduledFor: { gte: input.scheduleCutoffExclusive },
+            recurrenceRule: { groupId: input.groupId },
+            attendance: { none: {} },
+          },
+        });
+      }
+    }
+
+    if (input.closeRecurrencesOn) {
+      await tx.recurrenceRule.deleteMany({
+        where: {
+          enrollmentId: input.id,
+          startsOn: { gt: input.closeRecurrencesOn },
+        },
+      });
+      await tx.recurrenceRule.updateMany({
+        where: {
+          enrollmentId: input.id,
+          startsOn: { lte: input.closeRecurrencesOn },
+          OR: [
+            { endsOn: null },
+            { endsOn: { gt: input.closeRecurrencesOn } },
+          ],
+        },
+        data: { endsOn: input.closeRecurrencesOn },
+      });
+    }
+
+    return updated;
+  });
 }
 
 export async function createDiscount(data: {
@@ -86,4 +162,27 @@ export async function createDiscount(data: {
 
 export async function deleteDiscount(id: string) {
   return prisma.discount.delete({ where: { id } });
+}
+
+export function getTutorSubjectAssignment(tutorId: string, subjectId: string) {
+  return prisma.tutorSubject.findUnique({
+    where: { tutorId_subjectId: { tutorId, subjectId } },
+  });
+}
+
+export function findActiveEnrollmentForSubject(
+  studentId: string,
+  subjectId: string,
+) {
+  return prisma.enrollment.findFirst({
+    where: { studentId, subjectId, status: "ACTIVE" },
+  });
+}
+
+export function getPackageForEnrollment(id: string) {
+  return prisma.package.findUnique({ where: { id } });
+}
+
+export function getGroupAssignment(id: string) {
+  return prisma.group.findUnique({ where: { id } });
 }

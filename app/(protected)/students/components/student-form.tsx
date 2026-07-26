@@ -160,6 +160,7 @@ export function StudentForm({ onSuccess }: { onSuccess?: () => void }) {
         firstName: values.firstName,
         lastName: values.lastName,
         avatarUrl: values.avatarUrl,
+        avatarPublicId: values.avatarPublicId,
         dob: values.dob,
         email: isAdult ? values.email : "",
         phone: isAdult ? values.phone : "",
@@ -172,6 +173,7 @@ export function StudentForm({ onSuccess }: { onSuccess?: () => void }) {
               firstName: values.guardian?.firstName ?? "",
               lastName: values.guardian?.lastName ?? "",
               avatarUrl: values.guardian?.avatarUrl ?? "",
+              avatarPublicId: values.guardian?.avatarPublicId ?? "",
               phone: values.guardian?.phone ?? "",
               email: values.guardian?.email ?? "",
               relationship: values.guardian?.relationship ?? "PARENT",
@@ -183,7 +185,10 @@ export function StudentForm({ onSuccess }: { onSuccess?: () => void }) {
       const result = await createStudentAction(payload);
 
       if (result.success) {
-        commit();
+        commit([
+          payload.avatarPublicId,
+          payload.guardian?.avatarPublicId,
+        ]);
         toast.success("Student created");
         if (onSuccess) {
           onSuccess();

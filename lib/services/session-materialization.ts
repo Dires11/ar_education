@@ -1,11 +1,5 @@
-import {
-  addDays,
-  endOfDay,
-  endOfWeek,
-  format,
-  startOfDay,
-  startOfWeek,
-} from "date-fns";
+import "server-only";
+
 import {
   createManySessionAttendances,
   createManySessions,
@@ -14,12 +8,50 @@ import {
   getRecurringRulesInRange,
   getSessionsForRecurrenceRulesInRange,
 } from "@/lib/data/sessions";
-import { prisma } from "@/lib/prisma";
 import {
+  addCalendarDays,
   combineDateAndTime,
+  getCalendarDateInTimeZone,
+  getCalendarWeekRange,
+  getConfiguredCenterTimeZone,
   getEnrollmentWeekKey,
-  getFirstMatchingDate,
+  getFirstRecurrenceOnOrAfter,
 } from "@/lib/services/session-dates";
+import {
+  isEnrollmentEligibleForSession,
+  isEnrollmentEligibleOnCalendarDate,
+} from "@/lib/services/enrollment-schedule-dates";
+
+function getOccurrenceQueryWindow(
+  rules: Array<{ timeZone: string }>,
+  fromDate: Date,
+  toDate: Date,
+) {
+  const starts = rules.map((rule) =>
+    combineDateAndTime(
+      getCalendarDateInTimeZone(fromDate, rule.timeZone),
+      "00:00",
+      rule.timeZone,
+    ),
+  );
+  const endsExclusive = rules.map((rule) =>
+    combineDateAndTime(
+      addCalendarDays(
+        getCalendarDateInTimeZone(toDate, rule.timeZone),
+        1,
+      ),
+      "00:00",
+      rule.timeZone,
+    ),
+  );
+
+  return {
+    start: new Date(Math.min(...starts.map((date) => date.getTime()))),
+    endExclusive: new Date(
+      Math.max(...endsExclusive.map((date) => date.getTime())),
+    ),
+  };
+}
 
 export async function materializeSessions(
   fromDate: Date,
@@ -28,6 +60,11 @@ export async function materializeSessions(
 ): Promise<number> {
   const rules = await getRecurringRulesInRange(fromDate, toDate, options);
   if (rules.length === 0) return 0;
+  const occurrenceWindow = getOccurrenceQueryWindow(
+    rules,
+    fromDate,
+    toDate,
+  );
 
   const sessions: Array<{
     enrollmentId: string;
@@ -37,25 +74,31 @@ export async function materializeSessions(
     durationMinutes: number;
     room?: string;
     recurrenceRuleId: string;
+    recurrenceOccurrenceFor: Date;
   }> = [];
 
   const existingSessions = await getSessionsForRecurrenceRulesInRange(
     rules.map((rule) => rule.id),
-    fromDate,
-    toDate
+    occurrenceWindow.start,
+    occurrenceWindow.endExclusive,
   );
   const coveredSlots = new Set(
     existingSessions
       .filter((session) => session.recurrenceRuleId)
       .map(
         (session) =>
-          `${session.recurrenceRuleId}:${format(session.scheduledFor, "yyyyMMdd")}`
+          `${session.recurrenceRuleId}:${(
+            session.recurrenceOccurrenceFor ?? session.scheduledFor
+          ).toISOString()}`,
       )
   );
+  const centerTimeZone = getConfiguredCenterTimeZone();
+  const firstWeek = getCalendarWeekRange(fromDate, centerTimeZone);
+  const lastWeek = getCalendarWeekRange(toDate, centerTimeZone);
   const existingWeeklySessions = await getNonCancelledEnrollmentSessionsInRange(
     [...new Set(rules.map((rule) => rule.enrollmentId).filter((id): id is string => id !== null))],
-    startOfWeek(fromDate, { weekStartsOn: 1 }),
-    endOfWeek(toDate, { weekStartsOn: 1 })
+    firstWeek.start,
+    lastWeek.endExclusive,
   );
   const weeklyCounts = new Map<string, number>();
   for (const session of existingWeeklySessions) {
@@ -63,7 +106,8 @@ export async function materializeSessions(
 
     const key = getEnrollmentWeekKey(
       session.enrollmentId,
-      new Date(session.scheduledFor)
+      new Date(session.scheduledFor),
+      centerTimeZone,
     );
     weeklyCounts.set(key, (weeklyCounts.get(key) ?? 0) + 1);
   }
@@ -72,27 +116,45 @@ export async function materializeSessions(
     const { enrollment } = rule;
     if (!enrollment || !rule.enrollmentId) continue;
     const enrollmentId = rule.enrollmentId;
-    const searchStart =
-      new Date(rule.startsOn) > fromDate ? new Date(rule.startsOn) : fromDate;
-    let current = getFirstMatchingDate(searchStart, rule.dayOfWeek);
+    const calendarFrom = getCalendarDateInTimeZone(fromDate, rule.timeZone);
+    const calendarTo = getCalendarDateInTimeZone(toDate, rule.timeZone);
+    let current = getFirstRecurrenceOnOrAfter(
+      new Date(rule.startsOn),
+      rule.dayOfWeek,
+      rule.intervalWeeks,
+      calendarFrom,
+    );
 
-    while (current <= toDate) {
+    while (current <= calendarTo) {
       if (rule.endsOn && current > new Date(rule.endsOn)) break;
+      if (!isEnrollmentEligibleOnCalendarDate(enrollment, current)) {
+        if (enrollment.endDate && current > enrollment.endDate) break;
+        current = addCalendarDays(current, rule.intervalWeeks * 7);
+        continue;
+      }
 
-      const scheduledFor = combineDateAndTime(current, rule.startTime);
-      const slotKey = `${rule.id}:${format(scheduledFor, "yyyyMMdd")}`;
-      const weekKey = getEnrollmentWeekKey(enrollmentId, scheduledFor);
+      const scheduledFor = combineDateAndTime(
+        current,
+        rule.startTime,
+        rule.timeZone,
+      );
+      const slotKey = `${rule.id}:${scheduledFor.toISOString()}`;
+      const weekKey = getEnrollmentWeekKey(
+        enrollmentId,
+        scheduledFor,
+        centerTimeZone,
+      );
       const sessionsPerWeek = enrollment.package.sessionsPerWeek ?? null;
 
       if (coveredSlots.has(slotKey)) {
-        current = addDays(current, rule.intervalWeeks * 7);
+        current = addCalendarDays(current, rule.intervalWeeks * 7);
         continue;
       }
       if (
         sessionsPerWeek !== null &&
         (weeklyCounts.get(weekKey) ?? 0) >= sessionsPerWeek
       ) {
-        current = addDays(current, rule.intervalWeeks * 7);
+        current = addCalendarDays(current, rule.intervalWeeks * 7);
         continue;
       }
 
@@ -104,11 +166,12 @@ export async function materializeSessions(
         durationMinutes: rule.durationMinutes,
         room: rule.room ?? undefined,
         recurrenceRuleId: rule.id,
+        recurrenceOccurrenceFor: scheduledFor,
       });
       coveredSlots.add(slotKey);
       weeklyCounts.set(weekKey, (weeklyCounts.get(weekKey) ?? 0) + 1);
 
-      current = addDays(current, rule.intervalWeeks * 7);
+      current = addCalendarDays(current, rule.intervalWeeks * 7);
     }
   }
 
@@ -116,23 +179,29 @@ export async function materializeSessions(
     ? await createManySessions(sessions)
     : { count: 0 };
 
-  const allRuleSessions = await prisma.session.findMany({
-    where: {
-      recurrenceRuleId: { in: rules.map((rule) => rule.id) },
-      scheduledFor: { gte: startOfDay(fromDate), lte: endOfDay(toDate) },
-      enrollmentId: { not: null },
-    },
-    select: { id: true, enrollmentId: true },
-  });
-  const enrollmentById = new Map(
-    rules
-      .filter((rule) => rule.enrollment && rule.enrollmentId)
-      .map((rule) => [rule.enrollmentId!, rule.enrollment!])
-  );
+  const allRuleSessions = (
+    await getSessionsForRecurrenceRulesInRange(
+      rules.map((rule) => rule.id),
+      occurrenceWindow.start,
+      occurrenceWindow.endExclusive,
+    )
+  ).filter((session) => session.enrollmentId);
+  const ruleById = new Map(rules.map((rule) => [rule.id, rule]));
   const attendanceRows = allRuleSessions.flatMap((session) => {
-    if (!session.enrollmentId) return [];
-    const enrollment = enrollmentById.get(session.enrollmentId);
-    if (!enrollment) return [];
+    if (!session.enrollmentId || !session.recurrenceRuleId) return [];
+    const rule = ruleById.get(session.recurrenceRuleId);
+    const enrollment = rule?.enrollment;
+    if (
+      !rule ||
+      !enrollment ||
+      !isEnrollmentEligibleForSession(
+        enrollment,
+        new Date(session.scheduledFor),
+        rule.timeZone,
+      )
+    ) {
+      return [];
+    }
     return [{
       sessionId: session.id,
       studentId: enrollment.studentId,
@@ -153,16 +222,26 @@ export async function materializeGroupSessions(
 ): Promise<number> {
   const rules = await getGroupRecurringRulesInRange(fromDate, toDate, options);
   if (rules.length === 0) return 0;
+  const occurrenceWindow = getOccurrenceQueryWindow(
+    rules,
+    fromDate,
+    toDate,
+  );
 
   const existingSessions = await getSessionsForRecurrenceRulesInRange(
     rules.map((r) => r.id),
-    fromDate,
-    toDate
+    occurrenceWindow.start,
+    occurrenceWindow.endExclusive,
   );
   const coveredSlots = new Set(
     existingSessions
       .filter((s) => s.recurrenceRuleId)
-      .map((s) => `${s.recurrenceRuleId}:${format(s.scheduledFor, "yyyyMMdd")}`)
+      .map(
+        (session) =>
+          `${session.recurrenceRuleId}:${(
+            session.recurrenceOccurrenceFor ?? session.scheduledFor
+          ).toISOString()}`,
+      )
   );
 
   const sessionsToCreate: Array<{
@@ -172,18 +251,36 @@ export async function materializeGroupSessions(
     durationMinutes: number;
     room?: string;
     recurrenceRuleId: string;
+    recurrenceOccurrenceFor: Date;
   }> = [];
 
   for (const rule of rules) {
     if (!rule.group) continue;
-    const searchStart =
-      new Date(rule.startsOn) > fromDate ? new Date(rule.startsOn) : fromDate;
-    let current = getFirstMatchingDate(searchStart, rule.dayOfWeek);
+    const calendarFrom = getCalendarDateInTimeZone(fromDate, rule.timeZone);
+    const calendarTo = getCalendarDateInTimeZone(toDate, rule.timeZone);
+    let current = getFirstRecurrenceOnOrAfter(
+      new Date(rule.startsOn),
+      rule.dayOfWeek,
+      rule.intervalWeeks,
+      calendarFrom,
+    );
 
-    while (current <= toDate) {
+    while (current <= calendarTo) {
       if (rule.endsOn && current > new Date(rule.endsOn)) break;
-      const scheduledFor = combineDateAndTime(current, rule.startTime);
-      const slotKey = `${rule.id}:${format(scheduledFor, "yyyyMMdd")}`;
+      const eligibleEnrollments = rule.group.enrollments.filter(
+        (enrollment) =>
+          isEnrollmentEligibleOnCalendarDate(enrollment, current),
+      );
+      if (eligibleEnrollments.length === 0) {
+        current = addCalendarDays(current, rule.intervalWeeks * 7);
+        continue;
+      }
+      const scheduledFor = combineDateAndTime(
+        current,
+        rule.startTime,
+        rule.timeZone,
+      );
+      const slotKey = `${rule.id}:${scheduledFor.toISOString()}`;
       if (!coveredSlots.has(slotKey)) {
         sessionsToCreate.push({
           tutorId: rule.group.tutorId,
@@ -192,10 +289,11 @@ export async function materializeGroupSessions(
           durationMinutes: rule.durationMinutes,
           room: rule.room ?? undefined,
           recurrenceRuleId: rule.id,
+          recurrenceOccurrenceFor: scheduledFor,
         });
         coveredSlots.add(slotKey);
       }
-      current = addDays(current, rule.intervalWeeks * 7);
+      current = addCalendarDays(current, rule.intervalWeeks * 7);
     }
   }
 
@@ -204,13 +302,11 @@ export async function materializeGroupSessions(
   }
 
   const groupRuleIds = rules.map((r) => r.id);
-  const allGroupSessions = await prisma.session.findMany({
-    where: {
-      recurrenceRuleId: { in: groupRuleIds },
-      scheduledFor: { gte: startOfDay(fromDate), lte: endOfDay(toDate) },
-    },
-    select: { id: true, recurrenceRuleId: true },
-  });
+  const allGroupSessions = await getSessionsForRecurrenceRulesInRange(
+    groupRuleIds,
+    occurrenceWindow.start,
+    occurrenceWindow.endExclusive,
+  );
 
   const ruleById = new Map(rules.map((r) => [r.id, r]));
   const attendanceRows: Array<{
@@ -222,7 +318,14 @@ export async function materializeGroupSessions(
   for (const session of allGroupSessions) {
     const rule = ruleById.get(session.recurrenceRuleId!);
     if (!rule?.group) continue;
-    for (const enrollment of rule.group.enrollments) {
+    const eligibleEnrollments = rule.group.enrollments.filter((enrollment) =>
+      isEnrollmentEligibleForSession(
+        enrollment,
+        new Date(session.scheduledFor),
+        rule.timeZone,
+      ),
+    );
+    for (const enrollment of eligibleEnrollments) {
       attendanceRows.push({
         sessionId: session.id,
         studentId: enrollment.studentId,

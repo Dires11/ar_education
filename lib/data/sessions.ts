@@ -1,5 +1,8 @@
+import "server-only";
+
 import { prisma } from "@/lib/prisma";
-import { addDays, startOfDay, endOfDay, endOfMonth } from "date-fns";
+import { addDays, startOfDay, endOfDay } from "date-fns";
+import { Prisma } from "../../generated/prisma";
 
 export async function getSessionsByWeek(weekStart: Date) {
   const weekEnd = addDays(weekStart, 6);
@@ -20,13 +23,15 @@ export async function getSessionsByWeek(weekStart: Date) {
   });
 }
 
-export async function getSessionsByMonth(monthStart: Date) {
-  const monthEnd = endOfMonth(monthStart);
+export async function getSessionsByMonth(
+  rangeStart: Date,
+  rangeEndExclusive: Date,
+) {
   return prisma.session.findMany({
     where: {
       scheduledFor: {
-        gte: startOfDay(monthStart),
-        lte: endOfDay(monthEnd),
+        gte: rangeStart,
+        lt: rangeEndExclusive,
       },
     },
     include: {
@@ -48,7 +53,7 @@ export async function getSession(id: string) {
       subject: true,
       enrollment: { include: { student: true } },
       recurrenceRule: true,
-      attendance: { include: { student: true } },
+      attendance: { include: { student: true, enrollment: true } },
     },
   });
 }
@@ -57,12 +62,39 @@ export async function getRecurrenceRuleById(id: string) {
   return prisma.recurrenceRule.findUnique({ where: { id } });
 }
 
-export async function getActiveRecurrenceRulesForEnrollment(enrollmentId: string) {
-  const today = new Date();
+export function getEnrollmentForSession(id: string) {
+  return prisma.enrollment.findUnique({
+    where: { id },
+    include: { package: true, student: true },
+  });
+}
+
+export async function getRecurrenceRuleWithParticipants(id: string) {
+  return prisma.recurrenceRule.findUnique({
+    where: { id },
+    include: {
+      enrollment: { include: { student: true } },
+      group: {
+        include: {
+          enrollments: {
+            where: { status: { in: ["ACTIVE", "PAUSED"] } },
+            include: { student: true },
+          },
+        },
+      },
+    },
+  });
+}
+
+export async function getActiveRecurrenceRulesForEnrollment(
+  enrollmentId: string,
+  calendarDate: Date,
+) {
   const rules = await prisma.recurrenceRule.findMany({
     where: {
       enrollmentId,
-      OR: [{ endsOn: null }, { endsOn: { gte: today } }],
+      startsOn: { lte: calendarDate },
+      OR: [{ endsOn: null }, { endsOn: { gte: calendarDate } }],
     },
     select: {
       id: true,
@@ -91,13 +123,15 @@ export async function getActiveRecurrenceRulesForEnrollment(enrollmentId: string
     .sort((a, b) => a.dayOfWeek - b.dayOfWeek);
 }
 
-export async function getActiveRecurrenceRulesForGroup(groupId: string) {
-  const today = new Date();
+export async function getActiveRecurrenceRulesForGroup(
+  groupId: string,
+  calendarDate: Date,
+) {
   return prisma.recurrenceRule.findMany({
     where: {
       groupId,
-      startsOn: { lte: today },
-      OR: [{ endsOn: null }, { endsOn: { gte: today } }],
+      startsOn: { lte: calendarDate },
+      OR: [{ endsOn: null }, { endsOn: { gte: calendarDate } }],
     },
     include: {
       group: { include: { subject: true } },
@@ -115,8 +149,44 @@ export async function createSession(data: {
   room?: string;
   notes?: string;
   recurrenceRuleId?: string;
+  recurrenceOccurrenceFor?: Date;
+  status?:
+    | "SCHEDULED"
+    | "COMPLETED"
+    | "NO_SHOW"
+    | "CANCELLED_BY_TUTOR"
+    | "CANCELLED_BY_STUDENT";
 }) {
   return prisma.session.create({ data });
+}
+
+export async function createSessionWithAttendances(
+  sessionData: Parameters<typeof createSession>[0],
+  attendances: Array<{
+    studentId: string;
+    enrollmentId?: string;
+    status?:
+      | "SCHEDULED"
+      | "COMPLETED"
+      | "NO_SHOW"
+      | "CANCELLED_BY_TUTOR"
+      | "CANCELLED_BY_STUDENT";
+    billable?: boolean;
+  }>,
+) {
+  return prisma.$transaction(async (tx) => {
+    const session = await tx.session.create({ data: sessionData });
+    if (attendances.length > 0) {
+      await tx.sessionAttendance.createMany({
+        data: attendances.map((attendance) => ({
+          sessionId: session.id,
+          ...attendance,
+        })),
+        skipDuplicates: true,
+      });
+    }
+    return session;
+  });
 }
 
 export async function createSessionAttendance(data: {
@@ -133,12 +203,17 @@ export async function createManySessionAttendances(
   return prisma.sessionAttendance.createMany({ data, skipDuplicates: true });
 }
 
-export async function getRecurrenceRulesForMonth(monthStart: Date) {
-  const monthEnd = endOfMonth(monthStart);
+export async function getRecurrenceRulesForMonth(
+  calendarMonthStart: Date,
+  calendarMonthEnd: Date,
+) {
   const rules = await prisma.recurrenceRule.findMany({
     where: {
-      startsOn: { lte: monthEnd },
-      OR: [{ endsOn: null }, { endsOn: { gte: monthStart } }],
+      startsOn: { lte: calendarMonthEnd },
+      OR: [
+        { endsOn: null },
+        { endsOn: { gte: calendarMonthStart } },
+      ],
       enrollment: { status: { in: ["ACTIVE", "PAUSED"] } },
     },
     include: {
@@ -152,13 +227,18 @@ export async function getRecurrenceRulesForMonth(monthStart: Date) {
   return rules.filter((r) => !r.endsOn || r.endsOn >= r.startsOn);
 }
 
-export async function getGroupRecurrenceRulesForMonth(monthStart: Date) {
-  const monthEnd = endOfMonth(monthStart);
+export async function getGroupRecurrenceRulesForMonth(
+  calendarMonthStart: Date,
+  calendarMonthEnd: Date,
+) {
   const rules = await prisma.recurrenceRule.findMany({
     where: {
       groupId: { not: null },
-      startsOn: { lte: monthEnd },
-      OR: [{ endsOn: null }, { endsOn: { gte: monthStart } }],
+      startsOn: { lte: calendarMonthEnd },
+      OR: [
+        { endsOn: null },
+        { endsOn: { gte: calendarMonthStart } },
+      ],
     },
     include: {
       group: {
@@ -177,19 +257,30 @@ export async function getGroupRecurrenceRulesForMonth(monthStart: Date) {
   return rules.filter((r) => !r.endsOn || r.endsOn >= r.startsOn);
 }
 
-export async function createRecurrenceRule(data: {
+export type RecurrenceRuleCreateData = {
   enrollmentId?: string;
   groupId?: string;
   dayOfWeek: number;
   startTime: string;
+  timeZone: string;
   durationMinutes: number;
   intervalWeeks?: number;
   room?: string;
   color?: string;
   startsOn: Date;
   endsOn?: Date;
-}) {
+};
+
+export async function createRecurrenceRule(data: RecurrenceRuleCreateData) {
   return prisma.recurrenceRule.create({ data });
+}
+
+export async function createRecurrenceRules(
+  rules: RecurrenceRuleCreateData[],
+) {
+  return prisma.$transaction(
+    rules.map((data) => prisma.recurrenceRule.create({ data })),
+  );
 }
 
 export async function updateSessionStatus(
@@ -206,6 +297,21 @@ export async function updateSessionStatus(
       },
     }),
   ]);
+}
+
+export function updateSessionStatusOnly(
+  sessionId: string,
+  status:
+    | "SCHEDULED"
+    | "COMPLETED"
+    | "NO_SHOW"
+    | "CANCELLED_BY_TUTOR"
+    | "CANCELLED_BY_STUDENT",
+) {
+  return prisma.session.update({
+    where: { id: sessionId },
+    data: { status },
+  });
 }
 
 export async function updateAttendance(
@@ -226,16 +332,43 @@ export async function updateAttendance(
   );
 }
 
+export function updateAttendanceAndSessionStatus(
+  sessionId: string,
+  attendances: Parameters<typeof updateAttendance>[1],
+  sessionStatus:
+    | "SCHEDULED"
+    | "COMPLETED"
+    | "NO_SHOW"
+    | "CANCELLED_BY_TUTOR"
+    | "CANCELLED_BY_STUDENT",
+) {
+  return prisma.$transaction([
+    ...attendances.map((attendance) =>
+      prisma.sessionAttendance.updateMany({
+        where: { sessionId, studentId: attendance.studentId },
+        data: {
+          status: attendance.status,
+          billable: attendance.billable,
+        },
+      }),
+    ),
+    prisma.session.update({
+      where: { id: sessionId },
+      data: { status: sessionStatus },
+    }),
+  ]);
+}
+
 export async function cancelSession(
   id: string,
   cancelledBy: "TUTOR" | "STUDENT"
 ) {
-  return prisma.session.update({
-    where: { id },
-    data: {
-      status: cancelledBy === "TUTOR" ? "CANCELLED_BY_TUTOR" : "CANCELLED_BY_STUDENT",
-    },
-  });
+  return updateSessionStatus(
+    id,
+    cancelledBy === "TUTOR"
+      ? "CANCELLED_BY_TUTOR"
+      : "CANCELLED_BY_STUDENT",
+  );
 }
 
 export async function deleteSession(id: string) {
@@ -249,7 +382,13 @@ export async function deleteFutureSessionsForRecurrenceRule(
   return prisma.session.deleteMany({
     where: {
       recurrenceRuleId,
-      scheduledFor: { gte: startOfDay(fromDate) },
+      OR: [
+        { recurrenceOccurrenceFor: { gte: fromDate } },
+        {
+          recurrenceOccurrenceFor: null,
+          scheduledFor: { gte: fromDate },
+        },
+      ],
     },
   });
 }
@@ -298,29 +437,103 @@ export async function closeRecurrenceRule(ruleId: string, endsOn: Date) {
   });
 }
 
-export async function deleteRecurrenceRule(ruleId: string) {
-  return prisma.recurrenceRule.delete({ where: { id: ruleId } });
+export function updateRecurrenceRule(
+  ruleId: string,
+  data: {
+    startTime?: string;
+    durationMinutes?: number;
+    room?: string | null;
+    intervalWeeks?: number;
+    dayOfWeek?: number;
+  },
+) {
+  return prisma.recurrenceRule.update({
+    where: { id: ruleId },
+    data,
+  });
 }
 
-export async function autoCompletePassedSessions() {
-  const pastSessions = await prisma.session.findMany({
-    where: { status: "SCHEDULED", scheduledFor: { lt: new Date() } },
-    select: { id: true },
+type RecurrenceRuleUpdateData = Parameters<typeof updateRecurrenceRule>[1];
+
+function futureRecurrenceSessionsWhere(
+  recurrenceRuleId: string,
+  cutoff: Date,
+): Prisma.SessionWhereInput {
+  return {
+    recurrenceRuleId,
+    OR: [
+      { recurrenceOccurrenceFor: { gte: cutoff } },
+      {
+        recurrenceOccurrenceFor: null,
+        scheduledFor: { gte: cutoff },
+      },
+    ],
+  };
+}
+
+export function splitRecurrenceRuleData(input: {
+  ruleId: string;
+  cutoff: Date;
+  updateInPlace: boolean;
+  update: RecurrenceRuleUpdateData;
+  oldRuleEndsOn?: Date;
+  newRule?: RecurrenceRuleCreateData;
+}) {
+  return prisma.$transaction(async (tx) => {
+    await tx.session.deleteMany({
+      where: futureRecurrenceSessionsWhere(input.ruleId, input.cutoff),
+    });
+    if (input.updateInPlace) {
+      return tx.recurrenceRule.update({
+        where: { id: input.ruleId },
+        data: input.update,
+      });
+    }
+    if (!input.oldRuleEndsOn || !input.newRule) {
+      throw new Error("Split recurrence data is incomplete");
+    }
+    await tx.recurrenceRule.update({
+      where: { id: input.ruleId },
+      data: { endsOn: input.oldRuleEndsOn },
+    });
+    return tx.recurrenceRule.create({ data: input.newRule });
   });
+}
 
-  if (pastSessions.length === 0) return { count: 0 };
-
-  const ids = pastSessions.map((s) => s.id);
-
-  await prisma.sessionAttendance.updateMany({
-    where: { sessionId: { in: ids }, status: "SCHEDULED" },
-    data: { status: "COMPLETED", billable: true },
+export function endRecurrenceRuleData(input: {
+  ruleId: string;
+  cutoff: Date;
+  endsOn: Date;
+}) {
+  return prisma.$transaction(async (tx) => {
+    await tx.session.deleteMany({
+      where: futureRecurrenceSessionsWhere(input.ruleId, input.cutoff),
+    });
+    return tx.recurrenceRule.update({
+      where: { id: input.ruleId },
+      data: { endsOn: input.endsOn },
+    });
   });
+}
 
-  return prisma.session.updateMany({
-    where: { id: { in: ids } },
-    data: { status: "COMPLETED" },
+export function deleteRecurringScheduleData(
+  ruleId: string,
+  cutoff: Date,
+) {
+  return prisma.$transaction(async (tx) => {
+    await tx.session.deleteMany({
+      where: futureRecurrenceSessionsWhere(ruleId, cutoff),
+    });
+    await tx.session.updateMany({
+      where: { recurrenceRuleId: ruleId },
+      data: { recurrenceRuleId: null },
+    });
+    return tx.recurrenceRule.delete({ where: { id: ruleId } });
   });
+}
+
+export async function deleteRecurrenceRule(ruleId: string) {
+  return prisma.recurrenceRule.delete({ where: { id: ruleId } });
 }
 
 export async function getRecurringRulesInRange(
@@ -333,8 +546,11 @@ export async function getRecurringRulesInRange(
       id: options?.recurrenceRuleIds?.length
         ? { in: options.recurrenceRuleIds }
         : undefined,
-      startsOn: { lte: to },
-      OR: [{ endsOn: null }, { endsOn: { gte: from } }],
+      // Date-only rule bounds are compared against an instant window. Pad the
+      // coarse database filter, then let occurrence generation apply each
+      // rule's own time zone precisely.
+      startsOn: { lte: addDays(to, 1) },
+      OR: [{ endsOn: null }, { endsOn: { gte: addDays(from, -1) } }],
       enrollment: { status: { in: ["ACTIVE", "PAUSED"] } },
     },
     include: {
@@ -359,8 +575,8 @@ export async function getGroupRecurringRulesInRange(
       id: options?.recurrenceRuleIds?.length
         ? { in: options.recurrenceRuleIds }
         : undefined,
-      startsOn: { lte: to },
-      OR: [{ endsOn: null }, { endsOn: { gte: from } }],
+      startsOn: { lte: addDays(to, 1) },
+      OR: [{ endsOn: null }, { endsOn: { gte: addDays(from, -1) } }],
     },
     include: {
       group: {
@@ -382,20 +598,34 @@ export async function getGroupRecurringRulesInRange(
 export async function getSessionsForRecurrenceRulesInRange(
   recurrenceRuleIds: string[],
   from: Date,
-  to: Date
+  toExclusive: Date
 ) {
   if (recurrenceRuleIds.length === 0) return [];
 
   return prisma.session.findMany({
     where: {
       recurrenceRuleId: { in: recurrenceRuleIds },
-      scheduledFor: {
-        gte: startOfDay(from),
-        lte: endOfDay(to),
-      },
+      OR: [
+        {
+          recurrenceOccurrenceFor: {
+            gte: from,
+            lt: toExclusive,
+          },
+        },
+        {
+          recurrenceOccurrenceFor: null,
+          scheduledFor: {
+            gte: from,
+            lt: toExclusive,
+          },
+        },
+      ],
     },
     select: {
+      id: true,
+      enrollmentId: true,
       recurrenceRuleId: true,
+      recurrenceOccurrenceFor: true,
       scheduledFor: true,
     },
   });
@@ -404,7 +634,7 @@ export async function getSessionsForRecurrenceRulesInRange(
 export async function getNonCancelledEnrollmentSessionsInRange(
   enrollmentIds: string[],
   from: Date,
-  to: Date
+  toExclusive: Date
 ) {
   if (enrollmentIds.length === 0) return [];
 
@@ -413,8 +643,8 @@ export async function getNonCancelledEnrollmentSessionsInRange(
       enrollmentId: { in: enrollmentIds },
       status: { notIn: ["CANCELLED_BY_TUTOR", "CANCELLED_BY_STUDENT"] },
       scheduledFor: {
-        gte: startOfDay(from),
-        lte: endOfDay(to),
+        gte: from,
+        lt: toExclusive,
       },
     },
     select: {
@@ -452,6 +682,7 @@ export async function createManySessions(
     room?: string;
     notes?: string;
     recurrenceRuleId?: string;
+    recurrenceOccurrenceFor?: Date;
   }>
 ) {
   return prisma.session.createMany({ data, skipDuplicates: true });
@@ -494,4 +725,166 @@ export async function checkTutorConflict(
   });
 
   return !!conflict;
+}
+
+export function getSessionsForConflictWindow(
+  from: Date,
+  toExclusive?: Date,
+  excludeSessionId?: string,
+  excludeRecurrenceRuleId?: string,
+  conflictContext?: { tutorId: string; studentIds: string[] },
+) {
+  const relevanceFilters: Prisma.SessionWhereInput[] | undefined =
+    conflictContext
+      ? [
+          { tutorId: conflictContext.tutorId },
+          ...(conflictContext.studentIds.length > 0
+            ? [
+                {
+                  attendance: {
+                    some: {
+                      studentId: { in: conflictContext.studentIds },
+                    },
+                  },
+                },
+                {
+                  enrollment: {
+                    studentId: { in: conflictContext.studentIds },
+                  },
+                },
+              ]
+            : []),
+        ]
+      : undefined;
+
+  return prisma.session.findMany({
+    where: {
+      id: excludeSessionId ? { not: excludeSessionId } : undefined,
+      OR: excludeRecurrenceRuleId
+        ? [
+            { recurrenceRuleId: null },
+            { recurrenceRuleId: { not: excludeRecurrenceRuleId } },
+          ]
+        : undefined,
+      status: { notIn: ["CANCELLED_BY_TUTOR", "CANCELLED_BY_STUDENT"] },
+      scheduledFor: {
+        gte: from,
+        lt: toExclusive,
+      },
+      AND: relevanceFilters ? [{ OR: relevanceFilters }] : undefined,
+    },
+    include: {
+      tutor: true,
+      subject: true,
+      attendance: { include: { student: true } },
+      enrollment: { include: { student: true } },
+    },
+  });
+}
+
+export function getRecurringSchedulesForConflictWindow(
+  from: Date,
+  to?: Date,
+  conflictContext?: { tutorId: string; studentIds: string[] },
+) {
+  const relevanceFilters: Prisma.RecurrenceRuleWhereInput[] | undefined =
+    conflictContext
+      ? [
+          { enrollment: { tutorId: conflictContext.tutorId } },
+          { group: { tutorId: conflictContext.tutorId } },
+        ]
+      : undefined;
+  if (relevanceFilters && conflictContext?.studentIds.length) {
+    relevanceFilters.push(
+      {
+        enrollment: {
+          studentId: { in: conflictContext.studentIds },
+        },
+      },
+      {
+        group: {
+          enrollments: {
+            some: {
+              studentId: { in: conflictContext.studentIds },
+              status: { in: ["ACTIVE", "PAUSED"] },
+            },
+          },
+        },
+      },
+    );
+  }
+
+  return prisma.recurrenceRule.findMany({
+    where: {
+      // These columns are date-only markers while from/to are instants.
+      // Pad this coarse filter and validate exact occurrences in the service.
+      startsOn: to ? { lte: addDays(to, 1) } : undefined,
+      OR: [{ endsOn: null }, { endsOn: { gte: addDays(from, -1) } }],
+      AND: relevanceFilters ? [{ OR: relevanceFilters }] : undefined,
+    },
+    include: {
+      enrollment: {
+        include: { student: true, tutor: true, subject: true },
+      },
+      group: {
+        include: {
+          tutor: true,
+          subject: true,
+          enrollments: {
+            where: { status: { in: ["ACTIVE", "PAUSED"] } },
+            include: { student: true },
+          },
+        },
+      },
+    },
+  });
+}
+
+export async function getEnrollmentWeekScheduleData(
+  enrollmentId: string,
+  weekStart: Date,
+  weekEndExclusive: Date,
+) {
+  const [realCount, rules, realForDedup] = await Promise.all([
+    prisma.session.count({
+      where: {
+        enrollmentId,
+        status: { notIn: ["CANCELLED_BY_TUTOR", "CANCELLED_BY_STUDENT"] },
+        scheduledFor: { gte: weekStart, lt: weekEndExclusive },
+      },
+    }),
+    prisma.recurrenceRule.findMany({
+      where: {
+        enrollmentId,
+        startsOn: { lte: addDays(weekEndExclusive, 1) },
+        OR: [
+          { endsOn: null },
+          { endsOn: { gte: addDays(weekStart, -1) } },
+        ],
+      },
+    }),
+    prisma.session.findMany({
+      where: {
+        enrollmentId,
+        OR: [
+          {
+            recurrenceOccurrenceFor: {
+              gte: weekStart,
+              lt: weekEndExclusive,
+            },
+          },
+          {
+            recurrenceOccurrenceFor: null,
+            scheduledFor: { gte: weekStart, lt: weekEndExclusive },
+          },
+        ],
+      },
+      select: {
+        scheduledFor: true,
+        recurrenceRuleId: true,
+        recurrenceOccurrenceFor: true,
+      },
+    }),
+  ]);
+  return { realCount, rules, realForDedup };
 }

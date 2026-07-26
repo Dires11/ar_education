@@ -1,4 +1,5 @@
-import { addDays, endOfDay, startOfDay } from "date-fns";
+import "server-only";
+
 import {
   getSessionsForDay,
   getActiveStudentCount,
@@ -8,28 +9,71 @@ import {
   getWeeklySessionsByDay,
   getMonthlyRevenue,
 } from "@/lib/data/dashboard";
-import { applyDiscounts } from "@/lib/services/pricing";
+import { calculateEnrollmentCharges } from "@/lib/services/pricing-calculator";
 import {
   materializeSessions,
   materializeGroupSessions,
 } from "@/lib/services/session-materialization";
 import { Prisma } from "../../generated/prisma";
-
-function billingPeriodMonths(period: "MONTHLY" | "THREE_MONTHS" | "YEARLY") {
-  if (period === "YEARLY") return 12;
-  if (period === "THREE_MONTHS") return 3;
-  return 1;
-}
+import {
+  addCalendarDays,
+  addCalendarMonths,
+  combineDateAndTime,
+  getCalendarDateInTimeZone,
+  getCalendarMonthKey,
+  getCalendarMonthRange,
+  getCalendarWeekRange,
+  getConfiguredCenterTimeZone,
+} from "@/lib/services/session-dates";
 
 export async function getDashboardStats() {
-  const today = new Date();
-  const tomorrow = addDays(today, 1);
+  const now = new Date();
+  const timeZone = getConfiguredCenterTimeZone();
+  const today = getCalendarDateInTimeZone(now, timeZone);
+  const tomorrow = addCalendarDays(today, 1);
+  const dayAfterTomorrow = addCalendarDays(today, 2);
+  const todayStart = combineDateAndTime(today, "00:00", timeZone);
+  const tomorrowStart = combineDateAndTime(tomorrow, "00:00", timeZone);
+  const dayAfterTomorrowStart = combineDateAndTime(
+    dayAfterTomorrow,
+    "00:00",
+    timeZone,
+  );
+  const week = getCalendarWeekRange(now, timeZone);
+  const currentMonth = getCalendarMonthRange(
+    getCalendarMonthKey(now, timeZone),
+    timeZone,
+  );
+  const revenueRanges = Array.from({ length: 6 }, (_, index) => {
+    const calendarStart = addCalendarMonths(
+      currentMonth.calendarStart,
+      index - 5,
+    );
+    const range = getCalendarMonthRange(
+      calendarStart.toISOString().slice(0, 7),
+      timeZone,
+    );
+    return {
+      month: new Intl.DateTimeFormat("en-US", {
+        month: "short",
+        timeZone: "UTC",
+      }).format(calendarStart),
+      start: range.start,
+      endExclusive: range.endExclusive,
+    };
+  });
 
   // Materialize today's + tomorrow's recurring sessions before querying,
   // so the dashboard is accurate even without a prior schedule-page visit.
   await Promise.all([
-    materializeSessions(startOfDay(today), endOfDay(tomorrow)),
-    materializeGroupSessions(startOfDay(today), endOfDay(tomorrow)),
+    materializeSessions(
+      todayStart,
+      new Date(dayAfterTomorrowStart.getTime() - 1),
+    ),
+    materializeGroupSessions(
+      todayStart,
+      new Date(dayAfterTomorrowStart.getTime() - 1),
+    ),
   ]);
 
   const [
@@ -42,14 +86,14 @@ export async function getDashboardStats() {
     weeklySessionsByDay,
     monthlyRevenue,
   ] = await Promise.all([
-    getSessionsForDay(today),
-    getSessionsForDay(tomorrow),
+    getSessionsForDay(todayStart, tomorrowStart),
+    getSessionsForDay(tomorrowStart, dayAfterTomorrowStart),
     getActiveStudentCount(),
-    getUpcomingPackageEndings(14),
-    getTutorSessionCountsThisWeek(),
+    getUpcomingPackageEndings(today, 14),
+    getTutorSessionCountsThisWeek(week.start, week.endExclusive),
     getStudentsWithBalance(),
-    getWeeklySessionsByDay(),
-    getMonthlyRevenue(6),
+    getWeeklySessionsByDay(week.start, week.endExclusive, timeZone),
+    getMonthlyRevenue(revenueRanges),
   ]);
 
   // Compute unpaid balances
@@ -59,27 +103,9 @@ export async function getDashboardStats() {
     let totalCharged = new Prisma.Decimal(0);
 
     for (const enrollment of student.enrollments) {
-      const effectivePrice = applyDiscounts(
-        enrollment.customPriceOverride ?? enrollment.package.basePrice,
-        enrollment.discounts
+      totalCharged = totalCharged.add(
+        calculateEnrollmentCharges(enrollment),
       );
-
-      if (enrollment.package.type === "PER_SESSION") {
-        const billableCount = enrollment.sessionAttendance.length;
-        totalCharged = totalCharged.add(effectivePrice.mul(billableCount));
-      } else {
-        // Subscription packages charge once per billing period.
-        const start = new Date(enrollment.startDate);
-        const end = new Date();
-        const months =
-          (end.getFullYear() - start.getFullYear()) * 12 +
-          (end.getMonth() - start.getMonth()) +
-          1;
-        const periods = Math.ceil(
-          Math.max(1, months) / billingPeriodMonths(enrollment.package.billingPeriod)
-        );
-        totalCharged = totalCharged.add(effectivePrice.mul(periods));
-      }
     }
 
     const totalPaid = student.payments.reduce(

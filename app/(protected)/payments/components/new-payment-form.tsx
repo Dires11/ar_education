@@ -38,11 +38,13 @@ export function NewPaymentForm({
   students,
   enrollments,
   defaultStudentId,
+  defaultPaidAt,
   onSuccess,
 }: {
   students: PaymentStudentOption[];
   enrollments: PaymentEnrollmentOption[];
   defaultStudentId?: string;
+  defaultPaidAt: string;
   onSuccess?: () => void;
 }) {
   const router = useRouter();
@@ -52,7 +54,7 @@ export function NewPaymentForm({
       studentId: defaultStudentId ?? "",
       amount: "",
       method: "CASH",
-      paidAt: new Date().toISOString().split("T")[0],
+      paidAt: defaultPaidAt,
       enrollmentId: "",
       coversMonth: "",
       notes: "",
@@ -63,9 +65,16 @@ export function NewPaymentForm({
     control: form.control,
     name: "studentId",
   });
+  const selectedEnrollmentId = useWatch({
+    control: form.control,
+    name: "enrollmentId",
+  });
 
   const studentEnrollments = enrollments.filter(
     (e) => e.studentId === selectedStudentId
+  );
+  const selectedEnrollment = studentEnrollments.find(
+    (enrollment) => enrollment.id === selectedEnrollmentId,
   );
 
   async function onSubmit(values: CreatePaymentInput) {
@@ -79,8 +88,10 @@ export function NewPaymentForm({
           router.push("/payments");
         }
       }
-    } catch {
-      toast.error("Failed to record payment");
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Failed to record payment",
+      );
     }
   }
 
@@ -93,7 +104,14 @@ export function NewPaymentForm({
           render={({ field }) => (
             <FormItem>
               <FormLabel>Student</FormLabel>
-              <Select onValueChange={field.onChange} defaultValue={field.value}>
+              <Select
+                onValueChange={(value) => {
+                  field.onChange(value);
+                  form.setValue("enrollmentId", "");
+                  form.setValue("coversMonth", "");
+                }}
+                defaultValue={field.value}
+              >
                 <FormControl>
                   <SelectTrigger>
                     <SelectValue placeholder="Select student" />
@@ -181,7 +199,16 @@ export function NewPaymentForm({
               <FormItem>
                 <FormLabel>Link to Enrollment (optional)</FormLabel>
                 <Select
-                  onValueChange={field.onChange}
+                  onValueChange={(value) => {
+                    field.onChange(value);
+                    if (
+                      !value ||
+                      enrollments.find((enrollment) => enrollment.id === value)
+                        ?.packageType !== "MONTHLY"
+                    ) {
+                      form.setValue("coversMonth", "");
+                    }
+                  }}
                   defaultValue={field.value}
                 >
                   <FormControl>
@@ -204,25 +231,27 @@ export function NewPaymentForm({
           />
         )}
 
-        <FormField
-          control={form.control}
-          name="coversMonth"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>Covers Month (optional)</FormLabel>
-              <FormControl>
-                <Input
-                  type="month"
-                  {...field}
-                />
-              </FormControl>
-              <FormDescription>
-                For monthly packages — which month does this payment cover?
-              </FormDescription>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
+        {selectedEnrollment?.packageType === "MONTHLY" && (
+          <FormField
+            control={form.control}
+            name="coversMonth"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>Covers Month (optional)</FormLabel>
+                <FormControl>
+                  <Input
+                    type="month"
+                    {...field}
+                  />
+                </FormControl>
+                <FormDescription>
+                  Assign this payment to a valid billing-period start month.
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+        )}
 
         <FormField
           control={form.control}

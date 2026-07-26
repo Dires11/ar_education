@@ -37,11 +37,10 @@ import type {
   SessionEnrollment,
   SessionGroup,
 } from "./session-form-types";
-import { utcTimeToLocal } from "@/lib/utils/time";
 
 const DAYS = ["M", "T", "W", "T", "F", "S", "S"];
 const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-const DAY_VALUES = ["1", "2", "3", "4", "5", "6", "0"];
+const DAY_VALUES = ["1", "2", "3", "4", "5", "6", "0"] as const;
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 export function RecurringSessionFields({
@@ -78,7 +77,7 @@ export function RecurringSessionFields({
   recurEnrollOpen: boolean;
   setRecurEnrollOpen: (open: boolean) => void;
   recurringGroupId: string | undefined;
-  recurringDaysOfWeek: string[];
+  recurringDaysOfWeek: CreateRecurrenceInput["daysOfWeek"];
   recurringStartTime: string;
   recurStartDate: Date | undefined;
   setRecurStartDate: (date: Date | undefined) => void;
@@ -161,7 +160,7 @@ export function RecurringSessionFields({
                     <span key={rule.id}>
                       {index > 0 && ", "}
                       <span className="font-semibold">
-                        {DAY_NAMES[rule.dayOfWeek]} at {utcTimeToLocal(rule.startTime)}
+                        {DAY_NAMES[rule.dayOfWeek]} at {rule.startTime}
                       </span>
                     </span>
                   ))}

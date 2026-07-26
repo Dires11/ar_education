@@ -21,10 +21,12 @@ export function NewPaymentDialog({
   students,
   enrollments,
   defaultStudentId,
+  defaultPaidAt,
 }: {
   students: PaymentStudentOption[];
   enrollments: PaymentEnrollmentOption[];
   defaultStudentId?: string;
+  defaultPaidAt: string;
 }) {
   const [open, setOpen] = useState(false);
   const router = useRouter();
@@ -45,6 +47,7 @@ export function NewPaymentDialog({
           students={students}
           enrollments={enrollments}
           defaultStudentId={defaultStudentId}
+          defaultPaidAt={defaultPaidAt}
           onSuccess={() => {
             setOpen(false);
             router.refresh();

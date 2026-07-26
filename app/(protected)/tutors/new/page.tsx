@@ -1,11 +1,8 @@
-import { prisma } from "@/lib/prisma";
+import { listSubjects } from "@/lib/data/subjects";
 import { TutorForm } from "../components/tutor-form";
 
 export default async function NewTutorPage() {
-  const subjects = await prisma.subject.findMany({
-    orderBy: { name: "asc" },
-    select: { id: true, name: true },
-  });
+  const subjects = await listSubjects();
 
   return (
     <div className="max-w-2xl space-y-4">

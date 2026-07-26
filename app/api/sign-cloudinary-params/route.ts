@@ -1,26 +1,14 @@
-import { v2 as cloudinary } from "cloudinary";
-import { NextRequest } from "next/server";
+import { requireAdmin } from "@/lib/utils/auth";
+import { createCloudinaryUploadSignature } from "@/lib/services/media";
 
-cloudinary.config({
-  cloud_name: process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.NEXT_PUBLIC_CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET,
-});
-
-export async function POST(request: NextRequest) {
-  const body = await request.json();
-  const { paramsToSign } = body;
-
-  const apiSecret = process.env.CLOUDINARY_API_SECRET;
-
-  if (!apiSecret) {
-    return Response.json(
-      { error: "Missing CLOUDINARY_API_SECRET" },
-      { status: 500 },
-    );
+export async function POST() {
+  try {
+    await requireAdmin();
+    return Response.json(createCloudinaryUploadSignature());
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Unable to sign upload";
+    const status = message === "Unauthorized" ? 401 : 500;
+    return Response.json({ error: message }, { status });
   }
-
-  const signature = cloudinary.utils.api_sign_request(paramsToSign, apiSecret);
-
-  return Response.json({ signature });
 }

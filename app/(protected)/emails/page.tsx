@@ -1,6 +1,8 @@
-import { listEmailTemplates } from "@/lib/data/emails";
+import {
+  getEmailRecipientContext,
+  listEmailTemplates,
+} from "@/lib/data/emails";
 import { listStudents } from "@/lib/data/students";
-import { prisma } from "@/lib/prisma";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { MailIcon, LayoutTemplateIcon, SendIcon, PlusIcon } from "lucide-react";
 import { TemplateEditor } from "./components/template-editor";
@@ -36,23 +38,8 @@ export default async function EmailsPage({
   const studentIds = studentsData.students.map((s) => s.id);
 
   // Get guardian info and active enrollments in parallel
-  const [guardianRows, enrollmentRows] = await Promise.all([
-    prisma.studentGuardian.findMany({
-      where: { isPrimary: true, studentId: { in: studentIds } },
-      include: {
-        guardian: { select: { email: true, firstName: true } },
-      },
-    }),
-    prisma.enrollment.findMany({
-      where: { studentId: { in: studentIds }, status: "ACTIVE" },
-      include: {
-        tutor: { select: { firstName: true, lastName: true } },
-        subject: { select: { name: true } },
-        package: { select: { basePrice: true } },
-      },
-      orderBy: { createdAt: "desc" },
-    }),
-  ]);
+  const [guardianRows, enrollmentRows] =
+    await getEmailRecipientContext(studentIds);
 
   const guardianMap = Object.fromEntries(
     guardianRows.map((sg) => [
@@ -82,7 +69,9 @@ export default async function EmailsPage({
     enrollments: (enrollmentsByStudent[s.id] ?? []).map((e) => ({
       tutorName: `${e.tutor.firstName} ${e.tutor.lastName}`,
       subjectName: e.subject.name,
-      amount: e.package.basePrice.toString(),
+      amount: (
+        e.customPriceOverride ?? e.priceAtEnrollment
+      ).toString(),
     })),
   }));
 

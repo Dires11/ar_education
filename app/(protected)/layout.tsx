@@ -1,4 +1,5 @@
 import { requireAdmin } from "@/lib/utils/auth";
+import { auth } from "@clerk/nextjs/server";
 import { AppSidebar } from "@/components/app-sidebar";
 import {
   SidebarInset,
@@ -9,12 +10,16 @@ import { Separator } from "@/components/ui/separator";
 import { UserButton } from "@clerk/nextjs";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
+import { redirect } from "next/navigation";
 
 export default async function ProtectedLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
+  const { userId } = await auth();
+  if (!userId) redirect("/sign-in");
+
   await requireAdmin();
 
   return (

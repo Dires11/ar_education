@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { useForm, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
-import { format, setHours, setMinutes } from "date-fns";
+import { format } from "date-fns";
 import {
   CalendarClockIcon,
   RepeatIcon,
@@ -18,7 +18,6 @@ import {
   getActiveRecurrenceRulesAction,
   getActiveRecurrenceRulesForGroupAction,
 } from "@/app/actions/sessions";
-import { localTimeToUTC } from "@/lib/utils/time";
 import type { EnrollmentMonthSummary } from "@/lib/services/sessions";
 import { EditRecurringGroupDialog } from "./edit-recurring-group-dialog";
 import {
@@ -38,6 +37,10 @@ import type {
   Subject,
   Tutor,
 } from "./session-form-types";
+import {
+  combinePickerDateAndTime,
+  getPickerDateInTimeZone,
+} from "@/lib/utils/time-zone";
 
 const ENROLLMENT_PALETTE_FORM = [
   "#ef4444",
@@ -64,6 +67,7 @@ function hashToColor(id: string): string {
 }
 
 export function NewSessionForm({
+  centerTimeZone,
   tutors,
   subjects,
   enrollments,
@@ -71,6 +75,7 @@ export function NewSessionForm({
   defaultDate,
   onSuccess,
 }: {
+  centerTimeZone: string;
   tutors: Tutor[];
   subjects: Subject[];
   enrollments: SessionEnrollment[];
@@ -89,7 +94,7 @@ export function NewSessionForm({
 
   // ── Recurring date state ──────────────────────────────────────────
   const [recurStartDate, setRecurStartDate] = useState<Date | undefined>(
-    defaultDate ?? new Date(),
+    defaultDate ?? getPickerDateInTimeZone(new Date(), centerTimeZone),
   );
   const [recurEndDate, setRecurEndDate] = useState<Date | undefined>();
   const [perDayTimes, setPerDayTimes] = useState<Record<string, string>>({});
@@ -131,7 +136,10 @@ export function NewSessionForm({
       room: "",
       startsOn: defaultDate
         ? format(defaultDate, "yyyy-MM-dd")
-        : format(new Date(), "yyyy-MM-dd"),
+        : format(
+            getPickerDateInTimeZone(new Date(), centerTimeZone),
+            "yyyy-MM-dd",
+          ),
       endsOn: "",
     },
   });
@@ -139,13 +147,16 @@ export function NewSessionForm({
   // ── Sync ad-hoc date+time → scheduledFor ─────────────────────────
   useEffect(() => {
     if (adHocDate) {
-      const [h, m] = adHocTime.split(":").map(Number);
-      const combined = setMinutes(setHours(new Date(adHocDate), h), m);
+      const combined = combinePickerDateAndTime(
+        adHocDate,
+        adHocTime,
+        centerTimeZone,
+      );
       adHocForm.setValue("scheduledFor", combined.toISOString());
     } else {
       adHocForm.setValue("scheduledFor", "");
     }
-  }, [adHocDate, adHocForm, adHocTime]);
+  }, [adHocDate, adHocForm, adHocTime, centerTimeZone]);
 
   // ── Sync recurring start/end dates ────────────────────────────────
   useEffect(() => {
@@ -215,15 +226,18 @@ export function NewSessionForm({
       Promise.resolve().then(() => setMonthSummary(null));
       return;
     }
-    const [h, m] = adHocTime.split(":").map(Number);
-    const combined = setMinutes(setHours(new Date(adHocDate), h), m);
+    const combined = combinePickerDateAndTime(
+      adHocDate,
+      adHocTime,
+      centerTimeZone,
+    );
     getEnrollmentMonthSummaryAction(
       selectedEnrollmentId,
       combined.toISOString(),
     )
       .then(setMonthSummary)
       .catch(() => setMonthSummary(null));
-  }, [selectedEnrollmentId, adHocDate, adHocTime]);
+  }, [selectedEnrollmentId, adHocDate, adHocTime, centerTimeZone]);
 
   // ── Active recurrence rules for recurring enrollment ─────────────
   useEffect(() => {
@@ -288,7 +302,13 @@ export function NewSessionForm({
     setTouchedDays((prev) => {
       const next = new Set(prev);
       for (const day of [...prev]) {
-        if (!recurringDaysOfWeek.includes(day)) next.delete(day);
+        if (
+          !recurringDaysOfWeek.includes(
+            day as CreateRecurrenceInput["daysOfWeek"][number],
+          )
+        ) {
+          next.delete(day);
+        }
       }
       return next;
     });
@@ -325,16 +345,15 @@ export function NewSessionForm({
 
   async function onRecurringSubmit(values: CreateRecurrenceInput) {
     try {
-      const utcPerDayTimes =
+      const selectedPerDayTimes =
         values.daysOfWeek.length > 1
           ? Object.fromEntries(
-              Object.entries(perDayTimes).map(([day, t]) => [day, localTimeToUTC(t)])
-            )
+              values.daysOfWeek.map((day) => [day, perDayTimes[day]]),
+            ) as CreateRecurrenceInput["startTimes"]
           : undefined;
       const submitValues: CreateRecurrenceInput = {
         ...values,
-        startTime: localTimeToUTC(values.startTime),
-        startTimes: utcPerDayTimes,
+        startTimes: selectedPerDayTimes,
         color: recurringColor,
       };
       const result = await createRecurringScheduleAction(submitValues);
@@ -445,6 +464,7 @@ export function NewSessionForm({
         activeRules.length > 0 &&
         activeRules[0].enrollment && (
           <EditRecurringGroupDialog
+            centerTimeZone={centerTimeZone}
             rules={
               activeRules.filter(
                 (r) => r.enrollment,

@@ -1,3 +1,5 @@
+import "server-only";
+
 import { prisma } from "@/lib/prisma";
 import { PersonStatus } from "../../generated/prisma";
 
@@ -80,6 +82,33 @@ export async function createTutor(data: {
   });
 }
 
+export async function createTutorWithSubjectsData(
+  data: Parameters<typeof createTutor>[0],
+  subjectIds: string[],
+) {
+  return prisma.$transaction(async (tx) => {
+    const tutor = await tx.tutor.create({
+      data: {
+        firstName: data.firstName,
+        lastName: data.lastName,
+        avatarUrl: data.avatarUrl || null,
+        avatarPublicId: data.avatarPublicId || null,
+        email: data.email,
+        phone: data.phone,
+        hourlyRate: data.hourlyRate,
+        notes: data.notes,
+      },
+    });
+    await tx.tutorSubject.createMany({
+      data: subjectIds.map((subjectId) => ({
+        tutorId: tutor.id,
+        subjectId,
+      })),
+    });
+    return tutor;
+  });
+}
+
 export async function updateTutor(
   id: string,
   data: {
@@ -111,24 +140,26 @@ export async function archiveTutor(id: string) {
 }
 
 export async function setTutorSubjects(tutorId: string, subjectIds: string[]) {
-  await prisma.tutorSubject.deleteMany({ where: { tutorId } });
-  if (subjectIds.length > 0) {
-    await prisma.tutorSubject.createMany({
-      data: subjectIds.map((subjectId) => ({ tutorId, subjectId })),
-    });
-  }
+  return prisma.$transaction(async (tx) => {
+    await tx.tutorSubject.deleteMany({ where: { tutorId } });
+    if (subjectIds.length > 0) {
+      await tx.tutorSubject.createMany({
+        data: subjectIds.map((subjectId) => ({ tutorId, subjectId })),
+      });
+    }
+  });
 }
 
 export async function getTutorPayrollSessions(
   tutorId: string,
   from: Date,
-  to: Date
+  toExclusive: Date
 ) {
   return prisma.session.findMany({
     where: {
       tutorId,
       status: "COMPLETED",
-      scheduledFor: { gte: from, lte: to },
+      scheduledFor: { gte: from, lt: toExclusive },
     },
     include: { subject: true, enrollment: { include: { student: true } } },
     orderBy: { scheduledFor: "asc" },

@@ -1,10 +1,17 @@
+import "server-only";
+
 import {
   createEnrollment,
-  updateEnrollment,
+  createEnrollmentWithNewGroup,
+  updateEnrollmentLifecycle,
   createDiscount,
   deleteDiscount,
   getEnrollment,
   listEnrollments,
+  findActiveEnrollmentForSubject,
+  getGroupAssignment,
+  getPackageForEnrollment,
+  getTutorSubjectAssignment,
 } from "@/lib/data/enrollments";
 import {
   createEnrollmentSchema,
@@ -14,68 +21,89 @@ import {
   type UpdateEnrollmentInput,
   type CreateDiscountInput,
 } from "@/lib/validators/enrollments";
-import { prisma } from "@/lib/prisma";
-import { deleteGroupWhenEmpty, findOrCreateGroup } from "@/lib/services/groups";
+import { deleteGroupWhenEmpty } from "@/lib/services/groups";
+import { resolveEnrollmentEndDate } from "@/lib/services/enrollment-dates";
+import {
+  addCalendarDays,
+  combineDateAndTime,
+  getConfiguredCenterTimeZone,
+} from "@/lib/services/session-dates";
 import { listGroups } from "@/lib/data/groups";
 
 export async function createEnrollmentForStudent(input: CreateEnrollmentInput) {
   const parsed = createEnrollmentSchema.parse(input);
 
-  const tutorSubject = await prisma.tutorSubject.findUnique({
-    where: {
-      tutorId_subjectId: {
-        tutorId: parsed.tutorId,
-        subjectId: parsed.subjectId,
-      },
-    },
-  });
+  const tutorSubject = await getTutorSubjectAssignment(
+    parsed.tutorId,
+    parsed.subjectId,
+  );
   if (!tutorSubject) {
     throw new Error("Tutor does not teach the selected subject");
   }
 
-  const existing = await prisma.enrollment.findFirst({
-    where: {
-      studentId: parsed.studentId,
-      subjectId: parsed.subjectId,
-      status: "ACTIVE",
-    },
-  });
+  const existing = await findActiveEnrollmentForSubject(
+    parsed.studentId,
+    parsed.subjectId,
+  );
   if (existing) {
     throw new Error(
       "This student already has an active enrollment for this subject"
     );
   }
 
-  const selectedPackage = await prisma.package.findUnique({
-    where: { id: parsed.packageId },
-  });
+  const selectedPackage = await getPackageForEnrollment(parsed.packageId);
+  if (!selectedPackage || !selectedPackage.isActive) {
+    throw new Error("Selected package is not available");
+  }
+  if (
+    selectedPackage.subjectId &&
+    selectedPackage.subjectId !== parsed.subjectId
+  ) {
+    throw new Error("Selected package is for a different subject");
+  }
 
   let groupId: string | null = null;
+  let newGroup: { name: string; tutorId: string; subjectId: string } | null =
+    null;
   if (selectedPackage?.lessonType === "GROUP") {
     if (!parsed.groupId && !parsed.newGroupName) {
       throw new Error("Group is required for group packages");
     }
-    groupId = await findOrCreateGroup(
-      parsed.groupId
-        ? { existingGroupId: parsed.groupId }
-        : {
-            name: parsed.newGroupName!,
-            tutorId: parsed.tutorId,
-            subjectId: parsed.subjectId,
-          }
-    );
+    if (parsed.groupId) {
+      groupId = parsed.groupId;
+      const group = await getGroupAssignment(groupId);
+      if (
+        !group ||
+        group.tutorId !== parsed.tutorId ||
+        group.subjectId !== parsed.subjectId
+      ) {
+        throw new Error("Selected group does not match the tutor and subject");
+      }
+    } else {
+      newGroup = {
+        name: parsed.newGroupName!,
+        tutorId: parsed.tutorId,
+        subjectId: parsed.subjectId,
+      };
+    }
+  } else if (parsed.groupId || parsed.newGroupName) {
+    throw new Error("Only group packages can be assigned to a group");
   }
 
-  return createEnrollment({
+  const enrollmentData = {
     studentId: parsed.studentId,
     packageId: parsed.packageId,
     tutorId: parsed.tutorId,
     subjectId: parsed.subjectId,
     startDate: new Date(parsed.startDate),
     endDate: parsed.endDate ? new Date(parsed.endDate) : null,
+    priceAtEnrollment: selectedPackage.basePrice.toString(),
     customPriceOverride: parsed.customPriceOverride || null,
-    groupId,
-  });
+  };
+  if (newGroup) {
+    return createEnrollmentWithNewGroup(enrollmentData, newGroup);
+  }
+  return createEnrollment({ ...enrollmentData, groupId });
 }
 
 export async function updateEnrollmentStatus(
@@ -84,14 +112,49 @@ export async function updateEnrollmentStatus(
 ) {
   const parsed = updateEnrollmentSchema.parse(input);
   const enrollment = await getEnrollment(id);
-  const updated = await updateEnrollment(id, {
+  if (!enrollment) {
+    throw new Error("Enrollment not found");
+  }
+
+  const isTerminal = ["COMPLETED", "CANCELLED"].includes(parsed.status);
+  const endDate = resolveEnrollmentEndDate({
     status: parsed.status,
-    endDate: parsed.endDate ? new Date(parsed.endDate) : undefined,
-    customPriceOverride: parsed.customPriceOverride || null,
+    currentStatus: enrollment.status,
+    startDate: enrollment.startDate,
+    currentEndDate: enrollment.endDate,
+    requestedEndDate: parsed.endDate ? new Date(parsed.endDate) : undefined,
+    timeZone: getConfiguredCenterTimeZone(),
   });
 
-  if (["COMPLETED", "CANCELLED"].includes(parsed.status)) {
-    await deleteGroupWhenEmpty(enrollment?.groupId);
+  const timeZone = getConfiguredCenterTimeZone();
+  const effectiveEndDate =
+    endDate === undefined ? enrollment.endDate : endDate;
+  const scheduleCutoffExclusive = effectiveEndDate instanceof Date
+    ? combineDateAndTime(
+        addCalendarDays(effectiveEndDate, 1),
+        "00:00",
+        timeZone,
+      )
+    : undefined;
+  const updated = await updateEnrollmentLifecycle({
+    id,
+    data: {
+      status: parsed.status,
+      endDate,
+      customPriceOverride:
+        parsed.customPriceOverride === undefined
+          ? undefined
+          : parsed.customPriceOverride || null,
+    },
+    scheduleCutoffExclusive,
+    closeRecurrencesOn: isTerminal && effectiveEndDate instanceof Date
+      ? effectiveEndDate
+      : undefined,
+    groupId: enrollment.groupId,
+  });
+
+  if (isTerminal) {
+    await deleteGroupWhenEmpty(enrollment.groupId);
   }
 
   return updated;

@@ -1,3 +1,5 @@
+import "server-only";
+
 import { prisma } from "@/lib/prisma";
 import { PersonStatus } from "../../generated/prisma";
 
@@ -96,13 +98,44 @@ export async function createStudent(data: {
   return prisma.student.create({ data });
 }
 
+export async function createStudentWithGuardianData(
+  studentData: Parameters<typeof createStudent>[0],
+  guardianData?: {
+    firstName: string;
+    lastName: string;
+    avatarUrl?: string;
+    avatarPublicId?: string;
+    email?: string;
+    phone: string;
+    relationship?: "PARENT" | "GUARDIAN" | "OTHER";
+    notes?: string;
+    isPrimary: boolean;
+  },
+) {
+  return prisma.$transaction(async (tx) => {
+    const student = await tx.student.create({ data: studentData });
+    if (guardianData) {
+      const { isPrimary, ...guardian } = guardianData;
+      const createdGuardian = await tx.guardian.create({ data: guardian });
+      await tx.studentGuardian.create({
+        data: {
+          studentId: student.id,
+          guardianId: createdGuardian.id,
+          isPrimary,
+        },
+      });
+    }
+    return student;
+  });
+}
+
 export async function updateStudent(
   id: string,
   data: {
     firstName?: string;
     lastName?: string;
-    avatarUrl?: string;
-    avatarPublicId?: string;
+    avatarUrl?: string | null;
+    avatarPublicId?: string | null;
     dob?: Date | null;
     email?: string;
     phone?: string;
@@ -157,13 +190,33 @@ export async function linkGuardian(
   });
 }
 
+export function createGuardianAndLink(
+  studentId: string,
+  guardianData: Parameters<typeof createGuardian>[0],
+  isPrimary: boolean,
+) {
+  return prisma.$transaction(async (tx) => {
+    const guardian = await tx.guardian.create({ data: guardianData });
+    if (isPrimary) {
+      await tx.studentGuardian.updateMany({
+        where: { studentId },
+        data: { isPrimary: false },
+      });
+    }
+    await tx.studentGuardian.create({
+      data: { studentId, guardianId: guardian.id, isPrimary },
+    });
+    return guardian;
+  });
+}
+
 export async function updateGuardian(
   id: string,
   data: {
     firstName?: string;
     lastName?: string;
-    avatarUrl?: string;
-    avatarPublicId?: string;
+    avatarUrl?: string | null;
+    avatarPublicId?: string | null;
     email?: string;
     phone?: string;
     relationship?: "PARENT" | "GUARDIAN" | "OTHER";
@@ -171,6 +224,10 @@ export async function updateGuardian(
   }
 ) {
   return prisma.guardian.update({ where: { id }, data });
+}
+
+export async function getGuardian(id: string) {
+  return prisma.guardian.findUnique({ where: { id } });
 }
 
 export async function unlinkGuardian(studentId: string, guardianId: string) {
@@ -184,14 +241,16 @@ export async function setGuardianPrimary(
   guardianId: string,
   isPrimary: boolean
 ) {
-  if (isPrimary) {
-    await prisma.studentGuardian.updateMany({
-      where: { studentId, guardianId: { not: guardianId } },
-      data: { isPrimary: false },
+  return prisma.$transaction(async (tx) => {
+    if (isPrimary) {
+      await tx.studentGuardian.updateMany({
+        where: { studentId, guardianId: { not: guardianId } },
+        data: { isPrimary: false },
+      });
+    }
+    return tx.studentGuardian.update({
+      where: { studentId_guardianId: { studentId, guardianId } },
+      data: { isPrimary },
     });
-  }
-  return prisma.studentGuardian.update({
-    where: { studentId_guardianId: { studentId, guardianId } },
-    data: { isPrimary },
   });
 }

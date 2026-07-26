@@ -1,13 +1,31 @@
 import { z } from "zod";
+import {
+  dateSchema,
+  idSchema,
+  monthSchema,
+  optionalIdSchema,
+  positiveMoneySchema,
+} from "@/lib/validators/common";
 
 export const createPaymentSchema = z.object({
-  studentId: z.string().min(1, "Student is required"),
-  amount: z.string().min(1, "Amount is required"),
+  studentId: idSchema,
+  amount: positiveMoneySchema,
   method: z.enum(["CASH", "BANK_TRANSFER", "CARD", "OTHER"]),
-  paidAt: z.string().min(1, "Date is required"),
-  enrollmentId: z.string().optional(),
-  coversMonth: z.string().optional(),
-  notes: z.string().optional(),
+  paidAt: dateSchema,
+  enrollmentId: optionalIdSchema,
+  coversMonth: z.union([monthSchema, z.literal("")]).optional(),
+  notes: z.string().trim().max(2_000).optional(),
+}).refine((data) => !data.coversMonth || Boolean(data.enrollmentId), {
+  message: "An enrollment is required when assigning a billing month",
+  path: ["enrollmentId"],
+});
+
+export const markPaymentPaidSchema = z.object({
+  enrollmentId: idSchema,
+  studentId: idSchema,
+  amount: positiveMoneySchema,
+  method: z.enum(["CASH", "BANK_TRANSFER", "CARD", "OTHER"]),
+  month: monthSchema,
 });
 
 export type CreatePaymentInput = z.infer<typeof createPaymentSchema>;

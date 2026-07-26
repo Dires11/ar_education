@@ -1,10 +1,18 @@
 import { format, formatDistanceToNow, parseISO } from "date-fns";
 
-export const CENTER_TIMEZONE = "America/New_York";
-
 export function formatDate(date: Date | string): string {
   const d = typeof date === "string" ? parseISO(date) : date;
   return format(d, "MMM d, yyyy");
+}
+
+export function formatCalendarDate(date: Date | string): string {
+  const value = typeof date === "string" ? new Date(date) : date;
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC",
+  }).format(value);
 }
 
 export function formatDateTime(date: Date | string): string {

@@ -11,11 +11,17 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { formatDate, formatDateTime } from "@/lib/utils/dates";
+import { formatCalendarDate } from "@/lib/utils/dates";
 import { formatUSD } from "@/lib/utils/money";
 import { Prisma } from "@/generated/prisma";
 import { ArchiveTutorButton } from "../components/archive-button";
 import { EditTutorDialog } from "../components/edit-tutor-dialog";
+import {
+  getCalendarMonthKey,
+  getCalendarMonthRange,
+  getConfiguredCenterTimeZone,
+} from "@/lib/services/session-dates";
+import { formatInstantInTimeZone } from "@/lib/utils/time-zone";
 
 const STATUS_COLORS = {
   ACTIVE: "bg-green-100 text-green-800",
@@ -35,9 +41,16 @@ export default async function TutorDetailPage({
 
   // Payroll: current month by default
   const now = new Date();
-  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-  const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
-  const payrollSessions = await getTutorPayrollSessions(id, monthStart, monthEnd);
+  const centerTimeZone = getConfiguredCenterTimeZone();
+  const monthRange = getCalendarMonthRange(
+    getCalendarMonthKey(now, centerTimeZone),
+    centerTimeZone,
+  );
+  const payrollSessions = await getTutorPayrollSessions(
+    id,
+    monthRange.start,
+    monthRange.endExclusive,
+  );
   const totalMinutes = payrollSessions.reduce((s, sess) => s + sess.durationMinutes, 0);
   const totalHours = new Prisma.Decimal(totalMinutes).div(60);
   const earnings = totalHours.mul(tutor.hourlyRate);
@@ -141,7 +154,7 @@ export default async function TutorDetailPage({
                       <TableCell>{enrollment.subject.name}</TableCell>
                       <TableCell>{enrollment.package.name}</TableCell>
                       <TableCell className="text-sm text-muted-foreground">
-                        {formatDate(enrollment.startDate)}
+                        {formatCalendarDate(enrollment.startDate)}
                       </TableCell>
                     </TableRow>
                   ))}
@@ -193,7 +206,13 @@ export default async function TutorDetailPage({
                 <TableBody>
                   {payrollSessions.map((session) => (
                     <TableRow key={session.id}>
-                      <TableCell className="text-sm">{formatDateTime(session.scheduledFor)}</TableCell>
+                      <TableCell className="text-sm">
+                        {formatInstantInTimeZone(
+                          session.scheduledFor,
+                          "MMM d, yyyy h:mm a",
+                          centerTimeZone,
+                        )}
+                      </TableCell>
                       <TableCell className="text-sm">
                         {session.enrollment?.student
                           ? `${session.enrollment.student.firstName} ${session.enrollment.student.lastName}`

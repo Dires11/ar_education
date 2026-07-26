@@ -1,22 +1,19 @@
-import { prisma } from "@/lib/prisma";
-import {
-  startOfDay,
-  endOfDay,
-  addDays,
-  startOfWeek,
-  endOfWeek,
-  startOfMonth,
-  endOfMonth,
-  subMonths,
-  format,
-} from "date-fns";
+import "server-only";
 
-export async function getSessionsForDay(date: Date) {
+import { prisma } from "@/lib/prisma";
+import { addDays } from "date-fns";
+import { TZDate } from "@date-fns/tz";
+import { format } from "date-fns";
+
+export async function getSessionsForDay(
+  start: Date,
+  endExclusive: Date,
+) {
   return prisma.session.findMany({
     where: {
       scheduledFor: {
-        gte: startOfDay(date),
-        lte: endOfDay(date),
+        gte: start,
+        lt: endExclusive,
       },
       status: { in: ["SCHEDULED", "COMPLETED"] },
     },
@@ -35,13 +32,16 @@ export async function getActiveStudentCount() {
   return prisma.student.count({ where: { status: "ACTIVE" } });
 }
 
-export async function getUpcomingPackageEndings(withinDays = 14) {
-  const cutoff = addDays(new Date(), withinDays);
+export async function getUpcomingPackageEndings(
+  today: Date,
+  withinDays = 14,
+) {
+  const cutoff = addDays(today, withinDays);
   return prisma.enrollment.findMany({
     where: {
       status: "ACTIVE",
       endDate: {
-        gte: new Date(),
+        gte: today,
         lte: cutoff,
       },
     },
@@ -54,14 +54,13 @@ export async function getUpcomingPackageEndings(withinDays = 14) {
   });
 }
 
-export async function getTutorSessionCountsThisWeek() {
-  const now = new Date();
-  const weekStart = startOfWeek(now, { weekStartsOn: 1 }); // Monday
-  const weekEnd = endOfWeek(now, { weekStartsOn: 1 });
-
+export async function getTutorSessionCountsThisWeek(
+  weekStart: Date,
+  weekEndExclusive: Date,
+) {
   const sessions = await prisma.session.findMany({
     where: {
-      scheduledFor: { gte: weekStart, lte: weekEnd },
+      scheduledFor: { gte: weekStart, lt: weekEndExclusive },
       status: { in: ["SCHEDULED", "COMPLETED"] },
     },
     include: {
@@ -93,10 +92,12 @@ export async function getStudentsWithBalance() {
     include: {
       payments: { select: { amount: true } },
       enrollments: {
-        where: { status: "ACTIVE" },
         include: {
-          package: { select: { type: true, billingPeriod: true, basePrice: true } },
-          sessionAttendance: { where: { billable: true }, select: { id: true } },
+          package: { select: { type: true, billingPeriod: true } },
+          sessionAttendance: {
+            where: { billable: true },
+            select: { session: { select: { scheduledFor: true } } },
+          },
           discounts: {
             select: {
               kind: true,
@@ -113,14 +114,14 @@ export async function getStudentsWithBalance() {
   });
 }
 
-export async function getWeeklySessionsByDay() {
-  const now = new Date();
-  const weekStart = startOfWeek(now, { weekStartsOn: 1 });
-  const weekEnd = endOfWeek(now, { weekStartsOn: 1 });
-
+export async function getWeeklySessionsByDay(
+  weekStart: Date,
+  weekEndExclusive: Date,
+  timeZone: string,
+) {
   const sessions = await prisma.session.findMany({
     where: {
-      scheduledFor: { gte: weekStart, lte: weekEnd },
+      scheduledFor: { gte: weekStart, lt: weekEndExclusive },
       status: { in: ["SCHEDULED", "COMPLETED"] },
     },
     select: { scheduledFor: true },
@@ -129,22 +130,30 @@ export async function getWeeklySessionsByDay() {
   const days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
   const counts = Object.fromEntries(days.map((d) => [d, 0]));
   for (const s of sessions) {
-    const dayKey = format(s.scheduledFor, "EEE");
+    const dayKey = format(new TZDate(s.scheduledFor, timeZone), "EEE");
     if (dayKey in counts) counts[dayKey]++;
   }
   return days.map((day) => ({ day, sessions: counts[day] }));
 }
 
-export async function getMonthlyRevenue(months = 6) {
-  const now = new Date();
+export async function getMonthlyRevenue(
+  ranges: Array<{
+    month: string;
+    start: Date;
+    endExclusive: Date;
+  }>,
+) {
   return Promise.all(
-    Array.from({ length: months }, (_, i) => {
-      const date = subMonths(now, months - 1 - i);
-      const start = startOfMonth(date);
-      const end = endOfMonth(date);
+    ranges.map(({ month, start, endExclusive }) => {
       return prisma.payment
-        .aggregate({ where: { paidAt: { gte: start, lte: end } }, _sum: { amount: true } })
-        .then((r) => ({ month: format(date, "MMM"), revenue: Number(r._sum.amount ?? 0) }));
-    })
+        .aggregate({
+          where: { paidAt: { gte: start, lt: endExclusive } },
+          _sum: { amount: true },
+        })
+        .then((result) => ({
+          month,
+          revenue: Number(result._sum.amount ?? 0),
+        }));
+    }),
   );
 }

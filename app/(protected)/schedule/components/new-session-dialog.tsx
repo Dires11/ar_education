@@ -16,6 +16,7 @@ import { NewSessionForm } from "./new-session-form";
 import type { SessionEnrollment, SessionGroup, Subject, Tutor } from "./session-form-types";
 
 export function NewSessionDialog({
+  centerTimeZone,
   tutors,
   subjects,
   enrollments,
@@ -23,6 +24,7 @@ export function NewSessionDialog({
   defaultDate,
   onSuccess,
 }: {
+  centerTimeZone: string;
   tutors: Tutor[];
   subjects: Subject[];
   enrollments: SessionEnrollment[];
@@ -49,6 +51,7 @@ export function NewSessionDialog({
           </DialogDescription>
         </DialogHeader>
         <NewSessionForm
+          centerTimeZone={centerTimeZone}
           tutors={tutors}
           subjects={subjects}
           enrollments={enrollments}

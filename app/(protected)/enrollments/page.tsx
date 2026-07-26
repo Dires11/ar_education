@@ -9,8 +9,10 @@ import { ManageGroupsDialog } from "./components/manage-groups-dialog";
 import { PageHero } from "@/components/page-hero";
 import { ClipboardListIcon, UserCheckIcon, UsersIcon } from "lucide-react";
 import { EnrollmentsTable } from "./components/enrollments-table";
+import { getConfiguredCenterTimeZone } from "@/lib/services/session-dates";
 
 export default async function EnrollmentsPage() {
+  const centerTimeZone = getConfiguredCenterTimeZone();
   const [enrollments, studentsData, tutorsData, subjects, packages, groups] =
     await Promise.all([
       listEnrollments({ status: "ACTIVE" }),
@@ -105,10 +107,12 @@ export default async function EnrollmentsPage() {
           </Badge>
         </div>
         <EnrollmentsTable
+          centerTimeZone={centerTimeZone}
           enrollments={enrollments.map((enrollment) => ({
             id: enrollment.id,
             status: enrollment.status,
             startDate: enrollment.startDate.toISOString(),
+            priceAtEnrollment: enrollment.priceAtEnrollment.toString(),
             customPriceOverride:
               enrollment.customPriceOverride?.toString() ?? null,
             student: {
@@ -119,7 +123,6 @@ export default async function EnrollmentsPage() {
             subject: { name: enrollment.subject.name },
             package: {
               name: enrollment.package.name,
-              basePrice: enrollment.package.basePrice.toString(),
               lessonType: enrollment.package.lessonType,
             },
             group: enrollment.group ? { name: enrollment.group.name } : null,

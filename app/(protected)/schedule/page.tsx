@@ -1,29 +1,34 @@
-import {
-  getMonthSchedule,
-  autoCompletePassedSessions,
-} from "@/lib/services/sessions";
+import { getMonthSchedule } from "@/lib/services/sessions";
 import { listTutors } from "@/lib/data/tutors";
 import { listSubjects } from "@/lib/data/subjects";
 import { listEnrollments } from "@/lib/data/enrollments";
 import { listGroups } from "@/lib/data/groups";
-import { format, startOfMonth } from "date-fns";
+import {
+  getCalendarMonthKey,
+  getConfiguredCenterTimeZone,
+} from "@/lib/services/session-dates";
 import { ScheduleView } from "./components/schedule-view";
+import { getSchedulePaymentStatus } from "@/lib/services/schedule-payment-status";
 
 export const dynamic = "force-dynamic";
 
 export default async function SchedulePage() {
-  const monthStart = startOfMonth(new Date());
-
-  autoCompletePassedSessions().catch(console.error); // fire-and-forget
+  const centerTimeZone = getConfiguredCenterTimeZone();
+  const monthKey = getCalendarMonthKey(new Date(), centerTimeZone);
 
   const [
-    { realSessions: sessions, virtualSessions, paidMonths },
+    {
+      realSessions: sessions,
+      virtualSessions,
+      paidMonths,
+      subscriptionEnrollmentIds,
+    },
     tutorsData,
     subjects,
     enrollments,
     groups,
   ] = await Promise.all([
-    getMonthSchedule(monthStart),
+    getMonthSchedule(monthKey),
     listTutors({ status: "ACTIVE" }),
     listSubjects(),
     listEnrollments({ status: "ACTIVE" }),
@@ -35,7 +40,8 @@ export default async function SchedulePage() {
 
   return (
     <ScheduleView
-      monthStart={monthStart}
+      monthKey={monthKey}
+      centerTimeZone={centerTimeZone}
       sessions={sessions.map((s) => ({
         id: s.id,
         scheduledFor: s.scheduledFor.toISOString(),
@@ -70,13 +76,27 @@ export default async function SchedulePage() {
         dayOfWeek: s.recurrenceRule?.dayOfWeek ?? null,
         intervalWeeks: s.recurrenceRule?.intervalWeeks ?? null,
         color: s.recurrenceRule?.color ?? null,
-        isPaid: s.enrollmentId
-          ? paidMonths.has(`${s.enrollmentId}:${format(s.scheduledFor, "yyyy-MM")}`)
-          : null as boolean | null,
+        isPaid: getSchedulePaymentStatus({
+          enrollmentId: s.enrollmentId,
+          monthKey: getCalendarMonthKey(
+            s.scheduledFor,
+            centerTimeZone,
+          ),
+          subscriptionEnrollmentIds,
+          paidMonths,
+        }),
       }))}
       virtualSessions={virtualSessions.map((v) => ({
         ...v,
-        isPaid: v.enrollmentId ? paidMonths.has(`${v.enrollmentId}:${format(new Date(v.scheduledFor), "yyyy-MM")}`) : null,
+        isPaid: getSchedulePaymentStatus({
+          enrollmentId: v.enrollmentId,
+          monthKey: getCalendarMonthKey(
+            new Date(v.scheduledFor),
+            centerTimeZone,
+          ),
+          subscriptionEnrollmentIds,
+          paidMonths,
+        }),
       }))}
       tutors={tutorsData.tutors.map((t) => ({
         id: t.id,

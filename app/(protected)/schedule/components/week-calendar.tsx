@@ -9,21 +9,12 @@ import {
   eachDayOfInterval,
   isSameMonth,
   isSameDay,
-  isToday,
   format,
   addMonths,
   subMonths,
   addMinutes,
 } from "date-fns";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-} from "@/components/ui/dialog";
 import {
   ChevronLeftIcon,
   ChevronRightIcon,
@@ -38,7 +29,6 @@ import {
   UserIcon,
   UsersIcon,
   RepeatIcon,
-  ClockIcon,
   GraduationCapIcon,
   BookOpenIcon,
 } from "lucide-react";
@@ -55,36 +45,15 @@ import {
   EditRecurringGroupDialog,
   type GroupRule,
 } from "./edit-recurring-group-dialog";
-import { AttendanceForm } from "./attendance-form";
+import type { CalendarSession } from "./calendar-session";
+import { SessionDetailsDialog } from "./session-details-dialog";
+import {
+  formatInstantInTimeZone,
+  getPickerDateInTimeZone,
+  isInstantOnPickerDate,
+} from "@/lib/utils/time-zone";
 
-export type CalendarSession = {
-  id: string;
-  scheduledFor: string;
-  durationMinutes: number;
-  status: string;
-  room: string | null;
-  notes?: string | null;
-  tutor: { firstName: string; lastName: string };
-  subject: { name: string };
-  enrollmentStudent?: { firstName: string; lastName: string } | null;
-  attendance: Array<{
-    studentId?: string;
-    status?: string;
-    billable?: boolean;
-    student: { firstName: string; lastName: string };
-  }>;
-  enrollmentId?: string | null;
-  groupId?: string | null;
-  groupName?: string | null;
-  recurrenceRuleId?: string | null;
-  virtual?: boolean;
-  ruleId?: string | null;
-  startTime?: string | null;
-  dayOfWeek?: number | null;
-  intervalWeeks?: number | null;
-  isPaid?: boolean | null;
-  color?: string | null;
-};
+export type { CalendarSession } from "./calendar-session";
 
 const ENROLLMENT_PALETTE = [
   "#ef4444",
@@ -206,111 +175,8 @@ function getStudentNames(session: CalendarSession) {
   return "No students";
 }
 
-function SessionDetailsDialog({
-  session,
-  open,
-  onOpenChange,
-  onRefresh,
-}: {
-  session: CalendarSession | null;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  onRefresh: () => void;
-}) {
-  if (!session) return null;
-
-  const scheduledFor = new Date(session.scheduledFor);
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg max-h-[90dvh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>{session.subject.name}</DialogTitle>
-          <DialogDescription>
-            {format(scheduledFor, "EEEE, MMMM d, yyyy 'at' h:mm a")}
-          </DialogDescription>
-        </DialogHeader>
-
-        <div className="space-y-4">
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="outline" className="rounded-full capitalize">
-              {statusLabel(session)}
-            </Badge>
-            {session.virtual && (
-              <Badge variant="outline" className="rounded-full border-dashed">
-                Virtual
-              </Badge>
-            )}
-            {session.isPaid === false && (
-              <Badge className="rounded-full bg-amber-100 text-amber-800">
-                Unpaid
-              </Badge>
-            )}
-          </div>
-
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div className="rounded-lg border bg-muted/30 p-3">
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <ClockIcon className="h-3.5 w-3.5" />
-                Duration
-              </div>
-              <p className="mt-1 text-sm font-medium">
-                {session.durationMinutes} minutes
-              </p>
-            </div>
-            <div className="rounded-lg border bg-muted/30 p-3">
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <GraduationCapIcon className="h-3.5 w-3.5" />
-                Tutor
-              </div>
-              <p className="mt-1 text-sm font-medium">
-                {session.tutor.firstName} {session.tutor.lastName}
-              </p>
-            </div>
-          </div>
-
-          {!session.virtual && session.attendance.length > 0 && (
-            <div className="rounded-lg border p-3">
-              <p className="mb-3 text-xs text-muted-foreground">Attendance</p>
-              <AttendanceForm
-                sessionId={session.id}
-                isEditable
-                attendances={session.attendance.map((attendance) => ({
-                  studentId: attendance.studentId ?? "",
-                  studentName: `${attendance.student.firstName} ${attendance.student.lastName}`,
-                  status: attendance.status ?? session.status,
-                  billable: attendance.billable ?? false,
-                })).filter((attendance) => attendance.studentId)}
-                onSaved={onRefresh}
-              />
-            </div>
-          )}
-
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div className="rounded-lg border p-3">
-              <p className="text-xs text-muted-foreground">Room</p>
-              <p className="mt-1 text-sm font-medium">{session.room || "—"}</p>
-            </div>
-            <div className="rounded-lg border p-3">
-              <p className="text-xs text-muted-foreground">Schedule Type</p>
-              <p className="mt-1 text-sm font-medium">
-                {session.ruleId ? "Recurring" : "One-time"}
-              </p>
-            </div>
-          </div>
-
-          {session.notes && (
-            <div className="rounded-lg border p-3">
-              <p className="text-xs text-muted-foreground">Notes</p>
-              <p className="mt-1 text-sm">{session.notes}</p>
-            </div>
-          )}
-        </div>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
 export function MonthCalendar({
+  centerTimeZone,
   monthStart,
   sessions,
   selectedDay,
@@ -319,6 +185,7 @@ export function MonthCalendar({
   onRefresh,
   isPending,
 }: {
+  centerTimeZone: string;
   monthStart: Date;
   sessions: CalendarSession[];
   selectedDay?: Date | null;
@@ -337,7 +204,11 @@ export function MonthCalendar({
   function toggleExpanded(id: string) {
     setExpandedCards((prev) => {
       const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
       return next;
     });
   }
@@ -445,10 +316,17 @@ export function MonthCalendar({
   const calStart = startOfWeek(startOfMonth(monthStart), { weekStartsOn: 1 });
   const calEnd = endOfWeek(endOfMonth(monthStart), { weekStartsOn: 1 });
   const days = eachDayOfInterval({ start: calStart, end: calEnd });
+  const today = getPickerDateInTimeZone(new Date(), centerTimeZone);
 
   const selectedDaySessions = selectedDay
     ? sessions
-        .filter((s) => isSameDay(new Date(s.scheduledFor), selectedDay))
+        .filter((s) =>
+          isInstantOnPickerDate(
+            s.scheduledFor,
+            selectedDay,
+            centerTimeZone,
+          ),
+        )
         .sort((a, b) => new Date(a.scheduledFor).getTime() - new Date(b.scheduledFor).getTime())
     : [];
 
@@ -456,6 +334,7 @@ export function MonthCalendar({
     <>
       {editingSession && !editingSession.virtual && (
         <EditSessionDialog
+          centerTimeZone={centerTimeZone}
           session={{
             id: editingSession.id,
             scheduledFor: editingSession.scheduledFor,
@@ -475,6 +354,7 @@ export function MonthCalendar({
 
       {editingRecurring?.ruleId && editingRecurringRules.length > 0 && (
         <EditRecurringGroupDialog
+          centerTimeZone={centerTimeZone}
           rules={editingRecurringRules}
           subjectName={editingRecurring.subject.name}
           referenceDate={editingRecurring.scheduledFor}
@@ -492,6 +372,7 @@ export function MonthCalendar({
       )}
 
       <SessionDetailsDialog
+        centerTimeZone={centerTimeZone}
         session={detailSession}
         open={!!detailSession}
         onRefresh={onRefresh}
@@ -529,7 +410,7 @@ export function MonthCalendar({
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => onNavigate(startOfMonth(new Date()))}
+                onClick={() => onNavigate(startOfMonth(today))}
               >
                 Today
               </Button>
@@ -564,13 +445,19 @@ export function MonthCalendar({
           >
             {days.map((day, i) => {
               const daySessions = sessions
-                .filter((s) => isSameDay(new Date(s.scheduledFor), day))
+                .filter((s) =>
+                  isInstantOnPickerDate(
+                    s.scheduledFor,
+                    day,
+                    centerTimeZone,
+                  ),
+                )
                 .sort((a, b) => new Date(a.scheduledFor).getTime() - new Date(b.scheduledFor).getTime());
               const isCurrentMonth = isSameMonth(day, monthStart);
               const isSelected = selectedDay
                 ? isSameDay(day, selectedDay)
                 : false;
-              const isTodayDate = isToday(day);
+              const isTodayDate = isSameDay(day, today);
               const visible = daySessions.slice(0, 3);
               const overflow = daySessions.length - visible.length;
 
@@ -610,7 +497,11 @@ export function MonthCalendar({
                         )}
                         style={getSessionPillStyle(session).style}
                       >
-                        {format(new Date(session.scheduledFor), "h:mm")}{" "}
+                        {formatInstantInTimeZone(
+                          session.scheduledFor,
+                          "h:mm",
+                          centerTimeZone,
+                        )}{" "}
                         {session.groupId
                           ? (session.groupName ?? "Group")
                           : (session.attendance[0]?.student.lastName ??
@@ -673,9 +564,20 @@ export function MonthCalendar({
                         >
                           <div className="flex items-center justify-between gap-1">
                             <span className="font-medium">
-                              {format(new Date(session.scheduledFor), "h:mm")}
+                              {formatInstantInTimeZone(
+                                session.scheduledFor,
+                                "h:mm",
+                                centerTimeZone,
+                              )}
                               {" – "}
-                              {format(addMinutes(new Date(session.scheduledFor), session.durationMinutes), "h:mm a")}
+                              {formatInstantInTimeZone(
+                                addMinutes(
+                                  new Date(session.scheduledFor),
+                                  session.durationMinutes,
+                                ),
+                                "h:mm a",
+                                centerTimeZone,
+                              )}
                             </span>
                             <div className="flex items-center gap-1.5">
                               {session.isPaid === false && (
@@ -765,9 +667,20 @@ export function MonthCalendar({
                         >
                           <div className="flex items-center justify-between gap-1">
                             <span className="font-medium">
-                              {format(new Date(session.scheduledFor), "h:mm")}
+                              {formatInstantInTimeZone(
+                                session.scheduledFor,
+                                "h:mm",
+                                centerTimeZone,
+                              )}
                               {" – "}
-                              {format(addMinutes(new Date(session.scheduledFor), session.durationMinutes), "h:mm a")}
+                              {formatInstantInTimeZone(
+                                addMinutes(
+                                  new Date(session.scheduledFor),
+                                  session.durationMinutes,
+                                ),
+                                "h:mm a",
+                                centerTimeZone,
+                              )}
                             </span>
                             <div className="flex items-center gap-1.5">
                               {session.isPaid === false && (

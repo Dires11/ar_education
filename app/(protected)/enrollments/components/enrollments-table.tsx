@@ -10,7 +10,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { StudentAvatar } from "@/components/entity-avatar";
-import { formatDate } from "@/lib/utils/dates";
+import { formatCalendarDate } from "@/lib/utils/dates";
 import { formatUSD } from "@/lib/utils/money";
 import { EnrollmentPopup } from "./enrollment-popup";
 
@@ -25,6 +25,7 @@ type EnrollmentRow = {
   id: string;
   status: keyof typeof STATUS_COLORS;
   startDate: string;
+  priceAtEnrollment: string;
   customPriceOverride: string | null;
   student: {
     firstName: string;
@@ -34,7 +35,6 @@ type EnrollmentRow = {
   subject: { name: string };
   package: {
     name: string;
-    basePrice: string;
     lessonType: string;
   };
   group: { name: string } | null;
@@ -46,8 +46,10 @@ type EnrollmentRow = {
 
 export function EnrollmentsTable({
   enrollments,
+  centerTimeZone,
 }: {
   enrollments: EnrollmentRow[];
+  centerTimeZone: string;
 }) {
   const [selectedEnrollmentId, setSelectedEnrollmentId] = useState<string | null>(
     null,
@@ -136,11 +138,11 @@ export function EnrollmentsTable({
                 <TableCell className="text-sm font-medium">
                   {formatUSD(
                     enrollment.customPriceOverride ??
-                      enrollment.package.basePrice,
+                      enrollment.priceAtEnrollment,
                   )}
                 </TableCell>
                 <TableCell className="text-sm text-muted-foreground">
-                  {formatDate(enrollment.startDate)}
+                  {formatCalendarDate(enrollment.startDate)}
                 </TableCell>
                 <TableCell>
                   <span
@@ -156,6 +158,7 @@ export function EnrollmentsTable({
       </Table>
 
       <EnrollmentPopup
+        centerTimeZone={centerTimeZone}
         enrollmentId={selectedEnrollmentId}
         open={open}
         onOpenChange={setOpen}

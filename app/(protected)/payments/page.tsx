@@ -21,6 +21,10 @@ import { Button } from "@/components/ui/button";
 import { PageHero } from "@/components/page-hero";
 import { formatDate } from "@/lib/utils/dates";
 import { formatUSD } from "@/lib/utils/money";
+import {
+  getCalendarDateKey,
+  getConfiguredCenterTimeZone,
+} from "@/lib/services/session-dates";
 import { DeletePaymentButton } from "./components/delete-payment-button";
 import { NewPaymentDialog } from "./components/new-payment-dialog";
 import { UpcomingDues } from "./components/upcoming-dues";
@@ -101,7 +105,12 @@ export default async function PaymentsPage({
     id: e.id,
     studentId: e.studentId,
     label: `${e.subject.name} — ${e.package.name}`,
+    packageType: e.package.type,
   }));
+  const defaultPaidAt = getCalendarDateKey(
+    new Date(),
+    getConfiguredCenterTimeZone(),
+  );
 
   const revenueChange =
     stats.lastMonthTotal > 0
@@ -145,6 +154,7 @@ export default async function PaymentsPage({
           <NewPaymentDialog
             students={studentList}
             enrollments={enrollmentList}
+            defaultPaidAt={defaultPaidAt}
           />
         }
       />

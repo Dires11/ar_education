@@ -49,7 +49,7 @@ export function StudentEditForm({
   async function onSubmit(values: UpdateStudentInput) {
     try {
       await updateStudentAction(studentId, values);
-      commit();
+      commit([values.avatarPublicId]);
       toast.success("Student updated");
       if (onSuccess) {
         onSuccess();
