@@ -8,29 +8,31 @@ Run the production dependency audit with:
 npm audit --omit=dev
 ```
 
-The current audit reports 6 findings: 3 high and 3 moderate. There are no
-critical findings.
+The production dependency audit reports 0 findings.
 
 ## Addressed
 
-- Next.js and Clerk are pinned to reviewed patch releases.
+- Next.js 16.2.12 and Clerk are pinned to reviewed patch releases.
 - `shadcn` is a development-only CLI and is no longer shipped as a production
   dependency.
 - Resend was upgraded to remove the vulnerable Svix/UUID chain.
-- Compatible patched releases of Hono, Valibot, and Fast URI are pinned through
-  package overrides.
+- Prisma was upgraded to 7.9.0.
+- Compatible patched releases of Hono, its Node adapter, PostCSS, Sharp,
+  Find My Way, esbuild, Valibot, and Fast URI are pinned
+  through package overrides where upstream packages still declare a vulnerable
+  transitive version.
 
-## Upstream residuals
+## Development-only residual
 
-- Next.js 16.2.11 brings the reported PostCSS and Sharp findings. The audit's
-  proposed fix is an incompatible downgrade to Next.js 9.3.3, so it must not be
-  applied with `npm audit fix --force`.
-- Prisma 7.7 brings moderate findings through its development tooling. The
-  remaining Node server fix requires a new major version outside Prisma's
-  declared range. Prisma 7.9 was evaluated, but it introduced additional
-  higher-severity routing findings into the production tree, so the project
-  remains on 7.7.
+The full audit reports 9 high-severity paths to the same Brace Expansion
+denial-of-service advisory through ESLint 9 and Next.js lint plugins. These
+packages are not installed in the production dependency tree.
 
-Recheck these findings when either framework publishes a compatible patched
-dependency tree. Any dependency update must be followed by the tests,
-typecheck, lint, production build, and authentication smoke tests.
+The audit's proposed forced upgrade installs ESLint 10, but the React, import,
+and accessibility plugins bundled by Next.js 16.2.12 do not support ESLint 10.
+Forcing Brace Expansion 5 into the older Minimatch consumers also breaks
+ESLint at runtime. Keep the supported ESLint 9 toolchain until those plugins
+publish compatible releases; do not use `npm audit fix --force`.
+
+Any dependency update must be followed by the tests, typecheck, lint,
+production build, Prisma validation, CLI smoke tests, and both audit commands.
