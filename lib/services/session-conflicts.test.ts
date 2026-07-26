@@ -52,6 +52,16 @@ describe("recurring schedule conflict horizon", () => {
     await expect(
       assertNoRecurringScheduleConflict(proposedSchedule),
     ).rejects.toThrow("Grace Hopper is already teaching");
+    expect(sessionData.getSessionsForConflictWindow).toHaveBeenCalledWith(
+      expect.any(Date),
+      undefined,
+      undefined,
+      undefined,
+      {
+        tutorId: "tutor-1",
+        studentIds: ["student-1"],
+      },
+    );
   });
 
   it("detects a recurring rule whose first collision is after 90 days", async () => {
@@ -90,5 +100,15 @@ describe("recurring schedule conflict horizon", () => {
     await expect(
       assertNoRecurringScheduleConflict(proposedSchedule),
     ).rejects.toThrow("Grace Hopper is already teaching");
+    expect(
+      sessionData.getRecurringSchedulesForConflictWindow,
+    ).toHaveBeenCalledWith(
+      expect.any(Date),
+      undefined,
+      {
+        tutorId: "tutor-1",
+        studentIds: ["student-1"],
+      },
+    );
   });
 });

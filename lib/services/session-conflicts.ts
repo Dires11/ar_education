@@ -65,6 +65,7 @@ export async function assertNoScheduleConflict(input: {
     conflictWindow.endExclusive,
     input.excludeSessionId,
     input.excludeRecurrenceRuleId,
+    { tutorId: input.tutorId, studentIds: input.studentIds },
   );
 
   const requestedStudentIds = new Set(input.studentIds);
@@ -147,8 +148,13 @@ function throwIfConflict(input: {
 async function getRecurringSchedulesForConflictWindow(
   from: Date,
   to?: Date,
+  conflictContext?: { tutorId: string; studentIds: string[] },
 ) {
-  const rules = await getRecurringSchedulesForConflictWindowData(from, to);
+  const rules = await getRecurringSchedulesForConflictWindowData(
+    from,
+    to,
+    conflictContext,
+  );
 
   return rules.filter((rule) => !rule.endsOn || rule.endsOn >= rule.startsOn);
 }
@@ -216,6 +222,7 @@ async function assertNoRecurringRuleConflictForOccurrence(input: {
   const rules = await getRecurringSchedulesForConflictWindow(
     conflictWindow.start,
     conflictWindow.endExclusive,
+    { tutorId: input.tutorId, studentIds: input.studentIds },
   );
   const requestedStudentIds = new Set(input.studentIds);
 
@@ -362,6 +369,10 @@ export async function assertNoRecurringScheduleConflict(
     proposedSearchEnd,
     undefined,
     input.excludeRecurrenceRuleId,
+    {
+      tutorId: input.tutorId,
+      studentIds: [...requestedStudentIds],
+    },
   );
 
   for (const session of existingSessions) {
@@ -414,6 +425,11 @@ export async function assertNoRecurringScheduleConflict(
 
   const existingRules = await getRecurringSchedulesForConflictWindow(
     proposedSearchStart,
+    undefined,
+    {
+      tutorId: input.tutorId,
+      studentIds: [...requestedStudentIds],
+    },
   );
   for (const rule of existingRules) {
     if (rule.id === input.excludeRecurrenceRuleId) continue;

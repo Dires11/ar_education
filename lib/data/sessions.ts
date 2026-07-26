@@ -732,7 +732,31 @@ export function getSessionsForConflictWindow(
   toExclusive?: Date,
   excludeSessionId?: string,
   excludeRecurrenceRuleId?: string,
+  conflictContext?: { tutorId: string; studentIds: string[] },
 ) {
+  const relevanceFilters: Prisma.SessionWhereInput[] | undefined =
+    conflictContext
+      ? [
+          { tutorId: conflictContext.tutorId },
+          ...(conflictContext.studentIds.length > 0
+            ? [
+                {
+                  attendance: {
+                    some: {
+                      studentId: { in: conflictContext.studentIds },
+                    },
+                  },
+                },
+                {
+                  enrollment: {
+                    studentId: { in: conflictContext.studentIds },
+                  },
+                },
+              ]
+            : []),
+        ]
+      : undefined;
+
   return prisma.session.findMany({
     where: {
       id: excludeSessionId ? { not: excludeSessionId } : undefined,
@@ -747,6 +771,7 @@ export function getSessionsForConflictWindow(
         gte: from,
         lt: toExclusive,
       },
+      AND: relevanceFilters ? [{ OR: relevanceFilters }] : undefined,
     },
     include: {
       tutor: true,
@@ -760,13 +785,42 @@ export function getSessionsForConflictWindow(
 export function getRecurringSchedulesForConflictWindow(
   from: Date,
   to?: Date,
+  conflictContext?: { tutorId: string; studentIds: string[] },
 ) {
+  const relevanceFilters: Prisma.RecurrenceRuleWhereInput[] | undefined =
+    conflictContext
+      ? [
+          { enrollment: { tutorId: conflictContext.tutorId } },
+          { group: { tutorId: conflictContext.tutorId } },
+        ]
+      : undefined;
+  if (relevanceFilters && conflictContext?.studentIds.length) {
+    relevanceFilters.push(
+      {
+        enrollment: {
+          studentId: { in: conflictContext.studentIds },
+        },
+      },
+      {
+        group: {
+          enrollments: {
+            some: {
+              studentId: { in: conflictContext.studentIds },
+              status: { in: ["ACTIVE", "PAUSED"] },
+            },
+          },
+        },
+      },
+    );
+  }
+
   return prisma.recurrenceRule.findMany({
     where: {
       // These columns are date-only markers while from/to are instants.
       // Pad this coarse filter and validate exact occurrences in the service.
       startsOn: to ? { lte: addDays(to, 1) } : undefined,
       OR: [{ endsOn: null }, { endsOn: { gte: addDays(from, -1) } }],
+      AND: relevanceFilters ? [{ OR: relevanceFilters }] : undefined,
     },
     include: {
       enrollment: {
