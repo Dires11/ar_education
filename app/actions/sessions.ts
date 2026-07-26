@@ -43,6 +43,7 @@ import {
   getConfiguredCenterTimeZone,
 } from "@/lib/services/session-dates";
 import { z } from "zod";
+import { getSchedulePaymentStatus } from "@/lib/services/schedule-payment-status";
 
 const sessionStatusSchema = z.enum([
   "SCHEDULED",
@@ -285,7 +286,12 @@ export async function fetchScheduleForMonth(monthParam: string) {
   const monthKey = monthSchema.parse(monthParam);
   const centerTimeZone = getConfiguredCenterTimeZone();
 
-  const { realSessions, virtualSessions, paidMonths } =
+  const {
+    realSessions,
+    virtualSessions,
+    paidMonths,
+    subscriptionEnrollmentIds,
+  } =
     await getMonthSchedule(monthKey);
 
   const sessions = realSessions.map((s) => ({
@@ -319,28 +325,30 @@ export async function fetchScheduleForMonth(monthParam: string) {
     dayOfWeek: s.recurrenceRule?.dayOfWeek ?? null,
     intervalWeeks: s.recurrenceRule?.intervalWeeks ?? null,
     color: s.recurrenceRule?.color ?? null,
-    isPaid: s.enrollmentId
-      ? paidMonths.has(
-          `${s.enrollmentId}:${getCalendarMonthKey(
-            s.scheduledFor,
-            centerTimeZone,
-          )}`,
-        )
-      : null as boolean | null,
+    isPaid: getSchedulePaymentStatus({
+      enrollmentId: s.enrollmentId,
+      monthKey: getCalendarMonthKey(
+        s.scheduledFor,
+        centerTimeZone,
+      ),
+      subscriptionEnrollmentIds,
+      paidMonths,
+    }),
   }));
 
   const virtual = virtualSessions.map((v) => ({
     ...v,
     notes: null as string | null,
     recurrenceRuleId: null as string | null,
-    isPaid: v.enrollmentId
-      ? paidMonths.has(
-          `${v.enrollmentId}:${getCalendarMonthKey(
-            new Date(v.scheduledFor),
-            centerTimeZone,
-          )}`,
-        )
-      : null,
+    isPaid: getSchedulePaymentStatus({
+      enrollmentId: v.enrollmentId,
+      monthKey: getCalendarMonthKey(
+        new Date(v.scheduledFor),
+        centerTimeZone,
+      ),
+      subscriptionEnrollmentIds,
+      paidMonths,
+    }),
   }));
 
   return { sessions, virtual };

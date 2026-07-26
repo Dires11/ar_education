@@ -3,11 +3,14 @@ import {
   addCalendarDays,
   combineDateAndTime,
   getCalendarDateKey,
+  getCalendarDateStart,
   getCalendarMonthKey,
   getCalendarMonthRange,
   getCalendarWeekRange,
   getFirstMatchingDate,
   getFirstRecurrenceOnOrAfter,
+  getSessionConflictWindow,
+  sessionRangesOverlap,
 } from "@/lib/services/session-dates";
 
 describe("session date calculations", () => {
@@ -89,6 +92,39 @@ describe("session date calculations", () => {
     expect(range.endExclusive.toISOString()).toBe(
       "2026-04-01T07:00:00.000Z",
     );
+  });
+
+  it("stores date-only values at the start of the center-local day", () => {
+    expect(
+      getCalendarDateStart(
+        "2026-07-01",
+        "America/Los_Angeles",
+      ).toISOString(),
+    ).toBe("2026-07-01T07:00:00.000Z");
+  });
+
+  it("looks back far enough to find overnight session conflicts", () => {
+    const window = getSessionConflictWindow(
+      new Date("2026-07-02T07:15:00.000Z"),
+      60,
+    );
+
+    expect(window.start.toISOString()).toBe("2026-07-01T23:15:00.000Z");
+    expect(window.endExclusive.toISOString()).toBe(
+      "2026-07-02T08:15:00.000Z",
+    );
+  });
+
+  it("detects overlaps across midnight without treating touching ranges as conflicts", () => {
+    const previousNight = new Date("2026-07-02T06:30:00.000Z");
+    const afterMidnight = new Date("2026-07-02T07:15:00.000Z");
+
+    expect(
+      sessionRangesOverlap(previousNight, 120, afterMidnight, 60),
+    ).toBe(true);
+    expect(
+      sessionRangesOverlap(previousNight, 45, afterMidnight, 60),
+    ).toBe(false);
   });
 
   it("builds Monday-through-Sunday week boundaries in center time", () => {

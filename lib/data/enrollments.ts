@@ -74,15 +74,76 @@ export async function createEnrollmentWithNewGroup(
   });
 }
 
-export async function updateEnrollment(
-  id: string,
+export async function updateEnrollmentLifecycle(input: {
+  id: string;
   data: {
     endDate?: Date | null;
     status?: EnrollmentStatus;
     customPriceOverride?: string | null;
-  }
-) {
-  return prisma.enrollment.update({ where: { id }, data });
+  };
+  scheduleCutoffExclusive?: Date;
+  closeRecurrencesOn?: Date;
+  groupId?: string | null;
+}) {
+  return prisma.$transaction(async (tx) => {
+    const updated = await tx.enrollment.update({
+      where: { id: input.id },
+      data: input.data,
+    });
+
+    if (input.scheduleCutoffExclusive) {
+      await tx.sessionAttendance.deleteMany({
+        where: {
+          enrollmentId: input.id,
+          status: "SCHEDULED",
+          session: {
+            scheduledFor: { gte: input.scheduleCutoffExclusive },
+          },
+        },
+      });
+      await tx.session.deleteMany({
+        where: {
+          enrollmentId: input.id,
+          status: "SCHEDULED",
+          scheduledFor: { gte: input.scheduleCutoffExclusive },
+        },
+      });
+
+      if (input.groupId) {
+        await tx.session.deleteMany({
+          where: {
+            enrollmentId: null,
+            status: "SCHEDULED",
+            scheduledFor: { gte: input.scheduleCutoffExclusive },
+            recurrenceRule: { groupId: input.groupId },
+            attendance: { none: {} },
+          },
+        });
+      }
+    }
+
+    if (input.closeRecurrencesOn) {
+      await tx.recurrenceRule.deleteMany({
+        where: {
+          enrollmentId: input.id,
+          startsOn: { gt: input.closeRecurrencesOn },
+        },
+      });
+      await tx.recurrenceRule.updateMany({
+        where: {
+          enrollmentId: input.id,
+          startsOn: { lte: input.closeRecurrencesOn },
+          OR: [
+            { endsOn: null },
+            { endsOn: { gt: input.closeRecurrencesOn } },
+          ],
+        },
+        data: { endsOn: input.closeRecurrencesOn },
+      });
+    }
+
+    return updated;
+  });
 }
 
 export async function createDiscount(data: {

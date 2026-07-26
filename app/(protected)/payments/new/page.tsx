@@ -1,6 +1,10 @@
 import { listStudents } from "@/lib/data/students";
 import { listEnrollments } from "@/lib/data/enrollments";
 import { NewPaymentForm } from "../components/new-payment-form";
+import {
+  getCalendarDateKey,
+  getConfiguredCenterTimeZone,
+} from "@/lib/services/session-dates";
 
 export default async function NewPaymentPage({
   searchParams,
@@ -31,8 +35,13 @@ export default async function NewPaymentPage({
           id: e.id,
           studentId: e.studentId,
           label: `${e.subject.name} — ${e.package.name}`,
+          packageType: e.package.type,
         }))}
         defaultStudentId={params.studentId}
+        defaultPaidAt={getCalendarDateKey(
+          new Date(),
+          getConfiguredCenterTimeZone(),
+        )}
       />
     </div>
   );

@@ -17,6 +17,10 @@ import {
   getEnrollmentWeekKey,
   getFirstRecurrenceOnOrAfter,
 } from "@/lib/services/session-dates";
+import {
+  isEnrollmentEligibleForSession,
+  isEnrollmentEligibleOnCalendarDate,
+} from "@/lib/services/enrollment-schedule-dates";
 
 function getOccurrenceQueryWindow(
   rules: Array<{ timeZone: string }>,
@@ -123,6 +127,11 @@ export async function materializeSessions(
 
     while (current <= calendarTo) {
       if (rule.endsOn && current > new Date(rule.endsOn)) break;
+      if (!isEnrollmentEligibleOnCalendarDate(enrollment, current)) {
+        if (enrollment.endDate && current > enrollment.endDate) break;
+        current = addCalendarDays(current, rule.intervalWeeks * 7);
+        continue;
+      }
 
       const scheduledFor = combineDateAndTime(
         current,
@@ -177,15 +186,22 @@ export async function materializeSessions(
       occurrenceWindow.endExclusive,
     )
   ).filter((session) => session.enrollmentId);
-  const enrollmentById = new Map(
-    rules
-      .filter((rule) => rule.enrollment && rule.enrollmentId)
-      .map((rule) => [rule.enrollmentId!, rule.enrollment!])
-  );
+  const ruleById = new Map(rules.map((rule) => [rule.id, rule]));
   const attendanceRows = allRuleSessions.flatMap((session) => {
-    if (!session.enrollmentId) return [];
-    const enrollment = enrollmentById.get(session.enrollmentId);
-    if (!enrollment) return [];
+    if (!session.enrollmentId || !session.recurrenceRuleId) return [];
+    const rule = ruleById.get(session.recurrenceRuleId);
+    const enrollment = rule?.enrollment;
+    if (
+      !rule ||
+      !enrollment ||
+      !isEnrollmentEligibleForSession(
+        enrollment,
+        new Date(session.scheduledFor),
+        rule.timeZone,
+      )
+    ) {
+      return [];
+    }
     return [{
       sessionId: session.id,
       studentId: enrollment.studentId,
@@ -251,6 +267,14 @@ export async function materializeGroupSessions(
 
     while (current <= calendarTo) {
       if (rule.endsOn && current > new Date(rule.endsOn)) break;
+      const eligibleEnrollments = rule.group.enrollments.filter(
+        (enrollment) =>
+          isEnrollmentEligibleOnCalendarDate(enrollment, current),
+      );
+      if (eligibleEnrollments.length === 0) {
+        current = addCalendarDays(current, rule.intervalWeeks * 7);
+        continue;
+      }
       const scheduledFor = combineDateAndTime(
         current,
         rule.startTime,
@@ -294,7 +318,14 @@ export async function materializeGroupSessions(
   for (const session of allGroupSessions) {
     const rule = ruleById.get(session.recurrenceRuleId!);
     if (!rule?.group) continue;
-    for (const enrollment of rule.group.enrollments) {
+    const eligibleEnrollments = rule.group.enrollments.filter((enrollment) =>
+      isEnrollmentEligibleForSession(
+        enrollment,
+        new Date(session.scheduledFor),
+        rule.timeZone,
+      ),
+    );
+    for (const enrollment of eligibleEnrollments) {
       attendanceRows.push({
         sessionId: session.id,
         studentId: enrollment.studentId,

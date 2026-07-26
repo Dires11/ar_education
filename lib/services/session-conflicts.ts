@@ -11,9 +11,12 @@ import {
   combineDateAndTime,
   getCalendarDateInTimeZone,
   getConfiguredCenterTimeZone,
-  getDayRangeInTimeZone,
   getFirstMatchingDate,
+  getFirstRecurrenceOnOrAfter,
+  getSessionConflictWindow,
+  sessionRangesOverlap,
 } from "@/lib/services/session-dates";
+import { isEnrollmentEligibleForSession } from "@/lib/services/enrollment-schedule-dates";
 
 export type ConflictStudent = {
   id: string;
@@ -35,12 +38,6 @@ function formatPersonName(person: { firstName: string; lastName: string }) {
   return `${person.firstName} ${person.lastName}`;
 }
 
-function rangesOverlap(startA: Date, durationA: number, startB: Date, durationB: number) {
-  const endA = new Date(startA.getTime() + durationA * 60_000);
-  const endB = new Date(startB.getTime() + durationB * 60_000);
-  return startA < endB && startB < endA;
-}
-
 function formatConflictTime(date: Date) {
   return format(
     new TZDate(date, getConfiguredCenterTimeZone()),
@@ -59,13 +56,13 @@ export async function assertNoScheduleConflict(input: {
   excludeRecurrenceRuleId?: string;
   excludeRuleOccurrence?: { ruleId: string; occurrenceFor: Date };
 }) {
-  const { start: dayStart, end: dayEnd } = getDayRangeInTimeZone(
+  const conflictWindow = getSessionConflictWindow(
     input.scheduledFor,
-    getConfiguredCenterTimeZone(),
+    input.durationMinutes,
   );
   const existingSessions = await getSessionsForConflictWindow(
-    dayStart,
-    dayEnd,
+    conflictWindow.start,
+    conflictWindow.endExclusive,
     input.excludeSessionId,
     input.excludeRecurrenceRuleId,
   );
@@ -74,7 +71,7 @@ export async function assertNoScheduleConflict(input: {
 
   for (const session of existingSessions) {
     if (
-      !rangesOverlap(
+      !sessionRangesOverlap(
         input.scheduledFor,
         input.durationMinutes,
         new Date(session.scheduledFor),
@@ -158,6 +155,15 @@ function getConflictScheduleForRule(
   scheduledFor: Date
 ): ConflictSchedule | null {
   if (rule.enrollment) {
+    if (
+      !isEnrollmentEligibleForSession(
+        rule.enrollment,
+        scheduledFor,
+        rule.timeZone,
+      )
+    ) {
+      return null;
+    }
     return {
       tutorId: rule.enrollment.tutorId,
       tutorName: formatPersonName(rule.enrollment.tutor),
@@ -170,12 +176,20 @@ function getConflictScheduleForRule(
   }
 
   if (rule.group) {
+    const enrollments = rule.group.enrollments.filter((enrollment) =>
+      isEnrollmentEligibleForSession(
+        enrollment,
+        scheduledFor,
+        rule.timeZone,
+      ),
+    );
+    if (enrollments.length === 0) return null;
     return {
       tutorId: rule.group.tutorId,
       tutorName: formatPersonName(rule.group.tutor),
       subjectId: rule.group.subjectId,
       subjectName: rule.group.subject.name,
-      students: rule.group.enrollments.map((enrollment) => enrollment.student),
+      students: enrollments.map((enrollment) => enrollment.student),
       scheduledFor,
       durationMinutes: rule.durationMinutes,
     };
@@ -192,70 +206,66 @@ async function assertNoRecurringRuleConflictForOccurrence(input: {
   durationMinutes: number;
   excludeRuleOccurrence?: { ruleId: string; occurrenceFor: Date };
 }) {
-  const { start, end } = getDayRangeInTimeZone(
+  const conflictWindow = getSessionConflictWindow(
     input.scheduledFor,
-    getConfiguredCenterTimeZone(),
+    input.durationMinutes,
   );
   const rules = await getRecurringSchedulesForConflictWindow(
-    start,
-    end,
+    conflictWindow.start,
+    conflictWindow.endExclusive,
   );
   const requestedStudentIds = new Set(input.studentIds);
 
   for (const rule of rules) {
-    const calendarDate = getCalendarDateInTimeZone(
-      input.scheduledFor,
+    const calendarStart = getCalendarDateInTimeZone(
+      conflictWindow.start,
       rule.timeZone,
     );
-    if (
-      calendarDate < new Date(rule.startsOn) ||
-      (rule.endsOn && calendarDate > new Date(rule.endsOn))
-    ) {
-      continue;
-    }
-    const firstOccurrence = getFirstMatchingDate(
+    const calendarEnd = getCalendarDateInTimeZone(
+      new Date(conflictWindow.endExclusive.getTime() - 1),
+      rule.timeZone,
+    );
+    let calendarDate = getFirstRecurrenceOnOrAfter(
       new Date(rule.startsOn),
       rule.dayOfWeek,
+      rule.intervalWeeks,
+      calendarStart,
     );
-    const daysFromStart = Math.round(
-      (calendarDate.getTime() - firstOccurrence.getTime()) / 86_400_000,
-    );
-    if (
-      daysFromStart < 0 ||
-      daysFromStart % (rule.intervalWeeks * 7) !== 0
-    ) {
-      continue;
+    while (calendarDate <= calendarEnd) {
+      if (rule.endsOn && calendarDate > new Date(rule.endsOn)) break;
+      const occurrence = combineDateAndTime(
+        calendarDate,
+        rule.startTime,
+        rule.timeZone,
+      );
+      const isExcludedOccurrence =
+        input.excludeRuleOccurrence?.ruleId === rule.id &&
+        input.excludeRuleOccurrence.occurrenceFor.getTime() ===
+          occurrence.getTime();
+      if (
+        !isExcludedOccurrence &&
+        sessionRangesOverlap(
+          input.scheduledFor,
+          input.durationMinutes,
+          occurrence,
+          rule.durationMinutes,
+        )
+      ) {
+        const existing = getConflictScheduleForRule(rule, occurrence);
+        if (existing) {
+          throwIfConflict({
+            requestedTutorId: input.tutorId,
+            requestedSubjectId: input.subjectId,
+            requestedStudentIds,
+            existing,
+          });
+        }
+      }
+      calendarDate = addCalendarDays(
+        calendarDate,
+        rule.intervalWeeks * 7,
+      );
     }
-    const occurrence = combineDateAndTime(
-      calendarDate,
-      rule.startTime,
-      rule.timeZone,
-    );
-    if (
-      input.excludeRuleOccurrence?.ruleId === rule.id &&
-      input.excludeRuleOccurrence.occurrenceFor.getTime() === occurrence.getTime()
-    ) {
-      continue;
-    }
-    if (
-      !rangesOverlap(
-        input.scheduledFor,
-        input.durationMinutes,
-        occurrence,
-        rule.durationMinutes
-      )
-    ) {
-      continue;
-    }
-
-    const existing = getConflictScheduleForRule(rule, occurrence);
-    if (!existing) continue;
-    throwIfConflict({
-      requestedTutorId: input.tutorId,
-      requestedSubjectId: input.subjectId,
-      requestedStudentIds,
-      existing,
-    });
   }
 }
 
@@ -300,8 +310,6 @@ export async function assertNoRecurringScheduleConflict(input: {
     }
   }
 
-  const requestedStudentIds = new Set(input.students.map((student) => student.id));
-  const existingRules = await getRecurringSchedulesForConflictWindow(input.startsOn, windowEnd);
   const proposedOccurrences = input.daysOfWeek.flatMap((dayOfWeek) => {
     const occurrences: Date[] = [];
     let current = getFirstMatchingDate(input.startsOn, dayOfWeek);
@@ -314,17 +322,46 @@ export async function assertNoRecurringScheduleConflict(input: {
     }
     return occurrences;
   });
+  if (proposedOccurrences.length === 0) return;
 
+  const requestedStudentIds = new Set(input.students.map((student) => student.id));
+  const earliestProposed = new Date(
+    Math.min(...proposedOccurrences.map((date) => date.getTime())),
+  );
+  const latestProposedEnd = new Date(
+    Math.max(
+      ...proposedOccurrences.map(
+        (date) => date.getTime() + input.durationMinutes * 60_000,
+      ),
+    ),
+  );
+  const recurringWindow = getSessionConflictWindow(
+    earliestProposed,
+    Math.ceil(
+      (latestProposedEnd.getTime() - earliestProposed.getTime()) / 60_000,
+    ),
+  );
+  const existingRules = await getRecurringSchedulesForConflictWindow(
+    recurringWindow.start,
+    recurringWindow.endExclusive,
+  );
   for (const rule of existingRules) {
     if (rule.id === input.excludeRecurrenceRuleId) continue;
-    let current = getFirstMatchingDate(
+    const calendarStart = getCalendarDateInTimeZone(
+      recurringWindow.start,
+      rule.timeZone,
+    );
+    const calendarEnd = getCalendarDateInTimeZone(
+      new Date(recurringWindow.endExclusive.getTime() - 1),
+      rule.timeZone,
+    );
+    let current = getFirstRecurrenceOnOrAfter(
       new Date(rule.startsOn),
       rule.dayOfWeek,
+      rule.intervalWeeks,
+      calendarStart,
     );
-    while (current < input.startsOn) {
-      current = addCalendarDays(current, rule.intervalWeeks * 7);
-    }
-    while (current <= windowEnd) {
+    while (current <= calendarEnd) {
       if (rule.endsOn && current > new Date(rule.endsOn)) break;
       const existingOccurrence = combineDateAndTime(
         current,
@@ -332,7 +369,7 @@ export async function assertNoRecurringScheduleConflict(input: {
         rule.timeZone,
       );
       const matchingOccurrence = proposedOccurrences.find((scheduledFor) =>
-        rangesOverlap(
+        sessionRangesOverlap(
           scheduledFor,
           input.durationMinutes,
           existingOccurrence,

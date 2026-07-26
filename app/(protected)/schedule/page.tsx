@@ -8,6 +8,7 @@ import {
   getConfiguredCenterTimeZone,
 } from "@/lib/services/session-dates";
 import { ScheduleView } from "./components/schedule-view";
+import { getSchedulePaymentStatus } from "@/lib/services/schedule-payment-status";
 
 export const dynamic = "force-dynamic";
 
@@ -16,7 +17,12 @@ export default async function SchedulePage() {
   const monthKey = getCalendarMonthKey(new Date(), centerTimeZone);
 
   const [
-    { realSessions: sessions, virtualSessions, paidMonths },
+    {
+      realSessions: sessions,
+      virtualSessions,
+      paidMonths,
+      subscriptionEnrollmentIds,
+    },
     tutorsData,
     subjects,
     enrollments,
@@ -70,25 +76,27 @@ export default async function SchedulePage() {
         dayOfWeek: s.recurrenceRule?.dayOfWeek ?? null,
         intervalWeeks: s.recurrenceRule?.intervalWeeks ?? null,
         color: s.recurrenceRule?.color ?? null,
-        isPaid: s.enrollmentId
-          ? paidMonths.has(
-              `${s.enrollmentId}:${getCalendarMonthKey(
-                s.scheduledFor,
-                centerTimeZone,
-              )}`,
-            )
-          : null as boolean | null,
+        isPaid: getSchedulePaymentStatus({
+          enrollmentId: s.enrollmentId,
+          monthKey: getCalendarMonthKey(
+            s.scheduledFor,
+            centerTimeZone,
+          ),
+          subscriptionEnrollmentIds,
+          paidMonths,
+        }),
       }))}
       virtualSessions={virtualSessions.map((v) => ({
         ...v,
-        isPaid: v.enrollmentId
-          ? paidMonths.has(
-              `${v.enrollmentId}:${getCalendarMonthKey(
-                new Date(v.scheduledFor),
-                centerTimeZone,
-              )}`,
-            )
-          : null,
+        isPaid: getSchedulePaymentStatus({
+          enrollmentId: v.enrollmentId,
+          monthKey: getCalendarMonthKey(
+            new Date(v.scheduledFor),
+            centerTimeZone,
+          ),
+          subscriptionEnrollmentIds,
+          paidMonths,
+        }),
       }))}
       tutors={tutorsData.tutors.map((t) => ({
         id: t.id,

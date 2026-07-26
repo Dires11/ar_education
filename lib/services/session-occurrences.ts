@@ -10,6 +10,10 @@ import {
   getFirstMatchingDate,
 } from "@/lib/services/session-dates";
 import { assertNoScheduleConflict } from "@/lib/services/session-conflicts";
+import {
+  assertEnrollmentEligibleForSession,
+  isEnrollmentEligibleForSession,
+} from "@/lib/services/enrollment-schedule-dates";
 
 type RecurrenceWithParticipants = NonNullable<
   Awaited<ReturnType<typeof getRecurrenceRuleWithParticipants>>
@@ -42,8 +46,16 @@ function getCanonicalOccurrence(
   return combineDateAndTime(calendarDate, rule.startTime, rule.timeZone);
 }
 
-function getRecurrenceTarget(rule: RecurrenceWithParticipants) {
+function getRecurrenceTarget(
+  rule: RecurrenceWithParticipants,
+  scheduledFor: Date,
+) {
   if (rule.enrollment) {
+    assertEnrollmentEligibleForSession(
+      rule.enrollment,
+      scheduledFor,
+      rule.timeZone,
+    );
     return {
       tutorId: rule.enrollment.tutorId,
       subjectId: rule.enrollment.subjectId,
@@ -55,13 +67,21 @@ function getRecurrenceTarget(rule: RecurrenceWithParticipants) {
   }
 
   if (rule.group) {
-    if (rule.group.enrollments.length === 0) {
-      throw new Error("This group has no active enrollments.");
+    const eligibleEnrollments = rule.group.enrollments.filter(
+      (enrollment) =>
+        isEnrollmentEligibleForSession(
+          enrollment,
+          scheduledFor,
+          rule.timeZone,
+        ),
+    );
+    if (eligibleEnrollments.length === 0) {
+      throw new Error("This group has no active enrollments on that date.");
     }
     return {
       tutorId: rule.group.tutorId,
       subjectId: rule.group.subjectId,
-      attendances: rule.group.enrollments.map((enrollment) => ({
+      attendances: eligibleEnrollments.map((enrollment) => ({
         studentId: enrollment.studentId,
         enrollmentId: enrollment.id,
       })),
@@ -76,7 +96,7 @@ export async function cancelVirtualOccurrence(ruleId: string, date: Date) {
   if (!rule) throw new Error("Recurrence rule not found");
 
   const recurrenceOccurrenceFor = getCanonicalOccurrence(rule, date);
-  const target = getRecurrenceTarget(rule);
+  const target = getRecurrenceTarget(rule, recurrenceOccurrenceFor);
   return createSessionWithAttendances(
     {
       enrollmentId: rule.enrollmentId ?? undefined,
@@ -110,7 +130,8 @@ export async function rescheduleVirtualOccurrence(
     rule,
     originalScheduledFor,
   );
-  const target = getRecurrenceTarget(rule);
+  getRecurrenceTarget(rule, recurrenceOccurrenceFor);
+  const target = getRecurrenceTarget(rule, newScheduledFor);
   const durationMinutes = overrides.durationMinutes ?? rule.durationMinutes;
 
   await assertNoScheduleConflict({

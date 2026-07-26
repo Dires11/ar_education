@@ -5,6 +5,7 @@ import {
   calculateOutstandingAmount,
   calculateEnrollmentCharges,
   getPaidBillingMonths,
+  getValidatedBillingPeriod,
   type DiscountRow,
 } from "@/lib/services/pricing-calculator";
 
@@ -215,5 +216,71 @@ describe("pricing calculations", () => {
     );
 
     expect(paidMonths).toEqual(["2026-02", "2026-07", "2027-01"]);
+  });
+
+  it("accepts only aligned billing-period start months", () => {
+    const enrollment = {
+      startDate: new Date("2026-02-15T00:00:00.000Z"),
+      endDate: null,
+      status: "ACTIVE" as const,
+      updatedAt: new Date("2026-02-15T00:00:00.000Z"),
+      package: {
+        type: "MONTHLY" as const,
+        billingPeriod: "THREE_MONTHS" as const,
+      },
+    };
+
+    expect(
+      getValidatedBillingPeriod(
+        enrollment,
+        "2026-05",
+        "America/Los_Angeles",
+      ).billingPeriodIndex,
+    ).toBe(1);
+    expect(() =>
+      getValidatedBillingPeriod(
+        enrollment,
+        "2026-04",
+        "America/Los_Angeles",
+      ),
+    ).toThrow("not a billing period");
+  });
+
+  it("rejects billing periods outside enrollment bounds", () => {
+    const enrollment = {
+      startDate: new Date("2026-02-01T00:00:00.000Z"),
+      endDate: new Date("2026-06-30T00:00:00.000Z"),
+      status: "ACTIVE" as const,
+      updatedAt: new Date("2026-02-01T00:00:00.000Z"),
+      package: {
+        type: "MONTHLY" as const,
+        billingPeriod: "MONTHLY" as const,
+      },
+    };
+
+    expect(() =>
+      getValidatedBillingPeriod(enrollment, "2026-01"),
+    ).toThrow("before the enrollment");
+    expect(() =>
+      getValidatedBillingPeriod(enrollment, "2026-07"),
+    ).toThrow("after the enrollment");
+  });
+
+  it("rejects monthly allocation for per-session packages", () => {
+    expect(() =>
+      getValidatedBillingPeriod(
+        {
+          startDate: new Date("2026-01-01T00:00:00.000Z"),
+          endDate: null,
+          status: "ACTIVE",
+          updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+          package: {
+            type: "PER_SESSION",
+            billingPeriod: "MONTHLY",
+          },
+        },
+        "2026-01",
+      ),
+    ).toThrow("Only subscription enrollments");
   });
 });

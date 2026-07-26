@@ -1,6 +1,7 @@
 import { TZDate } from "@date-fns/tz";
 
 export const DEFAULT_CENTER_TIME_ZONE = "America/Los_Angeles";
+export const MAX_SESSION_DURATION_MINUTES = 480;
 
 export function getConfiguredCenterTimeZone(): string {
   const timeZone =
@@ -64,6 +65,43 @@ export function combineDateAndTime(
     timeZone,
   );
   return new Date(zoned.getTime());
+}
+
+export function getCalendarDateStart(
+  dateKey: string,
+  timeZone = DEFAULT_CENTER_TIME_ZONE,
+): Date {
+  const [year, month, day] = dateKey.split("-").map(Number);
+  return combineDateAndTime(
+    new Date(Date.UTC(year, month - 1, day)),
+    "00:00",
+    timeZone,
+  );
+}
+
+export function getSessionConflictWindow(
+  scheduledFor: Date,
+  durationMinutes: number,
+): { start: Date; endExclusive: Date } {
+  return {
+    start: new Date(
+      scheduledFor.getTime() - MAX_SESSION_DURATION_MINUTES * 60_000,
+    ),
+    endExclusive: new Date(
+      scheduledFor.getTime() + durationMinutes * 60_000,
+    ),
+  };
+}
+
+export function sessionRangesOverlap(
+  startA: Date,
+  durationA: number,
+  startB: Date,
+  durationB: number,
+): boolean {
+  const endA = new Date(startA.getTime() + durationA * 60_000);
+  const endB = new Date(startB.getTime() + durationB * 60_000);
+  return startA < endB && startB < endA;
 }
 
 export function getCalendarDateKey(

@@ -53,7 +53,7 @@ export async function getSession(id: string) {
       subject: true,
       enrollment: { include: { student: true } },
       recurrenceRule: true,
-      attendance: { include: { student: true } },
+      attendance: { include: { student: true, enrollment: true } },
     },
   });
 }
@@ -724,7 +724,7 @@ export async function checkTutorConflict(
 
 export function getSessionsForConflictWindow(
   from: Date,
-  to: Date,
+  toExclusive: Date,
   excludeSessionId?: string,
   excludeRecurrenceRuleId?: string,
 ) {
@@ -735,7 +735,7 @@ export function getSessionsForConflictWindow(
         ? { not: excludeRecurrenceRuleId }
         : undefined,
       status: { notIn: ["CANCELLED_BY_TUTOR", "CANCELLED_BY_STUDENT"] },
-      scheduledFor: { gte: from, lte: to },
+      scheduledFor: { gte: from, lt: toExclusive },
     },
     include: {
       tutor: true,

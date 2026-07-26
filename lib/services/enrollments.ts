@@ -3,7 +3,7 @@ import "server-only";
 import {
   createEnrollment,
   createEnrollmentWithNewGroup,
-  updateEnrollment,
+  updateEnrollmentLifecycle,
   createDiscount,
   deleteDiscount,
   getEnrollment,
@@ -23,7 +23,11 @@ import {
 } from "@/lib/validators/enrollments";
 import { deleteGroupWhenEmpty } from "@/lib/services/groups";
 import { resolveEnrollmentEndDate } from "@/lib/services/enrollment-dates";
-import { getConfiguredCenterTimeZone } from "@/lib/services/session-dates";
+import {
+  addCalendarDays,
+  combineDateAndTime,
+  getConfiguredCenterTimeZone,
+} from "@/lib/services/session-dates";
 import { listGroups } from "@/lib/data/groups";
 
 export async function createEnrollmentForStudent(input: CreateEnrollmentInput) {
@@ -122,13 +126,31 @@ export async function updateEnrollmentStatus(
     timeZone: getConfiguredCenterTimeZone(),
   });
 
-  const updated = await updateEnrollment(id, {
-    status: parsed.status,
-    endDate,
-    customPriceOverride:
-      parsed.customPriceOverride === undefined
-        ? undefined
-        : parsed.customPriceOverride || null,
+  const timeZone = getConfiguredCenterTimeZone();
+  const effectiveEndDate =
+    endDate === undefined ? enrollment.endDate : endDate;
+  const scheduleCutoffExclusive = effectiveEndDate instanceof Date
+    ? combineDateAndTime(
+        addCalendarDays(effectiveEndDate, 1),
+        "00:00",
+        timeZone,
+      )
+    : undefined;
+  const updated = await updateEnrollmentLifecycle({
+    id,
+    data: {
+      status: parsed.status,
+      endDate,
+      customPriceOverride:
+        parsed.customPriceOverride === undefined
+          ? undefined
+          : parsed.customPriceOverride || null,
+    },
+    scheduleCutoffExclusive,
+    closeRecurrencesOn: isTerminal && effectiveEndDate instanceof Date
+      ? effectiveEndDate
+      : undefined,
+    groupId: enrollment.groupId,
   });
 
   if (isTerminal) {

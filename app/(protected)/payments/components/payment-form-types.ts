@@ -4,4 +4,5 @@ export type PaymentEnrollmentOption = {
   id: string;
   studentId: string;
   label: string;
+  packageType: "MONTHLY" | "PER_SESSION";
 };

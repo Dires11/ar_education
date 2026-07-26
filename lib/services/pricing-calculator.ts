@@ -212,6 +212,53 @@ export function getBillingCutoff(
   return enrollment.endDate;
 }
 
+export function getValidatedBillingPeriod(
+  enrollment: Pick<
+    EnrollmentForPricing,
+    "startDate" | "endDate" | "status" | "updatedAt"
+  > & {
+    package: Pick<
+      EnrollmentForPricing["package"],
+      "type" | "billingPeriod"
+    >;
+  },
+  month: string,
+  timeZone = getConfiguredCenterTimeZone(),
+) {
+  if (enrollment.package.type !== "MONTHLY") {
+    throw new Error("Only subscription enrollments have monthly dues");
+  }
+
+  const periodDate = new Date(`${month}-01T00:00:00.000Z`);
+  const enrollmentStart = startOfBillingMonth(enrollment.startDate);
+  if (periodDate < enrollmentStart) {
+    throw new Error("That billing period is before the enrollment started");
+  }
+
+  const cutoff = getBillingCutoff(enrollment, timeZone);
+  if (cutoff && periodDate > startOfBillingMonth(cutoff)) {
+    throw new Error("That billing period is after the enrollment ended");
+  }
+
+  const periodMonths = billingPeriodMonths(
+    enrollment.package.billingPeriod,
+  );
+  const monthsFromStart = billingMonthDifference(
+    periodDate,
+    enrollmentStart,
+  );
+  if (monthsFromStart % periodMonths !== 0) {
+    throw new Error("That month is not a billing period for this enrollment");
+  }
+
+  return {
+    periodDate,
+    periodMonths,
+    monthsFromStart,
+    billingPeriodIndex: monthsFromStart / periodMonths,
+  };
+}
+
 export function calculateEnrollmentCharges(
   enrollment: EnrollmentForPricing,
   throughDate = new Date(),

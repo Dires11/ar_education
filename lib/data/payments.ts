@@ -207,13 +207,6 @@ export async function getPaymentStats(input: {
   };
 }
 
-export function getEnrollmentStudentForPayment(id: string) {
-  return prisma.enrollment.findUnique({
-    where: { id },
-    select: { studentId: true },
-  });
-}
-
 export function getEnrollmentPaymentDue(id: string) {
   return prisma.enrollment.findUnique({
     where: { id },
