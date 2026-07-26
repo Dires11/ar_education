@@ -1,0 +1,678 @@
+import "server-only";
+
+import type OpenAI from "openai";
+import { z } from "zod";
+import { idSchema, isoDateTimeSchema, monthSchema } from "@/lib/validators/common";
+import {
+  createStudentSchema,
+  guardianSchema,
+  updateStudentSchema,
+} from "@/lib/validators/students";
+import {
+  createTutorSchema,
+  updateTutorSchema,
+} from "@/lib/validators/tutors";
+import { createPackageSchema } from "@/lib/validators/packages";
+import { createSubjectSchema } from "@/lib/validators/subjects";
+import {
+  createDiscountSchema,
+  createEnrollmentSchema,
+  updateEnrollmentSchema,
+} from "@/lib/validators/enrollments";
+import {
+  createAdHocSessionSchema,
+  createRecurrenceSchema,
+  markAttendanceSchema,
+  rescheduleOccurrenceSchema,
+  splitRecurrenceSchema,
+  updateSessionSchema,
+} from "@/lib/validators/sessions";
+import {
+  createPaymentSchema,
+  markPaymentPaidSchema,
+} from "@/lib/validators/payments";
+import {
+  emailTemplateSchema,
+  sendEmailSchema,
+} from "@/lib/validators/emails";
+import { updateGroupSchema } from "@/lib/validators/groups";
+
+export type AssistantToolSpec = {
+  namespace: string;
+  name: string;
+  description: string;
+  schema: z.ZodType;
+  ownerOnly?: boolean;
+  requiresConfirmation:
+    | boolean
+    | ((argumentsValue: Record<string, unknown>) => boolean);
+};
+
+const studentPatchSchema = updateStudentSchema.partial().extend({ id: idSchema });
+const tutorPatchSchema = updateTutorSchema.partial().extend({ id: idSchema });
+const packagePatchSchema = z
+  .object(createPackageSchema.shape)
+  .partial()
+  .extend({ id: idSchema });
+const subjectPatchSchema = createSubjectSchema.partial().extend({ id: idSchema });
+
+const searchSchema = z.object({
+  query: z.string().trim().max(200).optional(),
+  status: z.enum(["ACTIVE", "PAUSED", "INACTIVE"]).optional(),
+  limit: z.number().int().min(1).max(20).default(10),
+});
+
+const toolSpecs: AssistantToolSpec[] = [
+  {
+    namespace: "students",
+    name: "search_students",
+    description: "Search students and guardians by name or email. Use before any student mutation when an ID is not already known.",
+    schema: searchSchema,
+    requiresConfirmation: false,
+  },
+  {
+    namespace: "students",
+    name: "get_student",
+    description: "Get a student profile, guardians, and recent enrollments by student ID.",
+    schema: z.object({ id: idSchema }),
+    requiresConfirmation: false,
+  },
+  {
+    namespace: "students",
+    name: "create_student",
+    description: "Create one student, optionally with a first guardian. Collect all required guardian fields before calling.",
+    schema: createStudentSchema,
+    requiresConfirmation: false,
+  },
+  {
+    namespace: "students",
+    name: "update_student",
+    description: "Update selected student profile fields. Omitted fields remain unchanged.",
+    schema: studentPatchSchema,
+    requiresConfirmation: false,
+  },
+  {
+    namespace: "students",
+    name: "set_student_status",
+    description: "Set a student's status to ACTIVE, PAUSED, or INACTIVE.",
+    schema: z.object({
+      id: idSchema,
+      status: z.enum(["ACTIVE", "PAUSED", "INACTIVE"]),
+    }),
+    requiresConfirmation: (args) => args.status === "INACTIVE",
+  },
+  {
+    namespace: "students",
+    name: "archive_student",
+    description: "Archive a student by setting the profile inactive.",
+    schema: z.object({ id: idSchema }),
+    requiresConfirmation: true,
+  },
+  {
+    namespace: "students",
+    name: "delete_student",
+    description: "Permanently delete an unlinked student record.",
+    schema: z.object({ id: idSchema }),
+    requiresConfirmation: true,
+  },
+  {
+    namespace: "guardians",
+    name: "add_guardian",
+    description: "Create and link a guardian to a known student.",
+    schema: guardianSchema.extend({ studentId: idSchema }),
+    requiresConfirmation: false,
+  },
+  {
+    namespace: "guardians",
+    name: "update_guardian",
+    description: "Update selected guardian fields for a known student.",
+    schema: guardianSchema.partial().extend({
+      studentId: idSchema,
+      guardianId: idSchema,
+    }),
+    requiresConfirmation: false,
+  },
+  {
+    namespace: "guardians",
+    name: "remove_guardian",
+    description: "Remove the link between a guardian and student.",
+    schema: z.object({ studentId: idSchema, guardianId: idSchema }),
+    requiresConfirmation: true,
+  },
+  {
+    namespace: "tutors",
+    name: "search_tutors",
+    description: "Search tutors by name or email, optionally by status or subject ID.",
+    schema: searchSchema.extend({ subjectId: idSchema.optional() }),
+    requiresConfirmation: false,
+  },
+  {
+    namespace: "tutors",
+    name: "get_tutor",
+    description: "Get a tutor profile, subjects, and active enrollments.",
+    schema: z.object({ id: idSchema }),
+    requiresConfirmation: false,
+  },
+  {
+    namespace: "tutors",
+    name: "create_tutor",
+    description: "Create a tutor and assign at least one subject ID.",
+    schema: createTutorSchema,
+    requiresConfirmation: false,
+  },
+  {
+    namespace: "tutors",
+    name: "update_tutor",
+    description: "Update selected tutor profile fields. Omitted fields remain unchanged.",
+    schema: tutorPatchSchema,
+    requiresConfirmation: false,
+  },
+  {
+    namespace: "tutors",
+    name: "set_tutor_subjects",
+    description: "Replace the subjects assigned to a tutor.",
+    schema: z.object({
+      id: idSchema,
+      subjectIds: z.array(idSchema).min(1).max(100),
+    }),
+    requiresConfirmation: false,
+  },
+  {
+    namespace: "tutors",
+    name: "archive_tutor",
+    description: "Archive a tutor by setting the tutor inactive.",
+    schema: z.object({ id: idSchema }),
+    requiresConfirmation: true,
+  },
+  {
+    namespace: "tutors",
+    name: "get_tutor_payroll",
+    description: "Calculate completed-session hours and earnings for a tutor over an ISO date range.",
+    schema: z.object({
+      id: idSchema,
+      from: z.iso.datetime(),
+      to: z.iso.datetime(),
+    }),
+    requiresConfirmation: false,
+  },
+  {
+    namespace: "catalog",
+    name: "list_subjects",
+    description: "List all available subjects.",
+    schema: z.object({}),
+    requiresConfirmation: false,
+  },
+  {
+    namespace: "catalog",
+    name: "create_subject",
+    description: "Create a subject.",
+    schema: createSubjectSchema,
+    requiresConfirmation: false,
+  },
+  {
+    namespace: "catalog",
+    name: "update_subject",
+    description: "Update selected subject fields.",
+    schema: subjectPatchSchema,
+    requiresConfirmation: false,
+  },
+  {
+    namespace: "catalog",
+    name: "delete_subject",
+    description: "Permanently delete an unused subject.",
+    schema: z.object({ id: idSchema }),
+    requiresConfirmation: true,
+  },
+  {
+    namespace: "catalog",
+    name: "list_packages",
+    description: "List packages, optionally active packages only.",
+    schema: z.object({ activeOnly: z.boolean().default(false) }),
+    requiresConfirmation: false,
+  },
+  {
+    namespace: "catalog",
+    name: "get_package",
+    description: "Get a package by ID.",
+    schema: z.object({ id: idSchema }),
+    requiresConfirmation: false,
+  },
+  {
+    namespace: "catalog",
+    name: "create_package",
+    description: "Create a package offering.",
+    schema: createPackageSchema,
+    requiresConfirmation: false,
+  },
+  {
+    namespace: "catalog",
+    name: "update_package",
+    description: "Update selected package fields. Omitted fields remain unchanged.",
+    schema: packagePatchSchema,
+    requiresConfirmation: false,
+  },
+  {
+    namespace: "catalog",
+    name: "set_package_active",
+    description: "Activate or deactivate a package.",
+    schema: z.object({ id: idSchema, isActive: z.boolean() }),
+    requiresConfirmation: (args) => args.isActive === false,
+  },
+  {
+    namespace: "enrollments",
+    name: "search_enrollments",
+    description: "List enrollments filtered by student, tutor, or status.",
+    schema: z.object({
+      studentId: idSchema.optional(),
+      tutorId: idSchema.optional(),
+      status: z.enum(["ACTIVE", "PAUSED", "COMPLETED", "CANCELLED"]).optional(),
+    }),
+    requiresConfirmation: false,
+  },
+  {
+    namespace: "enrollments",
+    name: "get_enrollment",
+    description: "Get an enrollment with student, tutor, package, discounts, recent sessions, and payments.",
+    schema: z.object({ id: idSchema }),
+    requiresConfirmation: false,
+  },
+  {
+    namespace: "enrollments",
+    name: "create_enrollment",
+    description: "Enroll a known student with known package, tutor, and subject IDs.",
+    schema: createEnrollmentSchema,
+    requiresConfirmation: false,
+  },
+  {
+    namespace: "enrollments",
+    name: "update_enrollment",
+    description: "Update enrollment status, end date, or price override.",
+    schema: updateEnrollmentSchema.extend({ id: idSchema }),
+    requiresConfirmation: (args) =>
+      args.status === "COMPLETED" || args.status === "CANCELLED",
+  },
+  {
+    namespace: "enrollments",
+    name: "add_discount",
+    description: "Add a discount to an enrollment.",
+    schema: createDiscountSchema.extend({ enrollmentId: idSchema }),
+    requiresConfirmation: false,
+  },
+  {
+    namespace: "enrollments",
+    name: "remove_discount",
+    description: "Remove a discount.",
+    schema: z.object({ discountId: idSchema }),
+    requiresConfirmation: true,
+  },
+  {
+    namespace: "enrollments",
+    name: "list_groups",
+    description: "List groups, optionally narrowed to a tutor and subject.",
+    schema: z.object({
+      tutorId: idSchema.optional(),
+      subjectId: idSchema.optional(),
+    }),
+    requiresConfirmation: false,
+  },
+  {
+    namespace: "enrollments",
+    name: "rename_group",
+    description: "Rename an existing group.",
+    schema: updateGroupSchema.extend({ groupId: idSchema }),
+    requiresConfirmation: false,
+  },
+  {
+    namespace: "schedule",
+    name: "get_schedule",
+    description: "Get real and virtual schedule entries for one yyyy-MM calendar month.",
+    schema: z.object({ month: monthSchema }),
+    requiresConfirmation: false,
+  },
+  {
+    namespace: "schedule",
+    name: "create_one_time_session",
+    description: "Create a one-time session for known enrollment/group, tutor, subject, and student IDs.",
+    schema: createAdHocSessionSchema,
+    requiresConfirmation: false,
+  },
+  {
+    namespace: "schedule",
+    name: "update_session",
+    description: "Update a one-time or materialized session.",
+    schema: updateSessionSchema.extend({ sessionId: idSchema }),
+    requiresConfirmation: false,
+  },
+  {
+    namespace: "schedule",
+    name: "mark_attendance",
+    description: "Set student attendance and billable flags for a session.",
+    schema: markAttendanceSchema.extend({ sessionId: idSchema }),
+    requiresConfirmation: false,
+  },
+  {
+    namespace: "schedule",
+    name: "set_session_status",
+    description: "Set a session status.",
+    schema: z.object({
+      sessionId: idSchema,
+      status: z.enum([
+        "SCHEDULED",
+        "COMPLETED",
+        "NO_SHOW",
+        "CANCELLED_BY_TUTOR",
+        "CANCELLED_BY_STUDENT",
+      ]),
+    }),
+    requiresConfirmation: (args) =>
+      args.status === "CANCELLED_BY_TUTOR" ||
+      args.status === "CANCELLED_BY_STUDENT",
+  },
+  {
+    namespace: "schedule",
+    name: "cancel_session",
+    description: "Cancel a session by tutor or student.",
+    schema: z.object({
+      sessionId: idSchema,
+      cancelledBy: z.enum(["TUTOR", "STUDENT"]),
+    }),
+    requiresConfirmation: true,
+  },
+  {
+    namespace: "schedule",
+    name: "delete_session",
+    description: "Permanently delete a one-time or materialized session.",
+    schema: z.object({ sessionId: idSchema }),
+    requiresConfirmation: true,
+  },
+  {
+    namespace: "recurrence",
+    name: "create_recurring_schedule",
+    description: "Create a recurring schedule for one enrollment or group.",
+    schema: createRecurrenceSchema,
+    requiresConfirmation: false,
+  },
+  {
+    namespace: "recurrence",
+    name: "split_recurring_schedule",
+    description: "Change a recurring schedule from a split date onward.",
+    schema: splitRecurrenceSchema,
+    requiresConfirmation: true,
+  },
+  {
+    namespace: "recurrence",
+    name: "end_recurring_schedule",
+    description: "End a recurring schedule from a specific occurrence date.",
+    schema: z.object({ ruleId: idSchema, occurrenceFor: isoDateTimeSchema }),
+    requiresConfirmation: true,
+  },
+  {
+    namespace: "recurrence",
+    name: "cancel_occurrence",
+    description: "Cancel one occurrence of a recurring schedule.",
+    schema: z.object({ ruleId: idSchema, occurrenceFor: isoDateTimeSchema }),
+    requiresConfirmation: true,
+  },
+  {
+    namespace: "recurrence",
+    name: "reschedule_occurrence",
+    description: "Move one recurring occurrence, optionally changing duration or room.",
+    schema: rescheduleOccurrenceSchema,
+    requiresConfirmation: false,
+  },
+  {
+    namespace: "recurrence",
+    name: "delete_recurring_schedule",
+    description: "Delete an entire recurring schedule while preserving past materialized sessions.",
+    schema: z.object({ ruleId: idSchema }),
+    requiresConfirmation: true,
+  },
+  {
+    namespace: "recurrence",
+    name: "set_schedule_color",
+    description: "Set the hex display color for all active recurrence rules on an enrollment.",
+    schema: z.object({
+      enrollmentId: idSchema,
+      color: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+    }),
+    requiresConfirmation: false,
+  },
+  {
+    namespace: "billing",
+    name: "list_payments",
+    description: "List payments with optional student, enrollment, payment method, or ISO date filters.",
+    schema: z.object({
+      studentId: idSchema.optional(),
+      enrollmentId: idSchema.optional(),
+      method: z.enum(["CASH", "BANK_TRANSFER", "CARD", "OTHER"]).optional(),
+      from: z.iso.datetime().optional(),
+      to: z.iso.datetime().optional(),
+      limit: z.number().int().min(1).max(30).default(20),
+    }),
+    requiresConfirmation: false,
+  },
+  {
+    namespace: "billing",
+    name: "get_upcoming_dues",
+    description: "List overdue, current, future, and recently paid package dues.",
+    schema: z.object({}),
+    requiresConfirmation: false,
+  },
+  {
+    namespace: "billing",
+    name: "get_payment_stats",
+    description: "Get this-month, last-month, and all-time payment counts and totals.",
+    schema: z.object({}),
+    requiresConfirmation: false,
+  },
+  {
+    namespace: "billing",
+    name: "record_payment",
+    description: "Record a payment. All payment writes require user confirmation.",
+    schema: createPaymentSchema,
+    requiresConfirmation: true,
+  },
+  {
+    namespace: "billing",
+    name: "mark_due_paid",
+    description: "Record the outstanding amount for an enrollment billing month as paid.",
+    schema: markPaymentPaidSchema,
+    requiresConfirmation: true,
+  },
+  {
+    namespace: "billing",
+    name: "delete_payment",
+    description: "Permanently delete a payment record.",
+    schema: z.object({ paymentId: idSchema }),
+    requiresConfirmation: true,
+  },
+  {
+    namespace: "billing",
+    name: "send_payment_reminder",
+    description: "Send a payment reminder email for one enrollment billing month.",
+    schema: z.object({ enrollmentId: idSchema, month: monthSchema }),
+    requiresConfirmation: true,
+  },
+  {
+    namespace: "communications",
+    name: "list_email_templates",
+    description: "List saved email templates.",
+    schema: z.object({}),
+    requiresConfirmation: false,
+  },
+  {
+    namespace: "communications",
+    name: "create_email_template",
+    description: "Create an email template without sending it.",
+    schema: emailTemplateSchema,
+    requiresConfirmation: false,
+  },
+  {
+    namespace: "communications",
+    name: "update_email_template",
+    description: "Update an email template without sending it.",
+    schema: emailTemplateSchema.extend({ id: idSchema }),
+    requiresConfirmation: false,
+  },
+  {
+    namespace: "communications",
+    name: "delete_email_template",
+    description: "Permanently delete an email template.",
+    schema: z.object({ id: idSchema }),
+    requiresConfirmation: true,
+  },
+  {
+    namespace: "communications",
+    name: "send_email",
+    description: "Send a personalized email to selected student IDs.",
+    schema: sendEmailSchema,
+    requiresConfirmation: true,
+  },
+  {
+    namespace: "team",
+    name: "get_team",
+    description: "List CRM administrators and pending invitations. Owner only.",
+    schema: z.object({}),
+    ownerOnly: true,
+    requiresConfirmation: false,
+  },
+  {
+    namespace: "team",
+    name: "invite_team_member",
+    description: "Invite a new CRM staff member by email. Owner only.",
+    schema: z.object({ email: z.email() }),
+    ownerOnly: true,
+    requiresConfirmation: true,
+  },
+  {
+    namespace: "team",
+    name: "revoke_team_invitation",
+    description: "Revoke a pending team invitation. Owner only.",
+    schema: z.object({ invitationId: idSchema }),
+    ownerOnly: true,
+    requiresConfirmation: true,
+  },
+  {
+    namespace: "team",
+    name: "update_team_role",
+    description: "Change another administrator's role. Owner only.",
+    schema: z.object({
+      adminId: idSchema,
+      role: z.enum(["OWNER", "STAFF"]),
+    }),
+    ownerOnly: true,
+    requiresConfirmation: true,
+  },
+  {
+    namespace: "team",
+    name: "remove_team_member",
+    description: "Remove another administrator from the CRM. Owner only.",
+    schema: z.object({ adminId: idSchema }),
+    ownerOnly: true,
+    requiresConfirmation: true,
+  },
+  {
+    namespace: "reporting",
+    name: "get_dashboard_summary",
+    description: "Get current dashboard totals, today's sessions, unpaid students, package endings, and tutor workload.",
+    schema: z.object({}),
+    requiresConfirmation: false,
+  },
+];
+
+function toJsonSchema(schema: z.ZodType) {
+  const json = z.toJSONSchema(schema, {
+    target: "draft-7",
+    unrepresentable: "any",
+  }) as Record<string, unknown>;
+  delete json.$schema;
+  return json;
+}
+
+export function getAssistantToolSpecs(role: "OWNER" | "STAFF") {
+  return toolSpecs.filter((spec) => !spec.ownerOnly || role === "OWNER");
+}
+
+export function getAssistantToolSpec(
+  namespace: string,
+  name: string,
+  role: "OWNER" | "STAFF",
+) {
+  return getAssistantToolSpecs(role).find(
+    (spec) => spec.namespace === namespace && spec.name === name,
+  );
+}
+
+export function getAssistantOpenAITools(
+  role: "OWNER" | "STAFF",
+): OpenAI.Responses.Tool[] {
+  const specs = getAssistantToolSpecs(role);
+  const grouped = new Map<string, AssistantToolSpec[]>();
+  for (const spec of specs) {
+    grouped.set(spec.namespace, [...(grouped.get(spec.namespace) ?? []), spec]);
+  }
+
+  const descriptions: Record<string, string> = {
+    students: "Student profile lookup and lifecycle management.",
+    guardians: "Guardian records linked to students.",
+    tutors: "Tutor profiles, subject assignments, and payroll lookup.",
+    catalog: "Subjects and educational package offerings.",
+    enrollments: "Enrollments, discounts, and teaching groups.",
+    schedule: "One-time/materialized sessions and attendance.",
+    recurrence: "Recurring schedule creation and maintenance.",
+    billing: "Payments, dues, balances, and payment reminders.",
+    communications: "Email templates and outbound student email.",
+    team: "CRM administrators, invitations, and access roles.",
+    reporting: "Dashboard and operational reporting.",
+  };
+
+  const namespaces: OpenAI.Responses.NamespaceTool[] = [...grouped.entries()].map(
+    ([name, namespaceSpecs]) => ({
+      type: "namespace",
+      name,
+      description: descriptions[name] ?? `${name} tools`,
+      tools: namespaceSpecs.map((spec) => ({
+        type: "function",
+        name: spec.name,
+        description: spec.description,
+        parameters: toJsonSchema(spec.schema),
+        strict: false,
+        defer_loading: true,
+      })),
+    }),
+  );
+
+  return [...namespaces, { type: "tool_search" }];
+}
+
+export function assistantToolRequiresConfirmation(
+  spec: AssistantToolSpec,
+  argumentsValue: Record<string, unknown>,
+) {
+  return typeof spec.requiresConfirmation === "function"
+    ? spec.requiresConfirmation(argumentsValue)
+    : spec.requiresConfirmation;
+}
+
+export function getAssistantToolPreview(
+  spec: AssistantToolSpec,
+  argumentsValue: Record<string, unknown>,
+) {
+  return {
+    title: spec.description.split(".")[0],
+    namespace: spec.namespace,
+    toolName: spec.name,
+    arguments: argumentsValue,
+    warning: "This action changes CRM data and will run immediately after approval.",
+  };
+}
+
+export function getAssistantNamespaceCounts(role: "OWNER" | "STAFF") {
+  return getAssistantToolSpecs(role).reduce<Record<string, number>>(
+    (counts, spec) => {
+      counts[spec.namespace] = (counts[spec.namespace] ?? 0) + 1;
+      return counts;
+    },
+    {},
+  );
+}

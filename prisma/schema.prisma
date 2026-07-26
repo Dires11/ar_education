@@ -91,6 +91,27 @@ enum EmailTemplateType {
   CUSTOM
 }
 
+enum AssistantMessageRole {
+  USER
+  ASSISTANT
+}
+
+enum AssistantRunStatus {
+  RUNNING
+  WAITING_CONFIRMATION
+  COMPLETED
+  FAILED
+}
+
+enum AssistantToolRunStatus {
+  PENDING_CONFIRMATION
+  RUNNING
+  COMPLETED
+  FAILED
+  REJECTED
+  EXPIRED
+}
+
 // ─── Core Identity ────────────────────────────────────────────────────────────
 
 model Admin {
@@ -102,7 +123,9 @@ model Admin {
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
-  payments Payment[]
+  payments               Payment[]
+  assistantThreads       AssistantThread[]
+  assistantConfirmations AssistantToolRun[] @relation("AssistantToolRunConfirmedBy")
 }
 
 model Guardian {
@@ -404,4 +427,92 @@ model Reminder {
 
   @@unique([sessionId, recipientEmail, type])
   @@index([scheduledFor, status])
+}
+
+// ─── AI Assistant ─────────────────────────────────────────────────────────────
+
+model AssistantThread {
+  id                     String    @id @default(cuid())
+  adminId                String
+  title                  String
+  contextSummary         String?
+  summarizedMessageCount Int       @default(0)
+  archivedAt             DateTime?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  admin    Admin              @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  messages AssistantMessage[]
+  runs     AssistantRun[]
+
+  @@index([adminId, archivedAt, updatedAt])
+}
+
+model AssistantMessage {
+  id          String               @id @default(cuid())
+  threadId    String
+  runId       String?
+  role        AssistantMessageRole
+  content     String
+  attachments Json?
+  createdAt   DateTime             @default(now())
+
+  thread AssistantThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  run    AssistantRun?   @relation(fields: [runId], references: [id], onDelete: SetNull)
+
+  @@index([threadId, createdAt])
+  @@index([runId])
+}
+
+model AssistantRun {
+  id                String             @id @default(cuid())
+  threadId          String
+  clientTurnId      String
+  status            AssistantRunStatus @default(RUNNING)
+  model             String
+  hasAttachments    Boolean            @default(false)
+  resumeInput       Json?
+  inputTokens       Int?
+  outputTokens      Int?
+  reasoningTokens   Int?
+  cachedInputTokens Int?
+  cacheWriteTokens  Int?
+  error             String?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  completedAt       DateTime?
+
+  thread   AssistantThread    @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  messages AssistantMessage[]
+  toolRuns AssistantToolRun[]
+
+  @@unique([threadId, clientTurnId])
+  @@index([threadId, status])
+}
+
+model AssistantToolRun {
+  id                   String                 @id @default(cuid())
+  runId                String
+  callId               String
+  namespace            String
+  toolName             String
+  arguments            Json
+  preview              Json?
+  result               Json?
+  status               AssistantToolRunStatus
+  requiresConfirmation Boolean                @default(false)
+  expiresAt            DateTime?
+  confirmedById        String?
+  confirmedAt          DateTime?
+  error                String?
+  createdAt            DateTime               @default(now())
+  updatedAt            DateTime               @updatedAt
+  completedAt          DateTime?
+
+  run         AssistantRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  confirmedBy Admin?       @relation("AssistantToolRunConfirmedBy", fields: [confirmedById], references: [id], onDelete: SetNull)
+
+  @@unique([runId, callId])
+  @@index([runId, status])
+  @@index([expiresAt, status])
 }

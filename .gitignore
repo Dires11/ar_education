@@ -43,3 +43,6 @@ next-env.d.ts
 
 /generated/prisma
 /lib/generated/prisma
+
+# Superdesign temporary component templates
+/.superdesign/tmp/

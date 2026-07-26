@@ -32,6 +32,23 @@ Open [http://localhost:3000](http://localhost:3000) to view the app.
 See [docs/security.md](docs/security.md) for the current production dependency
 audit and documented upstream residuals.
 
+### AI assistant
+
+The signed-in home page is a durable, tool-using AI assistant powered by
+OpenAI GPT-5.6 Luna. Set `OPENAI_API_KEY` in the local or deployed server
+environment to enable it. The key must never use a `NEXT_PUBLIC_` prefix.
+
+Assistant conversations and tool audit records are stored in Postgres. OpenAI
+response storage is disabled by the integration. Sensitive actions such as
+payments, outbound email, deletions, cancellations, and team changes pause for
+an explicit in-app confirmation.
+
+Run the optional live tool-routing evaluation with:
+
+```bash
+npm run eval:assistant
+```
+
 ### Access and scheduled jobs
 
 - CRM access is invite-only. Owners invite staff from the Team page.
