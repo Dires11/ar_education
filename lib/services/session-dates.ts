@@ -104,6 +104,23 @@ export function sessionRangesOverlap(
   return startA < endB && startB < endA;
 }
 
+export function getRecurrenceConflictCycleWeeks(
+  firstIntervalWeeks: number,
+  secondIntervalWeeks: number,
+): number {
+  const greatestCommonDivisor = (first: number, second: number): number =>
+    second === 0
+      ? Math.abs(first)
+      : greatestCommonDivisor(second, first % second);
+  const leastCommonMultiple =
+    Math.abs(firstIntervalWeeks * secondIntervalWeeks) /
+    greatestCommonDivisor(firstIntervalWeeks, secondIntervalWeeks);
+
+  // Include a full year beyond the interval alignment cycle so rules created
+  // under different IANA time zones are also checked across DST seasons.
+  return leastCommonMultiple + 53;
+}
+
 export function getCalendarDateKey(
   date: Date,
   timeZone = DEFAULT_CENTER_TIME_ZONE,

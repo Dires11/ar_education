@@ -24,6 +24,8 @@ import {
   splitRecurrenceRuleData,
   deleteRecurringScheduleData,
   getSession,
+  getActiveRecurrenceRulesForEnrollment as getActiveRecurrenceRulesForEnrollmentData,
+  getActiveRecurrenceRulesForGroup as getActiveRecurrenceRulesForGroupData,
 } from "@/lib/data/sessions";
 import { getGroupWithMembers } from "@/lib/data/groups";
 import {
@@ -63,6 +65,7 @@ import {
 import {
   assertEnrollmentEligibleForSession,
   assertEnrollmentEligibleOnCalendarDate,
+  assertSessionDateWithinEnrollmentBounds,
   isEnrollmentEligibleForSession,
   isEnrollmentEligibleOnCalendarDate,
 } from "@/lib/services/enrollment-schedule-dates";
@@ -675,20 +678,30 @@ export async function updateScheduledSession(
 
   const scheduledFor = data.scheduledFor ?? new Date(session.scheduledFor);
   const durationMinutes = data.durationMinutes ?? session.durationMinutes;
-  if (session.enrollment) {
-    assertEnrollmentEligibleForSession(
-      session.enrollment,
+  const scheduledForChanged =
+    data.scheduledFor !== undefined &&
+    data.scheduledFor.getTime() !== new Date(session.scheduledFor).getTime();
+  const durationChanged =
+    data.durationMinutes !== undefined &&
+    data.durationMinutes !== session.durationMinutes;
+  if (scheduledForChanged) {
+    const calendarDate = getCalendarDateInTimeZone(
       scheduledFor,
       getConfiguredCenterTimeZone(),
     );
-  }
-  for (const attendance of session.attendance) {
-    if (attendance.enrollment) {
-      assertEnrollmentEligibleForSession(
-        attendance.enrollment,
-        scheduledFor,
-        getConfiguredCenterTimeZone(),
+    if (session.enrollment) {
+      assertSessionDateWithinEnrollmentBounds(
+        session.enrollment,
+        calendarDate,
       );
+    }
+    for (const attendance of session.attendance) {
+      if (attendance.enrollment) {
+        assertSessionDateWithinEnrollmentBounds(
+          attendance.enrollment,
+          calendarDate,
+        );
+      }
     }
   }
   const studentIds =
@@ -698,21 +711,23 @@ export async function updateScheduledSession(
         ? [session.enrollment.studentId]
         : [];
 
-  await assertNoScheduleConflict({
-    tutorId: session.tutorId,
-    subjectId: session.subjectId,
-    studentIds,
-    scheduledFor,
-    durationMinutes,
-    excludeSessionId: session.id,
-    excludeRuleOccurrence:
-      session.recurrenceRuleId && session.recurrenceOccurrenceFor
-        ? {
-            ruleId: session.recurrenceRuleId,
-            occurrenceFor: session.recurrenceOccurrenceFor,
-          }
-        : undefined,
-  });
+  if (scheduledForChanged || durationChanged) {
+    await assertNoScheduleConflict({
+      tutorId: session.tutorId,
+      subjectId: session.subjectId,
+      studentIds,
+      scheduledFor,
+      durationMinutes,
+      excludeSessionId: session.id,
+      excludeRuleOccurrence:
+        session.recurrenceRuleId && session.recurrenceOccurrenceFor
+          ? {
+              ruleId: session.recurrenceRuleId,
+              occurrenceFor: session.recurrenceOccurrenceFor,
+            }
+          : undefined,
+    });
+  }
 
   return updateSessionData(sessionId, data);
 }
@@ -915,6 +930,27 @@ export async function updateEnrollmentRecurrenceColor(
   await updateRecurrenceRulesColorForEnrollment(enrollmentId, color);
 }
 
+export function getActiveRecurrenceRulesForEnrollment(
+  enrollmentId: string,
+) {
+  const calendarDate = getCalendarDateInTimeZone(
+    new Date(),
+    getConfiguredCenterTimeZone(),
+  );
+  return getActiveRecurrenceRulesForEnrollmentData(
+    enrollmentId,
+    calendarDate,
+  );
+}
+
+export function getActiveRecurrenceRulesForGroup(groupId: string) {
+  const calendarDate = getCalendarDateInTimeZone(
+    new Date(),
+    getConfiguredCenterTimeZone(),
+  );
+  return getActiveRecurrenceRulesForGroupData(groupId, calendarDate);
+}
+
 export { combineDateAndTime, getFirstMatchingDate } from "@/lib/services/session-dates";
 export { materializeGroupSessions, materializeSessions } from "@/lib/services/session-materialization";
 export {
@@ -930,8 +966,6 @@ export type {
   RecurringSchedulePreview,
 } from "@/lib/services/session-capacity";
 export {
-  getActiveRecurrenceRulesForEnrollment,
-  getActiveRecurrenceRulesForGroup,
   getSession,
   getSessionsByMonth,
   getSessionsByWeek,

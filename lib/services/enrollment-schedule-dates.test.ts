@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   assertEnrollmentEligibleOnCalendarDate,
+  assertSessionDateWithinEnrollmentBounds,
   isEnrollmentEligibleForSession,
   isEnrollmentEligibleOnCalendarDate,
 } from "@/lib/services/enrollment-schedule-dates";
@@ -59,5 +60,26 @@ describe("enrollment schedule boundaries", () => {
         new Date("2026-07-15T00:00:00.000Z"),
       ),
     ).toThrow("not active");
+  });
+
+  it("allows historical bounds checks after an enrollment becomes terminal", () => {
+    expect(() =>
+      assertSessionDateWithinEnrollmentBounds(
+        {
+          startDate: enrollment.startDate,
+          endDate: enrollment.endDate,
+        },
+        new Date("2026-07-15T00:00:00.000Z"),
+      ),
+    ).not.toThrow();
+    expect(() =>
+      assertSessionDateWithinEnrollmentBounds(
+        {
+          startDate: enrollment.startDate,
+          endDate: enrollment.endDate,
+        },
+        new Date("2026-07-21T00:00:00.000Z"),
+      ),
+    ).toThrow("after the enrollment");
   });
 });

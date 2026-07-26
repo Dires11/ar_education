@@ -86,12 +86,15 @@ export async function getRecurrenceRuleWithParticipants(id: string) {
   });
 }
 
-export async function getActiveRecurrenceRulesForEnrollment(enrollmentId: string) {
-  const today = new Date();
+export async function getActiveRecurrenceRulesForEnrollment(
+  enrollmentId: string,
+  calendarDate: Date,
+) {
   const rules = await prisma.recurrenceRule.findMany({
     where: {
       enrollmentId,
-      OR: [{ endsOn: null }, { endsOn: { gte: today } }],
+      startsOn: { lte: calendarDate },
+      OR: [{ endsOn: null }, { endsOn: { gte: calendarDate } }],
     },
     select: {
       id: true,
@@ -120,13 +123,15 @@ export async function getActiveRecurrenceRulesForEnrollment(enrollmentId: string
     .sort((a, b) => a.dayOfWeek - b.dayOfWeek);
 }
 
-export async function getActiveRecurrenceRulesForGroup(groupId: string) {
-  const today = new Date();
+export async function getActiveRecurrenceRulesForGroup(
+  groupId: string,
+  calendarDate: Date,
+) {
   return prisma.recurrenceRule.findMany({
     where: {
       groupId,
-      startsOn: { lte: today },
-      OR: [{ endsOn: null }, { endsOn: { gte: today } }],
+      startsOn: { lte: calendarDate },
+      OR: [{ endsOn: null }, { endsOn: { gte: calendarDate } }],
     },
     include: {
       group: { include: { subject: true } },
@@ -724,18 +729,24 @@ export async function checkTutorConflict(
 
 export function getSessionsForConflictWindow(
   from: Date,
-  toExclusive: Date,
+  toExclusive?: Date,
   excludeSessionId?: string,
   excludeRecurrenceRuleId?: string,
 ) {
   return prisma.session.findMany({
     where: {
       id: excludeSessionId ? { not: excludeSessionId } : undefined,
-      recurrenceRuleId: excludeRecurrenceRuleId
-        ? { not: excludeRecurrenceRuleId }
+      OR: excludeRecurrenceRuleId
+        ? [
+            { recurrenceRuleId: null },
+            { recurrenceRuleId: { not: excludeRecurrenceRuleId } },
+          ]
         : undefined,
       status: { notIn: ["CANCELLED_BY_TUTOR", "CANCELLED_BY_STUDENT"] },
-      scheduledFor: { gte: from, lt: toExclusive },
+      scheduledFor: {
+        gte: from,
+        lt: toExclusive,
+      },
     },
     include: {
       tutor: true,
@@ -748,13 +759,13 @@ export function getSessionsForConflictWindow(
 
 export function getRecurringSchedulesForConflictWindow(
   from: Date,
-  to: Date,
+  to?: Date,
 ) {
   return prisma.recurrenceRule.findMany({
     where: {
       // These columns are date-only markers while from/to are instants.
       // Pad this coarse filter and validate exact occurrences in the service.
-      startsOn: { lte: addDays(to, 1) },
+      startsOn: to ? { lte: addDays(to, 1) } : undefined,
       OR: [{ endsOn: null }, { endsOn: { gte: addDays(from, -1) } }],
     },
     include: {

@@ -9,6 +9,7 @@ import {
   getCalendarWeekRange,
   getFirstMatchingDate,
   getFirstRecurrenceOnOrAfter,
+  getRecurrenceConflictCycleWeeks,
   getSessionConflictWindow,
   sessionRangesOverlap,
 } from "@/lib/services/session-dates";
@@ -125,6 +126,11 @@ describe("session date calculations", () => {
     expect(
       sessionRangesOverlap(previousNight, 45, afterMidnight, 60),
     ).toBe(false);
+  });
+
+  it("checks a full alignment cycle for long recurrence intervals", () => {
+    expect(getRecurrenceConflictCycleWeeks(51, 52)).toBe(2705);
+    expect(getRecurrenceConflictCycleWeeks(1, 1)).toBe(54);
   });
 
   it("builds Monday-through-Sunday week boundaries in center time", () => {

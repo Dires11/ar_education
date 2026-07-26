@@ -38,6 +38,13 @@ export function assertEnrollmentEligibleOnCalendarDate(
   if (enrollment.status !== "ACTIVE" && enrollment.status !== "PAUSED") {
     throw new Error("This enrollment is not active");
   }
+  assertSessionDateWithinEnrollmentBounds(enrollment, calendarDate);
+}
+
+export function assertSessionDateWithinEnrollmentBounds(
+  enrollment: Pick<EnrollmentScheduleBounds, "startDate" | "endDate">,
+  calendarDate: Date,
+) {
   if (calendarDate < enrollment.startDate) {
     throw new Error("The session date is before the enrollment starts");
   }
