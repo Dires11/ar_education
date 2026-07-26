@@ -11,8 +11,7 @@ import {
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { formatUSD } from "@/lib/utils/money";
-import { formatDate } from "@/lib/utils/dates";
-import { format } from "date-fns";
+import { formatCalendarDate } from "@/lib/utils/dates";
 import {
   CalendarIcon,
   UsersIcon,
@@ -23,8 +22,11 @@ import {
   ArrowRightIcon,
 } from "lucide-react";
 import { SessionsChart, RevenueChart } from "./dashboard-charts";
+import { getConfiguredCenterTimeZone } from "@/lib/services/session-dates";
+import { formatInstantInTimeZone } from "@/lib/utils/time-zone";
 
 export default async function DashboardPage() {
+  const centerTimeZone = getConfiguredCenterTimeZone();
   const {
     todaySessions,
     tomorrowSessions,
@@ -60,7 +62,11 @@ export default async function DashboardPage() {
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Dashboard</h1>
           <p className="text-sm text-muted-foreground mt-0.5">
-            {format(new Date(), "EEEE, MMMM d, yyyy")}
+            {formatInstantInTimeZone(
+              new Date(),
+              "EEEE, MMMM d, yyyy",
+              centerTimeZone,
+            )}
           </p>
         </div>
         <div className="flex gap-2">
@@ -231,7 +237,11 @@ export default async function DashboardPage() {
                     </p>
                   </div>
                   <span className="text-xs text-muted-foreground whitespace-nowrap ml-3">
-                    {format(new Date(session.scheduledFor), "h:mm a")}
+                    {formatInstantInTimeZone(
+                      session.scheduledFor,
+                      "h:mm a",
+                      centerTimeZone,
+                    )}
                   </span>
                 </Link>
               ))
@@ -319,7 +329,11 @@ export default async function DashboardPage() {
                     </p>
                   </div>
                   <span className="text-xs text-muted-foreground whitespace-nowrap ml-3">
-                    {format(new Date(session.scheduledFor), "h:mm a")}
+                    {formatInstantInTimeZone(
+                      session.scheduledFor,
+                      "h:mm a",
+                      centerTimeZone,
+                    )}
                   </span>
                 </Link>
               ))
@@ -359,7 +373,7 @@ export default async function DashboardPage() {
                       </p>
                     </div>
                     <span className="text-xs text-muted-foreground whitespace-nowrap ml-3">
-                      {formatDate(e.endDate!)}
+                      {formatCalendarDate(e.endDate!)}
                     </span>
                   </Link>
                 ))

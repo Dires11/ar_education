@@ -29,7 +29,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { formatDate } from "@/lib/utils/dates";
+import { formatCalendarDate } from "@/lib/utils/dates";
 import { formatUSD } from "@/lib/utils/money";
 import { getTutorAction, archiveTutorAction } from "@/app/actions/tutors";
 import { TutorAvatar } from "@/components/entity-avatar";
@@ -288,7 +288,7 @@ export function TutorPopup({
                                 {enrollment.package.name}
                               </TableCell>
                               <TableCell className="text-sm text-muted-foreground">
-                                {formatDate(enrollment.startDate)}
+                                {formatCalendarDate(enrollment.startDate)}
                               </TableCell>
                             </TableRow>
                           ))}

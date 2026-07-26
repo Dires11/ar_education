@@ -2,11 +2,9 @@ import "server-only";
 
 import {
   addDays,
-  endOfWeek,
   format,
-  startOfDay,
-  startOfWeek,
 } from "date-fns";
+import { TZDate } from "@date-fns/tz";
 import {
   getEnrollmentForSession,
   getEnrollmentWeekScheduleData,
@@ -16,6 +14,8 @@ import {
   addCalendarDays,
   combineDateAndTime,
   getCalendarDateInTimeZone,
+  getCalendarWeekRange,
+  getCalendarWeekRangeFromCalendarDate,
   getEnrollmentWeekKey,
   getFirstRecurrenceOnOrAfter,
   getConfiguredCenterTimeZone,
@@ -97,11 +97,19 @@ export async function getRecurringSchedulePreview(
   const previewEnd = getCalendarDateInTimeZone(toDate, timeZone);
   const windowStart = startsOn > today ? startsOn : today;
   const windowEnd = endsOn && endsOn < previewEnd ? endsOn : previewEnd;
+  const firstWeek = getCalendarWeekRangeFromCalendarDate(
+    windowStart,
+    timeZone,
+  );
+  const lastWeek = getCalendarWeekRangeFromCalendarDate(
+    windowEnd,
+    timeZone,
+  );
 
   const existingSessions = await getNonCancelledEnrollmentSessionsInRange(
     [enrollmentId],
-    startOfWeek(windowStart, { weekStartsOn: 1 }),
-    endOfWeek(windowEnd, { weekStartsOn: 1 }),
+    firstWeek.start,
+    lastWeek.endExclusive,
   );
   const weeklyCounts = new Map<string, number>();
   for (const session of existingSessions) {
@@ -109,6 +117,7 @@ export async function getRecurringSchedulePreview(
     const key = getEnrollmentWeekKey(
       session.enrollmentId,
       new Date(session.scheduledFor),
+      timeZone,
     );
     weeklyCounts.set(key, (weeklyCounts.get(key) ?? 0) + 1);
   }
@@ -148,7 +157,11 @@ export async function getRecurringSchedulePreview(
   let existingPlannedInExceededWeek = 0;
 
   for (const scheduledFor of occurrences) {
-    const weekKey = getEnrollmentWeekKey(enrollmentId, scheduledFor);
+    const weekKey = getEnrollmentWeekKey(
+      enrollmentId,
+      scheduledFor,
+      timeZone,
+    );
     const currentCount = weeklyCounts.get(weekKey) ?? 0;
     if (sessionsPerWeek !== null && currentCount >= sessionsPerWeek) {
       firstExceededDate = scheduledFor;
@@ -167,10 +180,21 @@ export async function getRecurringSchedulePreview(
     materializableSessions,
     firstExceededDate: firstExceededDate?.toISOString() ?? null,
     suggestedEndsOn: firstExceededDate
-      ? format(addDays(startOfDay(firstExceededDate), -1), "yyyy-MM-dd")
+      ? addCalendarDays(
+          getCalendarDateInTimeZone(firstExceededDate, timeZone),
+          -1,
+        )
+          .toISOString()
+          .slice(0, 10)
       : null,
     periodLabel: firstExceededDate
-      ? `week of ${format(startOfWeek(firstExceededDate, { weekStartsOn: 1 }), "MMM d")}`
+      ? `week of ${format(
+          new TZDate(
+            getCalendarWeekRange(firstExceededDate, timeZone).start,
+            timeZone,
+          ),
+          "MMM d",
+        )}`
       : null,
     existingPlannedInWeek: existingPlannedInExceededWeek,
   };
@@ -180,8 +204,8 @@ export async function getEnrollmentMonthSummary(
   enrollmentId: string,
   date: Date,
 ): Promise<EnrollmentMonthSummary> {
-  const weekStart = startOfWeek(date, { weekStartsOn: 1 });
-  const weekEnd = endOfWeek(date, { weekStartsOn: 1 });
+  const timeZone = getConfiguredCenterTimeZone();
+  const week = getCalendarWeekRange(date, timeZone);
   const today = new Date();
   const enrollment = await getEnrollmentForSession(enrollmentId);
 
@@ -190,23 +214,30 @@ export async function getEnrollmentMonthSummary(
       sessionsPerWeek: null,
       totalPlanned: 0,
       remaining: null,
-      periodLabel: `Week of ${format(weekStart, "MMM d")}`,
+      periodLabel: `Week of ${format(
+        new TZDate(week.start, timeZone),
+        "MMM d",
+      )}`,
       isOverLimit: false,
     };
   }
 
   const sessionsPerWeek = enrollment.package.sessionsPerWeek ?? null;
   const { realCount, rules, realForDedup } =
-    await getEnrollmentWeekScheduleData(enrollmentId, weekStart, weekEnd);
+    await getEnrollmentWeekScheduleData(
+      enrollmentId,
+      week.start,
+      week.endExclusive,
+    );
 
   let virtualCount = 0;
   for (const rule of rules) {
     const calendarWeekStart = getCalendarDateInTimeZone(
-      weekStart,
+      week.start,
       rule.timeZone,
     );
     const calendarWeekEnd = getCalendarDateInTimeZone(
-      weekEnd,
+      new Date(week.endExclusive.getTime() - 1),
       rule.timeZone,
     );
     let current = getFirstRecurrenceOnOrAfter(
@@ -247,7 +278,10 @@ export async function getEnrollmentMonthSummary(
     sessionsPerWeek,
     totalPlanned,
     remaining,
-    periodLabel: `Week of ${format(weekStart, "MMM d")}`,
+    periodLabel: `Week of ${format(
+      new TZDate(week.start, timeZone),
+      "MMM d",
+    )}`,
     isOverLimit: sessionsPerWeek !== null && totalPlanned >= sessionsPerWeek,
   };
 }

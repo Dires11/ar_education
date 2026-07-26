@@ -1,6 +1,7 @@
 import "server-only";
 
 import { format } from "date-fns";
+import { TZDate } from "@date-fns/tz";
 import {
   getRecurringSchedulesForConflictWindow as getRecurringSchedulesForConflictWindowData,
   getSessionsForConflictWindow,
@@ -9,6 +10,7 @@ import {
   addCalendarDays,
   combineDateAndTime,
   getCalendarDateInTimeZone,
+  getConfiguredCenterTimeZone,
   getDayRangeInTimeZone,
   getFirstMatchingDate,
 } from "@/lib/services/session-dates";
@@ -40,7 +42,10 @@ function rangesOverlap(startA: Date, durationA: number, startB: Date, durationB:
 }
 
 function formatConflictTime(date: Date) {
-  return format(date, "EEE, MMM d 'at' h:mm a");
+  return format(
+    new TZDate(date, getConfiguredCenterTimeZone()),
+    "EEE, MMM d 'at' h:mm a",
+  );
 }
 
 export async function assertNoScheduleConflict(input: {
@@ -56,6 +61,7 @@ export async function assertNoScheduleConflict(input: {
 }) {
   const { start: dayStart, end: dayEnd } = getDayRangeInTimeZone(
     input.scheduledFor,
+    getConfiguredCenterTimeZone(),
   );
   const existingSessions = await getSessionsForConflictWindow(
     dayStart,
@@ -186,7 +192,10 @@ async function assertNoRecurringRuleConflictForOccurrence(input: {
   durationMinutes: number;
   excludeRuleOccurrence?: { ruleId: string; occurrenceFor: Date };
 }) {
-  const { start, end } = getDayRangeInTimeZone(input.scheduledFor);
+  const { start, end } = getDayRangeInTimeZone(
+    input.scheduledFor,
+    getConfiguredCenterTimeZone(),
+  );
   const rules = await getRecurringSchedulesForConflictWindow(
     start,
     end,
@@ -198,6 +207,12 @@ async function assertNoRecurringRuleConflictForOccurrence(input: {
       input.scheduledFor,
       rule.timeZone,
     );
+    if (
+      calendarDate < new Date(rule.startsOn) ||
+      (rule.endsOn && calendarDate > new Date(rule.endsOn))
+    ) {
+      continue;
+    }
     const firstOccurrence = getFirstMatchingDate(
       new Date(rule.startsOn),
       rule.dayOfWeek,

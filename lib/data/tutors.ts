@@ -153,13 +153,13 @@ export async function setTutorSubjects(tutorId: string, subjectIds: string[]) {
 export async function getTutorPayrollSessions(
   tutorId: string,
   from: Date,
-  to: Date
+  toExclusive: Date
 ) {
   return prisma.session.findMany({
     where: {
       tutorId,
       status: "COMPLETED",
-      scheduledFor: { gte: from, lte: to },
+      scheduledFor: { gte: from, lt: toExclusive },
     },
     include: { subject: true, enrollment: { include: { student: true } } },
     orderBy: { scheduledFor: "asc" },

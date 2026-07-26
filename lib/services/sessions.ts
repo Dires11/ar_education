@@ -373,7 +373,7 @@ export async function getVirtualSessionsForMonth(
         const weekKey = getEnrollmentWeekKey(
           rule.enrollmentId,
           scheduledFor,
-          rule.timeZone,
+          centerTimeZone,
         );
         const weekCount = plannedPerEnrollmentWeek.get(weekKey) ?? 0;
         const status: VirtualSession["status"] =

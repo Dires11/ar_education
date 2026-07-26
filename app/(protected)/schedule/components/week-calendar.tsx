@@ -9,7 +9,6 @@ import {
   eachDayOfInterval,
   isSameMonth,
   isSameDay,
-  isToday,
   format,
   addMonths,
   subMonths,
@@ -48,6 +47,11 @@ import {
 } from "./edit-recurring-group-dialog";
 import type { CalendarSession } from "./calendar-session";
 import { SessionDetailsDialog } from "./session-details-dialog";
+import {
+  formatInstantInTimeZone,
+  getPickerDateInTimeZone,
+  isInstantOnPickerDate,
+} from "@/lib/utils/time-zone";
 
 export type { CalendarSession } from "./calendar-session";
 
@@ -172,6 +176,7 @@ function getStudentNames(session: CalendarSession) {
 }
 
 export function MonthCalendar({
+  centerTimeZone,
   monthStart,
   sessions,
   selectedDay,
@@ -180,6 +185,7 @@ export function MonthCalendar({
   onRefresh,
   isPending,
 }: {
+  centerTimeZone: string;
   monthStart: Date;
   sessions: CalendarSession[];
   selectedDay?: Date | null;
@@ -310,10 +316,17 @@ export function MonthCalendar({
   const calStart = startOfWeek(startOfMonth(monthStart), { weekStartsOn: 1 });
   const calEnd = endOfWeek(endOfMonth(monthStart), { weekStartsOn: 1 });
   const days = eachDayOfInterval({ start: calStart, end: calEnd });
+  const today = getPickerDateInTimeZone(new Date(), centerTimeZone);
 
   const selectedDaySessions = selectedDay
     ? sessions
-        .filter((s) => isSameDay(new Date(s.scheduledFor), selectedDay))
+        .filter((s) =>
+          isInstantOnPickerDate(
+            s.scheduledFor,
+            selectedDay,
+            centerTimeZone,
+          ),
+        )
         .sort((a, b) => new Date(a.scheduledFor).getTime() - new Date(b.scheduledFor).getTime())
     : [];
 
@@ -321,6 +334,7 @@ export function MonthCalendar({
     <>
       {editingSession && !editingSession.virtual && (
         <EditSessionDialog
+          centerTimeZone={centerTimeZone}
           session={{
             id: editingSession.id,
             scheduledFor: editingSession.scheduledFor,
@@ -340,6 +354,7 @@ export function MonthCalendar({
 
       {editingRecurring?.ruleId && editingRecurringRules.length > 0 && (
         <EditRecurringGroupDialog
+          centerTimeZone={centerTimeZone}
           rules={editingRecurringRules}
           subjectName={editingRecurring.subject.name}
           referenceDate={editingRecurring.scheduledFor}
@@ -357,6 +372,7 @@ export function MonthCalendar({
       )}
 
       <SessionDetailsDialog
+        centerTimeZone={centerTimeZone}
         session={detailSession}
         open={!!detailSession}
         onRefresh={onRefresh}
@@ -394,7 +410,7 @@ export function MonthCalendar({
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => onNavigate(startOfMonth(new Date()))}
+                onClick={() => onNavigate(startOfMonth(today))}
               >
                 Today
               </Button>
@@ -429,13 +445,19 @@ export function MonthCalendar({
           >
             {days.map((day, i) => {
               const daySessions = sessions
-                .filter((s) => isSameDay(new Date(s.scheduledFor), day))
+                .filter((s) =>
+                  isInstantOnPickerDate(
+                    s.scheduledFor,
+                    day,
+                    centerTimeZone,
+                  ),
+                )
                 .sort((a, b) => new Date(a.scheduledFor).getTime() - new Date(b.scheduledFor).getTime());
               const isCurrentMonth = isSameMonth(day, monthStart);
               const isSelected = selectedDay
                 ? isSameDay(day, selectedDay)
                 : false;
-              const isTodayDate = isToday(day);
+              const isTodayDate = isSameDay(day, today);
               const visible = daySessions.slice(0, 3);
               const overflow = daySessions.length - visible.length;
 
@@ -475,7 +497,11 @@ export function MonthCalendar({
                         )}
                         style={getSessionPillStyle(session).style}
                       >
-                        {format(new Date(session.scheduledFor), "h:mm")}{" "}
+                        {formatInstantInTimeZone(
+                          session.scheduledFor,
+                          "h:mm",
+                          centerTimeZone,
+                        )}{" "}
                         {session.groupId
                           ? (session.groupName ?? "Group")
                           : (session.attendance[0]?.student.lastName ??
@@ -538,9 +564,20 @@ export function MonthCalendar({
                         >
                           <div className="flex items-center justify-between gap-1">
                             <span className="font-medium">
-                              {format(new Date(session.scheduledFor), "h:mm")}
+                              {formatInstantInTimeZone(
+                                session.scheduledFor,
+                                "h:mm",
+                                centerTimeZone,
+                              )}
                               {" – "}
-                              {format(addMinutes(new Date(session.scheduledFor), session.durationMinutes), "h:mm a")}
+                              {formatInstantInTimeZone(
+                                addMinutes(
+                                  new Date(session.scheduledFor),
+                                  session.durationMinutes,
+                                ),
+                                "h:mm a",
+                                centerTimeZone,
+                              )}
                             </span>
                             <div className="flex items-center gap-1.5">
                               {session.isPaid === false && (
@@ -630,9 +667,20 @@ export function MonthCalendar({
                         >
                           <div className="flex items-center justify-between gap-1">
                             <span className="font-medium">
-                              {format(new Date(session.scheduledFor), "h:mm")}
+                              {formatInstantInTimeZone(
+                                session.scheduledFor,
+                                "h:mm",
+                                centerTimeZone,
+                              )}
                               {" – "}
-                              {format(addMinutes(new Date(session.scheduledFor), session.durationMinutes), "h:mm a")}
+                              {formatInstantInTimeZone(
+                                addMinutes(
+                                  new Date(session.scheduledFor),
+                                  session.durationMinutes,
+                                ),
+                                "h:mm a",
+                                centerTimeZone,
+                              )}
                             </span>
                             <div className="flex items-center gap-1.5">
                               {session.isPaid === false && (

@@ -1,6 +1,5 @@
 "use client";
 
-import { format } from "date-fns";
 import { ClockIcon, GraduationCapIcon } from "lucide-react";
 import { AttendanceForm } from "./attendance-form";
 import type { CalendarSession } from "./calendar-session";
@@ -12,6 +11,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { formatInstantInTimeZone } from "@/lib/utils/time-zone";
 
 function statusLabel(session: CalendarSession) {
   if (session.status === "VIRTUAL_UPCOMING") return "Upcoming";
@@ -24,22 +24,27 @@ export function SessionDetailsDialog({
   open,
   onOpenChange,
   onRefresh,
+  centerTimeZone,
 }: {
   session: CalendarSession | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onRefresh: () => void;
+  centerTimeZone: string;
 }) {
   if (!session) return null;
 
-  const scheduledFor = new Date(session.scheduledFor);
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-lg max-h-[90dvh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{session.subject.name}</DialogTitle>
           <DialogDescription>
-            {format(scheduledFor, "EEEE, MMMM d, yyyy 'at' h:mm a")}
+            {formatInstantInTimeZone(
+              session.scheduledFor,
+              "EEEE, MMMM d, yyyy 'at' h:mm a",
+              centerTimeZone,
+            )}
           </DialogDescription>
         </DialogHeader>
 

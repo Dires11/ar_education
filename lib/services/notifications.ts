@@ -1,13 +1,15 @@
 import "server-only";
 
 import { sendEmail } from "@/lib/utils/email";
-import { subHours, format } from "date-fns";
+import { subHours } from "date-fns";
 import {
   enqueueSessionReminderData,
   getDueReminders,
   getSessionForReminder,
   updateReminderDelivery,
 } from "@/lib/data/notifications";
+import { getConfiguredCenterTimeZone } from "@/lib/services/session-dates";
+import { formatInstantInTimeZone } from "@/lib/utils/time-zone";
 
 // ─── Email templates ─────────────────────────────────────────────────────────
 
@@ -77,7 +79,11 @@ export async function enqueueSessionReminder(sessionId: string) {
 
   if (!session) throw new Error("Session not found");
 
-  const scheduledFor = format(new Date(session.scheduledFor), "EEEE, MMMM d 'at' h:mm a");
+  const scheduledFor = formatInstantInTimeZone(
+    session.scheduledFor,
+    "EEEE, MMMM d 'at' h:mm a",
+    getConfiguredCenterTimeZone(),
+  );
 
   for (const attendance of session.attendance) {
     const student = attendance.student;

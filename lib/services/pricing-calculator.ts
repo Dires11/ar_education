@@ -1,5 +1,10 @@
 import { Prisma } from "../../generated/prisma";
-import { getCalendarDateInTimeZone } from "@/lib/services/session-dates";
+import {
+  addCalendarDays,
+  combineDateAndTime,
+  getCalendarDateInTimeZone,
+  getConfiguredCenterTimeZone,
+} from "@/lib/services/session-dates";
 
 export type DiscountRow = {
   kind:
@@ -46,17 +51,32 @@ export function applyDiscounts(
   discounts: DiscountRow[],
   context: {
     date?: Date;
+    calendarDate?: Date;
     sessionNumber?: number;
     billingPeriodIndex?: number;
+    timeZone?: string;
   } = {},
 ): Prisma.Decimal {
-  const chargeDate = context.date ?? new Date();
+  const timeZone = context.timeZone ?? getConfiguredCenterTimeZone();
+  const chargeCalendarDate =
+    context.calendarDate ??
+    getCalendarDateInTimeZone(context.date ?? new Date(), timeZone);
   let price = basePrice;
   let isFree = false;
 
   for (const discount of discounts) {
-    if (discount.validFrom && chargeDate < discount.validFrom) continue;
-    if (discount.validUntil && chargeDate > discount.validUntil) continue;
+    if (
+      discount.validFrom &&
+      chargeCalendarDate < startOfBillingMonthDay(discount.validFrom)
+    ) {
+      continue;
+    }
+    if (
+      discount.validUntil &&
+      chargeCalendarDate > startOfBillingMonthDay(discount.validUntil)
+    ) {
+      continue;
+    }
 
     const chargeNumber =
       context.sessionNumber ??
@@ -99,8 +119,10 @@ export function applyDiscounts(
       }
       case "FREE_MONTH": {
         const appliesToThisPeriod = discount.validFrom
-          ? chargeDate.getFullYear() === discount.validFrom.getFullYear() &&
-            chargeDate.getMonth() === discount.validFrom.getMonth()
+          ? chargeCalendarDate.getUTCFullYear() ===
+              discount.validFrom.getUTCFullYear() &&
+            chargeCalendarDate.getUTCMonth() ===
+              discount.validFrom.getUTCMonth()
           : context.billingPeriodIndex === 0;
         if (appliesToThisPeriod) isFree = true;
         break;
@@ -109,6 +131,12 @@ export function applyDiscounts(
   }
 
   return isFree ? new Prisma.Decimal(0) : price;
+}
+
+function startOfBillingMonthDay(date: Date): Date {
+  return new Date(
+    Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()),
+  );
 }
 
 export function calculateOutstandingAmount(
@@ -143,21 +171,33 @@ export type EnrollmentForPricing = {
   }>;
 };
 
-function endOfUtcCalendarDay(date: Date): Date {
-  return new Date(
-    Date.UTC(
-      date.getUTCFullYear(),
-      date.getUTCMonth(),
-      date.getUTCDate(),
-      23,
-      59,
-      59,
-      999,
-    ),
-  );
-}
+export type EnrollmentForPaymentCoverage = Pick<
+  EnrollmentForPricing,
+  | "startDate"
+  | "endDate"
+  | "status"
+  | "updatedAt"
+  | "priceAtEnrollment"
+  | "customPriceOverride"
+  | "discounts"
+> & {
+  package: {
+    type: "MONTHLY" | "PER_SESSION";
+    billingPeriod: "MONTHLY" | "THREE_MONTHS" | "YEARLY";
+  };
+  payments: Array<{
+    coversMonth: string | null;
+    amount: Prisma.Decimal;
+  }>;
+};
 
-function getBillingCutoff(enrollment: EnrollmentForPricing): Date | null {
+export function getBillingCutoff(
+  enrollment: Pick<
+    EnrollmentForPricing,
+    "status" | "endDate" | "updatedAt"
+  >,
+  timeZone = getConfiguredCenterTimeZone(),
+): Date | null {
   if (
     enrollment.status === "COMPLETED" ||
     enrollment.status === "CANCELLED"
@@ -166,7 +206,7 @@ function getBillingCutoff(enrollment: EnrollmentForPricing): Date | null {
     // terminal enrollments were required to have an endDate.
     return (
       enrollment.endDate ??
-      getCalendarDateInTimeZone(enrollment.updatedAt)
+      getCalendarDateInTimeZone(enrollment.updatedAt, timeZone)
     );
   }
   return enrollment.endDate;
@@ -175,22 +215,34 @@ function getBillingCutoff(enrollment: EnrollmentForPricing): Date | null {
 export function calculateEnrollmentCharges(
   enrollment: EnrollmentForPricing,
   throughDate = new Date(),
+  timeZone = getConfiguredCenterTimeZone(),
 ): Prisma.Decimal {
   const basePrice =
     enrollment.customPriceOverride ?? enrollment.priceAtEnrollment;
-  const billingCutoff = getBillingCutoff(enrollment);
-  const cutoffEnd = billingCutoff
-    ? endOfUtcCalendarDay(billingCutoff)
-    : null;
-  const effectiveEnd =
-    cutoffEnd && cutoffEnd < throughDate ? cutoffEnd : throughDate;
+  const billingCutoff = getBillingCutoff(enrollment, timeZone);
 
   if (enrollment.package.type === "PER_SESSION") {
+    const enrollmentStart = combineDateAndTime(
+      enrollment.startDate,
+      "00:00",
+      timeZone,
+    );
+    const cutoffEndExclusive = billingCutoff
+      ? combineDateAndTime(
+          addCalendarDays(billingCutoff, 1),
+          "00:00",
+          timeZone,
+        )
+      : null;
+    const effectiveEnd =
+      cutoffEndExclusive && cutoffEndExclusive <= throughDate
+        ? new Date(cutoffEndExclusive.getTime() - 1)
+        : throughDate;
     const billableAttendances = enrollment.sessionAttendance
       .filter(
         (attendance) =>
           attendance.session.scheduledFor <= effectiveEnd &&
-          attendance.session.scheduledFor >= enrollment.startDate,
+          attendance.session.scheduledFor >= enrollmentStart,
       )
       .sort(
         (a, b) =>
@@ -204,17 +256,29 @@ export function calculateEnrollmentCharges(
           applyDiscounts(basePrice, enrollment.discounts, {
             date: attendance.session.scheduledFor,
             sessionNumber: index + 1,
+            timeZone,
           }),
         ),
       new Prisma.Decimal(0),
     );
   }
 
-  if (enrollment.startDate > effectiveEnd) return new Prisma.Decimal(0);
+  const throughCalendarDate = getCalendarDateInTimeZone(
+    throughDate,
+    timeZone,
+  );
+  const effectiveCalendarEnd =
+    billingCutoff && billingCutoff < throughCalendarDate
+      ? billingCutoff
+      : throughCalendarDate;
+
+  if (enrollment.startDate > effectiveCalendarEnd) {
+    return new Prisma.Decimal(0);
+  }
 
   const periodMonths = billingPeriodMonths(enrollment.package.billingPeriod);
   const firstPeriod = startOfBillingMonth(enrollment.startDate);
-  const lastPeriod = startOfBillingMonth(effectiveEnd);
+  const lastPeriod = startOfBillingMonth(effectiveCalendarEnd);
   const periodCount =
     Math.floor(
       billingMonthDifference(lastPeriod, firstPeriod) / periodMonths,
@@ -228,10 +292,69 @@ export function calculateEnrollmentCharges(
     );
     total = total.add(
       applyDiscounts(basePrice, enrollment.discounts, {
-        date: periodDate,
+        calendarDate: periodDate,
         billingPeriodIndex: periodIndex,
+        timeZone,
       }),
     );
   }
   return total;
+}
+
+export function getPaidBillingMonths(
+  enrollment: EnrollmentForPaymentCoverage,
+  wantedMonths: string[],
+  timeZone = getConfiguredCenterTimeZone(),
+): string[] {
+  if (enrollment.package.type !== "MONTHLY") return [];
+
+  const periodMonths = billingPeriodMonths(
+    enrollment.package.billingPeriod,
+  );
+  const enrollmentStart = startOfBillingMonth(enrollment.startDate);
+  const cutoff = getBillingCutoff(enrollment, timeZone);
+  const finalBillingMonth = cutoff
+    ? startOfBillingMonth(cutoff)
+    : null;
+  const paymentsByMonth = new Map<string, Prisma.Decimal>();
+
+  for (const payment of enrollment.payments) {
+    if (!payment.coversMonth) continue;
+    paymentsByMonth.set(
+      payment.coversMonth,
+      (paymentsByMonth.get(payment.coversMonth) ?? new Prisma.Decimal(0))
+        .add(payment.amount),
+    );
+  }
+
+  const paidMonths: string[] = [];
+  for (const wantedMonth of new Set(wantedMonths)) {
+    const wantedMonthDate = new Date(
+      `${wantedMonth}-01T00:00:00.000Z`,
+    );
+    const monthsFromStart = billingMonthDifference(
+      wantedMonthDate,
+      enrollmentStart,
+    );
+    if (monthsFromStart < 0) continue;
+    if (finalBillingMonth && wantedMonthDate > finalBillingMonth) continue;
+
+    const billingPeriodIndex = Math.floor(
+      monthsFromStart / periodMonths,
+    );
+    const periodStart = addBillingMonths(
+      enrollmentStart,
+      billingPeriodIndex * periodMonths,
+    );
+    const periodKey = periodStart.toISOString().slice(0, 7);
+    const total = paymentsByMonth.get(periodKey) ?? new Prisma.Decimal(0);
+    const amountDue = applyDiscounts(
+      enrollment.customPriceOverride ?? enrollment.priceAtEnrollment,
+      enrollment.discounts,
+      { calendarDate: periodStart, billingPeriodIndex, timeZone },
+    );
+    if (!total.lessThan(amountDue)) paidMonths.push(wantedMonth);
+  }
+
+  return paidMonths;
 }

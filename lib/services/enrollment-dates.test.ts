@@ -8,6 +8,7 @@ describe("enrollment end-date policy", () => {
     expect(
       resolveEnrollmentEndDate({
         status: "CANCELLED",
+        currentStatus: "ACTIVE",
         startDate: new Date("2026-01-01T00:00:00.000Z"),
         currentEndDate: null,
         now,
@@ -19,6 +20,7 @@ describe("enrollment end-date policy", () => {
     expect(
       resolveEnrollmentEndDate({
         status: "CANCELLED",
+        currentStatus: "ACTIVE",
         startDate: new Date("2026-01-01T00:00:00.000Z"),
         currentEndDate: null,
         now: new Date("2026-07-26T02:00:00.000Z"),
@@ -30,6 +32,7 @@ describe("enrollment end-date policy", () => {
     expect(
       resolveEnrollmentEndDate({
         status: "COMPLETED",
+        currentStatus: "ACTIVE",
         startDate: new Date("2026-01-01T00:00:00.000Z"),
         currentEndDate: new Date("2026-07-01T00:00:00.000Z"),
         now,
@@ -41,6 +44,7 @@ describe("enrollment end-date policy", () => {
     expect(() =>
       resolveEnrollmentEndDate({
         status: "COMPLETED",
+        currentStatus: "ACTIVE",
         startDate: new Date("2026-01-01T00:00:00.000Z"),
         currentEndDate: null,
         requestedEndDate: new Date("2026-07-26T00:00:00.000Z"),
@@ -53,8 +57,33 @@ describe("enrollment end-date policy", () => {
     expect(
       resolveEnrollmentEndDate({
         status: "ACTIVE",
+        currentStatus: "ACTIVE",
         startDate: new Date("2026-01-01T00:00:00.000Z"),
         currentEndDate: null,
+        now,
+      }),
+    ).toBeUndefined();
+  });
+
+  it("clears a terminal cutoff when the enrollment is reactivated", () => {
+    expect(
+      resolveEnrollmentEndDate({
+        status: "ACTIVE",
+        currentStatus: "CANCELLED",
+        startDate: new Date("2026-01-01T00:00:00.000Z"),
+        currentEndDate: new Date("2026-07-01T00:00:00.000Z"),
+        now,
+      }),
+    ).toBeNull();
+  });
+
+  it("preserves an intentional cutoff on an active enrollment", () => {
+    expect(
+      resolveEnrollmentEndDate({
+        status: "PAUSED",
+        currentStatus: "ACTIVE",
+        startDate: new Date("2026-01-01T00:00:00.000Z"),
+        currentEndDate: new Date("2026-09-01T00:00:00.000Z"),
         now,
       }),
     ).toBeUndefined();

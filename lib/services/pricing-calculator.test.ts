@@ -4,6 +4,7 @@ import {
   applyDiscounts,
   calculateOutstandingAmount,
   calculateEnrollmentCharges,
+  getPaidBillingMonths,
   type DiscountRow,
 } from "@/lib/services/pricing-calculator";
 
@@ -47,6 +48,27 @@ describe("pricing calculations", () => {
     expect(
       applyDiscounts(base, freeMonth, { billingPeriodIndex: 1 }).toNumber(),
     ).toBe(200);
+  });
+
+  it("applies a discount through the end of its final center-local day", () => {
+    const finalDayDiscount = {
+      ...discount("PERCENT_OFF", 50),
+      validUntil: new Date("2026-07-25T00:00:00.000Z"),
+    };
+    const base = new Prisma.Decimal(100);
+
+    expect(
+      applyDiscounts(base, [finalDayDiscount], {
+        date: new Date("2026-07-26T06:30:00.000Z"),
+        timeZone: "America/Los_Angeles",
+      }).toNumber(),
+    ).toBe(50);
+    expect(
+      applyDiscounts(base, [finalDayDiscount], {
+        date: new Date("2026-07-26T07:30:00.000Z"),
+        timeZone: "America/Los_Angeles",
+      }).toNumber(),
+    ).toBe(100);
   });
 
   it("stops subscription charges at the enrollment end date", () => {
@@ -109,6 +131,29 @@ describe("pricing calculations", () => {
     expect(charge.toNumber()).toBe(50);
   });
 
+  it("bills evening sessions on the final center-local enrollment day", () => {
+    const charge = calculateEnrollmentCharges(
+      {
+        startDate: new Date("2026-01-01T00:00:00.000Z"),
+        endDate: new Date("2026-03-15T00:00:00.000Z"),
+        status: "COMPLETED",
+        updatedAt: new Date("2026-03-16T05:00:00.000Z"),
+        priceAtEnrollment: new Prisma.Decimal(50),
+        customPriceOverride: null,
+        package: { type: "PER_SESSION", billingPeriod: "MONTHLY" },
+        discounts: [],
+        sessionAttendance: [
+          { session: { scheduledFor: new Date("2026-03-16T06:30:00.000Z") } },
+          { session: { scheduledFor: new Date("2026-03-16T07:30:00.000Z") } },
+        ],
+      },
+      new Date("2026-07-25T00:00:00.000Z"),
+      "America/Los_Angeles",
+    );
+
+    expect(charge.toNumber()).toBe(50);
+  });
+
   it("subtracts partial payments from the amount still due", () => {
     const outstanding = calculateOutstandingAmount(
       new Prisma.Decimal(100),
@@ -125,5 +170,50 @@ describe("pricing calculations", () => {
     );
 
     expect(outstanding.toFixed(2)).toBe("0.00");
+  });
+
+  it("marks a zero-charge billing period paid without a payment row", () => {
+    const paidMonths = getPaidBillingMonths(
+      {
+        startDate: new Date("2026-01-01T00:00:00.000Z"),
+        endDate: null,
+        status: "ACTIVE",
+        updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+        priceAtEnrollment: new Prisma.Decimal(100),
+        customPriceOverride: null,
+        package: { type: "MONTHLY", billingPeriod: "MONTHLY" },
+        discounts: [discount("FREE_MONTH", 1)],
+        payments: [],
+      },
+      ["2026-01", "2026-02"],
+      "America/Los_Angeles",
+    );
+
+    expect(paidMonths).toEqual(["2026-01"]);
+  });
+
+  it("carries one paid annual billing period across its covered months", () => {
+    const paidMonths = getPaidBillingMonths(
+      {
+        startDate: new Date("2026-02-01T00:00:00.000Z"),
+        endDate: null,
+        status: "ACTIVE",
+        updatedAt: new Date("2026-02-01T00:00:00.000Z"),
+        priceAtEnrollment: new Prisma.Decimal(1200),
+        customPriceOverride: null,
+        package: { type: "MONTHLY", billingPeriod: "YEARLY" },
+        discounts: [],
+        payments: [
+          {
+            coversMonth: "2026-02",
+            amount: new Prisma.Decimal(1200),
+          },
+        ],
+      },
+      ["2026-02", "2026-07", "2027-01", "2027-02"],
+      "America/Los_Angeles",
+    );
+
+    expect(paidMonths).toEqual(["2026-02", "2026-07", "2027-01"]);
   });
 });

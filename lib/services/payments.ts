@@ -4,7 +4,7 @@ import {
   createPayment,
   listPayments,
   deletePayment,
-  getPaymentStats,
+  getPaymentStats as getPaymentStatsData,
   getEnrollmentPaymentCoverage,
   getActiveSubscriptionEnrollments,
   getEnrollmentForPaymentReminder,
@@ -24,15 +24,23 @@ import {
   billingMonthDifference,
   billingPeriodMonths,
   calculateOutstandingAmount,
+  getBillingCutoff,
+  getPaidBillingMonths,
   startOfBillingMonth,
 } from "@/lib/services/pricing-calculator";
 import { sendEmail } from "@/lib/utils/email";
 import { substitutePlaceholders } from "@/lib/services/emails";
-import { Prisma } from "../../generated/prisma";
 import {
   createEmailTemplate,
   getLatestEmailTemplate,
 } from "@/lib/data/emails";
+import {
+  addCalendarMonths,
+  getCalendarDateInTimeZone,
+  getCalendarMonthKey,
+  getCalendarMonthRange,
+  getConfiguredCenterTimeZone,
+} from "@/lib/services/session-dates";
 
 export type PaymentDue = {
   key: string;
@@ -60,6 +68,27 @@ function formatBillingMonthLabel(date: Date, short = false) {
     year: "numeric",
     timeZone: "UTC",
   }).format(date);
+}
+
+function assertBillingPeriodIsWithinEnrollment(
+  enrollment: {
+    startDate: Date;
+    endDate: Date | null;
+    status: "ACTIVE" | "PAUSED" | "COMPLETED" | "CANCELLED";
+    updatedAt: Date;
+  },
+  periodDate: Date,
+  timeZone: string,
+) {
+  const enrollmentStart = startOfBillingMonth(enrollment.startDate);
+  if (periodDate < enrollmentStart) {
+    throw new Error("That billing period is before the enrollment started");
+  }
+
+  const cutoff = getBillingCutoff(enrollment, timeZone);
+  if (cutoff && periodDate > startOfBillingMonth(cutoff)) {
+    throw new Error("That billing period is after the enrollment ended");
+  }
 }
 
 export async function recordPayment(
@@ -103,6 +132,8 @@ export async function recordPaymentForDue(
   const periodMonths = billingPeriodMonths(enrollment.package.billingPeriod);
   const enrollmentStart = startOfBillingMonth(enrollment.startDate);
   const periodDate = new Date(`${parsed.month}-01T00:00:00.000Z`);
+  const timeZone = getConfiguredCenterTimeZone();
+  assertBillingPeriodIsWithinEnrollment(enrollment, periodDate, timeZone);
   const monthsFromStart = billingMonthDifference(
     periodDate,
     enrollmentStart,
@@ -115,8 +146,9 @@ export async function recordPaymentForDue(
     enrollment.customPriceOverride ?? enrollment.priceAtEnrollment,
     enrollment.discounts,
     {
-      date: periodDate,
+      calendarDate: periodDate,
       billingPeriodIndex: monthsFromStart / periodMonths,
+      timeZone,
     },
   );
   return createOutstandingPaymentForPeriod({
@@ -136,7 +168,10 @@ export async function deletePaymentById(id: string) {
 
 export async function getUpcomingPaymentDues(): Promise<PaymentDue[]> {
   const today = new Date();
-  const currentBillingMonth = startOfBillingMonth(today);
+  const timeZone = getConfiguredCenterTimeZone();
+  const currentBillingMonth = startOfBillingMonth(
+    getCalendarDateInTimeZone(today, timeZone),
+  );
   const offsets = [-2, -1, 0, 1, 2];
 
   const enrollments = await getActiveSubscriptionEnrollments();
@@ -150,12 +185,17 @@ export async function getUpcomingPaymentDues(): Promise<PaymentDue[]> {
     const studentName = `${student.firstName} ${student.lastName}`;
     const periodMonths = billingPeriodMonths(enrollment.package.billingPeriod);
     const enrollmentStart = startOfBillingMonth(enrollment.startDate);
+    const billingCutoff = getBillingCutoff(enrollment, timeZone);
+    const finalBillingMonth = billingCutoff
+      ? startOfBillingMonth(billingCutoff)
+      : null;
 
     for (const offset of offsets) {
       const monthDate = addBillingMonths(currentBillingMonth, offset);
 
       // Skip months before enrollment started
       if (enrollmentStart > monthDate) continue;
+      if (finalBillingMonth && monthDate > finalBillingMonth) continue;
       if (billingMonthDifference(monthDate, enrollmentStart) % periodMonths !== 0) {
         continue;
       }
@@ -166,7 +206,7 @@ export async function getUpcomingPaymentDues(): Promise<PaymentDue[]> {
       const amountDecimal = applyDiscounts(
         enrollment.customPriceOverride ?? enrollment.priceAtEnrollment,
         enrollment.discounts,
-        { date: monthDate, billingPeriodIndex },
+        { calendarDate: monthDate, billingPeriodIndex, timeZone },
       );
       const periodEnd = addBillingMonths(monthDate, periodMonths - 1);
       const monthLabel =
@@ -222,61 +262,42 @@ export async function getEnrollmentPaidMonths(
   months: string[],
 ): Promise<Array<{ enrollmentId: string; coversMonth: string }>> {
   const rows = await getEnrollmentPaymentCoverage(enrollmentIds, months);
-  const wantedMonths = new Set(months);
-  const paymentsByPeriod = new Map<
-    string,
-    { total: Prisma.Decimal; row: (typeof rows)[number] }
-  >();
-
-  for (const row of rows) {
-    if (!row.enrollmentId || !row.coversMonth || !row.enrollment) continue;
-    const key = `${row.enrollmentId}:${row.coversMonth}`;
-    const existing = paymentsByPeriod.get(key);
-    if (existing) {
-      existing.total = existing.total.add(row.amount);
-    } else {
-      paymentsByPeriod.set(key, {
-        total: new Prisma.Decimal(row.amount),
-        row,
+  const timeZone = getConfiguredCenterTimeZone();
+  const paid: Array<{ enrollmentId: string; coversMonth: string }> = [];
+  for (const enrollment of rows) {
+    for (const wantedMonth of getPaidBillingMonths(
+      enrollment,
+      months,
+      timeZone,
+    )) {
+      paid.push({
+        enrollmentId: enrollment.id,
+        coversMonth: wantedMonth,
       });
     }
   }
 
-  const paid: Array<{ enrollmentId: string; coversMonth: string }> = [];
-  for (const { total, row } of paymentsByPeriod.values()) {
-    const enrollment = row.enrollment!;
-    const periodMonths = billingPeriodMonths(
-      enrollment.package.billingPeriod,
-    );
-    const periodStart = new Date(
-      `${row.coversMonth}-01T00:00:00.000Z`,
-    );
-    const billingPeriodIndex = Math.floor(
-      billingMonthDifference(
-        periodStart,
-        startOfBillingMonth(enrollment.startDate),
-      ) / periodMonths,
-    );
-    const amountDue = applyDiscounts(
-      enrollment.customPriceOverride ?? enrollment.priceAtEnrollment,
-      enrollment.discounts,
-      { date: periodStart, billingPeriodIndex },
-    );
-    if (total.lessThan(amountDue)) continue;
-
-    for (let offset = 0; offset < periodMonths; offset++) {
-      const coveredMonth = formatBillingMonth(
-        addBillingMonths(periodStart, offset),
-      );
-      if (wantedMonths.has(coveredMonth)) {
-        paid.push({
-          enrollmentId: row.enrollmentId!,
-          coversMonth: coveredMonth,
-        });
-      }
-    }
-  }
   return paid;
+}
+
+export async function getPaymentStats() {
+  const timeZone = getConfiguredCenterTimeZone();
+  const currentMonthKey = getCalendarMonthKey(new Date(), timeZone);
+  const currentRange = getCalendarMonthRange(currentMonthKey, timeZone);
+  const previousMonthKey = addCalendarMonths(
+    currentRange.calendarStart,
+    -1,
+  )
+    .toISOString()
+    .slice(0, 7);
+  const previousRange = getCalendarMonthRange(previousMonthKey, timeZone);
+
+  return getPaymentStatsData({
+    thisMonthStart: currentRange.start,
+    thisMonthEndExclusive: currentRange.endExclusive,
+    lastMonthStart: previousRange.start,
+    lastMonthEndExclusive: previousRange.endExclusive,
+  });
 }
 
 export async function sendPaymentReminderEmail(
@@ -289,6 +310,9 @@ export async function sendPaymentReminderEmail(
   ]);
 
   if (!enrollment) throw new Error("Enrollment not found");
+  if (enrollment.package.type !== "MONTHLY") {
+    throw new Error("Only subscription enrollments have monthly dues");
+  }
 
   const { student } = enrollment;
   const recipientEmail =
@@ -298,20 +322,25 @@ export async function sendPaymentReminderEmail(
     throw new Error("No email address found for this student");
 
   const periodDate = new Date(`${month}-01T00:00:00.000Z`);
+  const timeZone = getConfiguredCenterTimeZone();
+  assertBillingPeriodIsWithinEnrollment(enrollment, periodDate, timeZone);
+  const periodMonths = billingPeriodMonths(
+    enrollment.package.billingPeriod,
+  );
+  const monthsFromStart = billingMonthDifference(
+    periodDate,
+    startOfBillingMonth(enrollment.startDate),
+  );
+  if (monthsFromStart < 0 || monthsFromStart % periodMonths !== 0) {
+    throw new Error("That month is not a billing period for this enrollment");
+  }
   const amountDue = applyDiscounts(
     enrollment.customPriceOverride ?? enrollment.priceAtEnrollment,
     enrollment.discounts,
     {
-      date: periodDate,
-      billingPeriodIndex: Math.max(
-        0,
-        Math.floor(
-          billingMonthDifference(
-            periodDate,
-            startOfBillingMonth(enrollment.startDate),
-          ) / billingPeriodMonths(enrollment.package.billingPeriod),
-        ),
-      ),
+      calendarDate: periodDate,
+      billingPeriodIndex: monthsFromStart / periodMonths,
+      timeZone,
     },
   );
   const outstandingAmount = calculateOutstandingAmount(
@@ -358,4 +387,4 @@ export async function sendPaymentReminderEmail(
   });
 }
 
-export { listPayments, getStudentBalance, getPaymentStats };
+export { listPayments, getStudentBalance };

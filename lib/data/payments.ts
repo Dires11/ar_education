@@ -2,7 +2,6 @@ import "server-only";
 
 import { prisma } from "@/lib/prisma";
 import { Prisma } from "../../generated/prisma";
-import { startOfMonth, endOfMonth, subMonths } from "date-fns";
 
 export type PaymentFilters = {
   studentId?: string;
@@ -140,44 +139,61 @@ export async function getEnrollmentPaymentCoverage(
       .slice(0, 7),
   );
 
-  const rows = await prisma.payment.findMany({
+  return prisma.enrollment.findMany({
     where: {
-      enrollmentId: { in: enrollmentIds },
-      coversMonth: { in: [...new Set([...months, ...coverageStarts])] },
+      id: { in: enrollmentIds },
     },
     select: {
-      enrollmentId: true,
-      coversMonth: true,
-      amount: true,
-      enrollment: {
+      id: true,
+      startDate: true,
+      endDate: true,
+      status: true,
+      updatedAt: true,
+      priceAtEnrollment: true,
+      customPriceOverride: true,
+      package: {
+        select: { type: true, billingPeriod: true },
+      },
+      discounts: true,
+      payments: {
+        where: {
+          coversMonth: {
+            in: [...new Set([...months, ...coverageStarts])],
+          },
+        },
         select: {
-          startDate: true,
-          priceAtEnrollment: true,
-          customPriceOverride: true,
-          package: { select: { billingPeriod: true } },
-          discounts: true,
+          coversMonth: true,
+          amount: true,
         },
       },
     },
   });
-  return rows;
 }
 
-export async function getPaymentStats() {
-  const now = new Date();
-  const thisMonthStart = startOfMonth(now);
-  const thisMonthEnd = endOfMonth(now);
-  const lastMonthStart = startOfMonth(subMonths(now, 1));
-  const lastMonthEnd = endOfMonth(subMonths(now, 1));
-
+export async function getPaymentStats(input: {
+  thisMonthStart: Date;
+  thisMonthEndExclusive: Date;
+  lastMonthStart: Date;
+  lastMonthEndExclusive: Date;
+}) {
   const [thisMonth, lastMonth, total] = await Promise.all([
     prisma.payment.aggregate({
-      where: { paidAt: { gte: thisMonthStart, lte: thisMonthEnd } },
+      where: {
+        paidAt: {
+          gte: input.thisMonthStart,
+          lt: input.thisMonthEndExclusive,
+        },
+      },
       _sum: { amount: true },
       _count: true,
     }),
     prisma.payment.aggregate({
-      where: { paidAt: { gte: lastMonthStart, lte: lastMonthEnd } },
+      where: {
+        paidAt: {
+          gte: input.lastMonthStart,
+          lt: input.lastMonthEndExclusive,
+        },
+      },
       _sum: { amount: true },
     }),
     prisma.payment.count(),

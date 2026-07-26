@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { format, setHours, setMinutes } from "date-fns";
+import { format } from "date-fns";
 import { toast } from "sonner";
 import { RepeatIcon, AlertTriangleIcon, CalendarIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -37,6 +37,11 @@ import {
   rescheduleOccurrenceAction,
   updateSessionAction,
 } from "@/app/actions/sessions";
+import {
+  combinePickerDateAndTime,
+  formatInstantInTimeZone,
+  getPickerDateInTimeZone,
+} from "@/lib/utils/time-zone";
 
 type VirtualSessionInfo = {
   ruleId: string;
@@ -54,11 +59,13 @@ const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 export function EditRecurringDialog({
   session,
   sessionId,
+  centerTimeZone,
   open,
   onOpenChange,
 }: {
   session: VirtualSessionInfo;
   sessionId?: string; // present when editing a real (materialized) session
+  centerTimeZone: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
@@ -72,10 +79,14 @@ export function EditRecurringDialog({
 
   // Reschedule-once state
   const [reschedDate, setReschedDate] = useState<Date | undefined>(
-    new Date(session.scheduledFor)
+    getPickerDateInTimeZone(session.scheduledFor, centerTimeZone),
   );
   const [reschedTime, setReschedTime] = useState(
-    format(new Date(session.scheduledFor), "HH:mm"),
+    formatInstantInTimeZone(
+      session.scheduledFor,
+      "HH:mm",
+      centerTimeZone,
+    ),
   );
   const [reschedDuration, setReschedDuration] = useState(String(session.durationMinutes));
   const [reschedRoom, setReschedRoom] = useState(session.room ?? "");
@@ -85,7 +96,11 @@ export function EditRecurringDialog({
   const [confirm, setConfirm] = useState<"skip" | "end" | "deleteAll" | null>(null);
 
   const date = new Date(session.scheduledFor);
-  const dateLabel = format(date, "EEEE, MMMM d, yyyy");
+  const dateLabel = formatInstantInTimeZone(
+    date,
+    "EEEE, MMMM d, yyyy",
+    centerTimeZone,
+  );
 
   async function handleSplit() {
     setSaving(true);
@@ -112,8 +127,11 @@ export function EditRecurringDialog({
     }
     setSaving(true);
     try {
-      const [h, m] = reschedTime.split(":").map(Number);
-      const newDate = setMinutes(setHours(new Date(reschedDate), h), m);
+      const newDate = combinePickerDateAndTime(
+        reschedDate,
+        reschedTime,
+        centerTimeZone,
+      );
       if (sessionId) {
         // Real session — update it in place
         await updateSessionAction(sessionId, {
@@ -261,7 +279,13 @@ export function EditRecurringDialog({
                 {/* ── Edit series from this date ── */}
                 <TabsContent value="series" className="space-y-3 pt-2">
                   <p className="text-xs text-muted-foreground">
-                    Changes apply from {format(date, "MMM d")} onward.
+                    Changes apply from{" "}
+                    {formatInstantInTimeZone(
+                      date,
+                      "MMM d",
+                      centerTimeZone,
+                    )}{" "}
+                    onward.
                   </p>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -311,7 +335,13 @@ export function EditRecurringDialog({
                   </div>
 
                   <Button className="w-full" disabled={saving} onClick={handleSplit}>
-                    {saving ? "Saving..." : `Apply from ${format(date, "MMM d")} onward`}
+                    {saving
+                      ? "Saving..."
+                      : `Apply from ${formatInstantInTimeZone(
+                          date,
+                          "MMM d",
+                          centerTimeZone,
+                        )} onward`}
                   </Button>
                 </TabsContent>
 

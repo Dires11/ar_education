@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { format } from "date-fns";
 import { toast } from "sonner";
 import { RepeatIcon, AlertTriangleIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -28,6 +27,7 @@ import {
   updateEnrollmentRecurrenceColorAction,
 } from "@/app/actions/sessions";
 import { ColorPicker } from "./color-picker";
+import { formatInstantInTimeZone } from "@/lib/utils/time-zone";
 
 const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const DAY_OPTIONS = [1, 2, 3, 4, 5, 6, 0]; // Mon–Sun display order
@@ -50,6 +50,7 @@ export function EditRecurringGroupDialog({
   referenceDate,
   focusedRuleId,
   enrollmentId,
+  centerTimeZone,
   open,
   onOpenChange,
   onChanged,
@@ -59,6 +60,7 @@ export function EditRecurringGroupDialog({
   referenceDate?: string;
   focusedRuleId?: string;
   enrollmentId?: string;
+  centerTimeZone: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onChanged?: () => void;
@@ -90,7 +92,11 @@ export function EditRecurringGroupDialog({
   const [confirm, setConfirm] = useState<ConfirmKind>(null);
 
   const splitDate = referenceDate ? new Date(referenceDate) : new Date();
-  const splitDateLabel = format(splitDate, "MMM d");
+  const splitDateLabel = formatInstantInTimeZone(
+    splitDate,
+    "MMM d",
+    centerTimeZone,
+  );
 
   const daysSummary = sortedRules.map((r) => DAY_LABELS[r.dayOfWeek]).join(", ");
 
@@ -169,7 +175,12 @@ export function EditRecurringGroupDialog({
             <div className="font-medium">{subjectName}</div>
             <div className="text-xs text-muted-foreground mt-0.5">
               Every {daysSummary}
-              {referenceDate && ` · ${format(new Date(referenceDate), "EEEE, MMMM d, yyyy")}`}
+              {referenceDate &&
+                ` · ${formatInstantInTimeZone(
+                  referenceDate,
+                  "EEEE, MMMM d, yyyy",
+                  centerTimeZone,
+                )}`}
             </div>
           </div>
 

@@ -120,6 +120,45 @@ export function getCalendarMonthRange(
   };
 }
 
+export function getCalendarWeekStart(calendarDate: Date): Date {
+  const daysSinceMonday = (calendarDate.getUTCDay() + 6) % 7;
+  return addCalendarDays(calendarDate, -daysSinceMonday);
+}
+
+export function getCalendarWeekRangeFromCalendarDate(
+  calendarDate: Date,
+  timeZone = DEFAULT_CENTER_TIME_ZONE,
+): {
+  calendarStart: Date;
+  calendarEnd: Date;
+  start: Date;
+  endExclusive: Date;
+} {
+  const calendarStart = getCalendarWeekStart(calendarDate);
+  const nextCalendarStart = addCalendarDays(calendarStart, 7);
+
+  return {
+    calendarStart,
+    calendarEnd: addCalendarDays(nextCalendarStart, -1),
+    start: combineDateAndTime(calendarStart, "00:00", timeZone),
+    endExclusive: combineDateAndTime(
+      nextCalendarStart,
+      "00:00",
+      timeZone,
+    ),
+  };
+}
+
+export function getCalendarWeekRange(
+  date: Date,
+  timeZone = DEFAULT_CENTER_TIME_ZONE,
+) {
+  return getCalendarWeekRangeFromCalendarDate(
+    getCalendarDateInTimeZone(date, timeZone),
+    timeZone,
+  );
+}
+
 export function getCalendarDateInTimeZone(
   date: Date,
   timeZone = DEFAULT_CENTER_TIME_ZONE,
@@ -170,8 +209,7 @@ export function getEnrollmentWeekKey(
   const calendarDate = new Date(
     Date.UTC(zoned.getFullYear(), zoned.getMonth(), zoned.getDate()),
   );
-  const daysSinceMonday = (calendarDate.getUTCDay() + 6) % 7;
-  const monday = addCalendarDays(calendarDate, -daysSinceMonday);
+  const monday = getCalendarWeekStart(calendarDate);
   const year = monday.getUTCFullYear();
   const month = String(monday.getUTCMonth() + 1).padStart(2, "0");
   const day = String(monday.getUTCDate()).padStart(2, "0");

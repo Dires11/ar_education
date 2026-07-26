@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { format, setHours, setMinutes } from "date-fns";
+import { format } from "date-fns";
 import { toast } from "sonner";
 import { PencilIcon, CalendarIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -22,6 +22,11 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { updateSessionAction } from "@/app/actions/sessions";
+import {
+  combinePickerDateAndTime,
+  formatInstantInTimeZone,
+  getPickerDateInTimeZone,
+} from "@/lib/utils/time-zone";
 
 type Session = {
   id: string;
@@ -33,17 +38,28 @@ type Session = {
 
 export function EditSessionDialog({
   session,
+  centerTimeZone,
   open,
   onOpenChange,
 }: {
   session: Session;
+  centerTimeZone: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  const scheduledDate = new Date(session.scheduledFor);
+  const scheduledDate = getPickerDateInTimeZone(
+    session.scheduledFor,
+    centerTimeZone,
+  );
 
   const [date, setDate] = useState<Date | undefined>(scheduledDate);
-  const [time, setTime] = useState(format(scheduledDate, "HH:mm"));
+  const [time, setTime] = useState(
+    formatInstantInTimeZone(
+      session.scheduledFor,
+      "HH:mm",
+      centerTimeZone,
+    ),
+  );
   const [duration, setDuration] = useState(String(session.durationMinutes));
   const [room, setRoom] = useState(session.room ?? "");
   const [notes, setNotes] = useState(session.notes ?? "");
@@ -53,22 +69,34 @@ export function EditSessionDialog({
   // Reset when dialog opens with new session
   useEffect(() => {
     if (open) {
-      const d = new Date(session.scheduledFor);
+      const d = getPickerDateInTimeZone(
+        session.scheduledFor,
+        centerTimeZone,
+      );
       setDate(d);
-      setTime(format(d, "HH:mm"));
+      setTime(
+        formatInstantInTimeZone(
+          session.scheduledFor,
+          "HH:mm",
+          centerTimeZone,
+        ),
+      );
       setDuration(String(session.durationMinutes));
       setRoom(session.room ?? "");
       setNotes(session.notes ?? "");
     }
-  }, [open, session]);
+  }, [centerTimeZone, open, session]);
 
   async function handleSave() {
     if (!date) {
       toast.error("Select a date");
       return;
     }
-    const [h, m] = time.split(":").map(Number);
-    const combined = setMinutes(setHours(new Date(date), h), m);
+    const combined = combinePickerDateAndTime(
+      date,
+      time,
+      centerTimeZone,
+    );
 
     setSaving(true);
     try {

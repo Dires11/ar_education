@@ -1,6 +1,5 @@
 import "server-only";
 
-import { endOfWeek, startOfWeek } from "date-fns";
 import {
   createManySessionAttendances,
   createManySessions,
@@ -12,11 +11,43 @@ import {
 import {
   addCalendarDays,
   combineDateAndTime,
-  DEFAULT_CENTER_TIME_ZONE,
   getCalendarDateInTimeZone,
+  getCalendarWeekRange,
+  getConfiguredCenterTimeZone,
   getEnrollmentWeekKey,
   getFirstRecurrenceOnOrAfter,
 } from "@/lib/services/session-dates";
+
+function getOccurrenceQueryWindow(
+  rules: Array<{ timeZone: string }>,
+  fromDate: Date,
+  toDate: Date,
+) {
+  const starts = rules.map((rule) =>
+    combineDateAndTime(
+      getCalendarDateInTimeZone(fromDate, rule.timeZone),
+      "00:00",
+      rule.timeZone,
+    ),
+  );
+  const endsExclusive = rules.map((rule) =>
+    combineDateAndTime(
+      addCalendarDays(
+        getCalendarDateInTimeZone(toDate, rule.timeZone),
+        1,
+      ),
+      "00:00",
+      rule.timeZone,
+    ),
+  );
+
+  return {
+    start: new Date(Math.min(...starts.map((date) => date.getTime()))),
+    endExclusive: new Date(
+      Math.max(...endsExclusive.map((date) => date.getTime())),
+    ),
+  };
+}
 
 export async function materializeSessions(
   fromDate: Date,
@@ -25,6 +56,11 @@ export async function materializeSessions(
 ): Promise<number> {
   const rules = await getRecurringRulesInRange(fromDate, toDate, options);
   if (rules.length === 0) return 0;
+  const occurrenceWindow = getOccurrenceQueryWindow(
+    rules,
+    fromDate,
+    toDate,
+  );
 
   const sessions: Array<{
     enrollmentId: string;
@@ -39,8 +75,8 @@ export async function materializeSessions(
 
   const existingSessions = await getSessionsForRecurrenceRulesInRange(
     rules.map((rule) => rule.id),
-    fromDate,
-    toDate
+    occurrenceWindow.start,
+    occurrenceWindow.endExclusive,
   );
   const coveredSlots = new Set(
     existingSessions
@@ -52,10 +88,13 @@ export async function materializeSessions(
           ).toISOString()}`,
       )
   );
+  const centerTimeZone = getConfiguredCenterTimeZone();
+  const firstWeek = getCalendarWeekRange(fromDate, centerTimeZone);
+  const lastWeek = getCalendarWeekRange(toDate, centerTimeZone);
   const existingWeeklySessions = await getNonCancelledEnrollmentSessionsInRange(
     [...new Set(rules.map((rule) => rule.enrollmentId).filter((id): id is string => id !== null))],
-    startOfWeek(fromDate, { weekStartsOn: 1 }),
-    endOfWeek(toDate, { weekStartsOn: 1 })
+    firstWeek.start,
+    lastWeek.endExclusive,
   );
   const weeklyCounts = new Map<string, number>();
   for (const session of existingWeeklySessions) {
@@ -64,7 +103,7 @@ export async function materializeSessions(
     const key = getEnrollmentWeekKey(
       session.enrollmentId,
       new Date(session.scheduledFor),
-      DEFAULT_CENTER_TIME_ZONE,
+      centerTimeZone,
     );
     weeklyCounts.set(key, (weeklyCounts.get(key) ?? 0) + 1);
   }
@@ -94,7 +133,7 @@ export async function materializeSessions(
       const weekKey = getEnrollmentWeekKey(
         enrollmentId,
         scheduledFor,
-        rule.timeZone,
+        centerTimeZone,
       );
       const sessionsPerWeek = enrollment.package.sessionsPerWeek ?? null;
 
@@ -134,8 +173,8 @@ export async function materializeSessions(
   const allRuleSessions = (
     await getSessionsForRecurrenceRulesInRange(
       rules.map((rule) => rule.id),
-      fromDate,
-      toDate,
+      occurrenceWindow.start,
+      occurrenceWindow.endExclusive,
     )
   ).filter((session) => session.enrollmentId);
   const enrollmentById = new Map(
@@ -167,11 +206,16 @@ export async function materializeGroupSessions(
 ): Promise<number> {
   const rules = await getGroupRecurringRulesInRange(fromDate, toDate, options);
   if (rules.length === 0) return 0;
+  const occurrenceWindow = getOccurrenceQueryWindow(
+    rules,
+    fromDate,
+    toDate,
+  );
 
   const existingSessions = await getSessionsForRecurrenceRulesInRange(
     rules.map((r) => r.id),
-    fromDate,
-    toDate
+    occurrenceWindow.start,
+    occurrenceWindow.endExclusive,
   );
   const coveredSlots = new Set(
     existingSessions
@@ -236,8 +280,8 @@ export async function materializeGroupSessions(
   const groupRuleIds = rules.map((r) => r.id);
   const allGroupSessions = await getSessionsForRecurrenceRulesInRange(
     groupRuleIds,
-    fromDate,
-    toDate,
+    occurrenceWindow.start,
+    occurrenceWindow.endExclusive,
   );
 
   const ruleById = new Map(rules.map((r) => [r.id, r]));

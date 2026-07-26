@@ -23,6 +23,7 @@ import {
 } from "@/lib/validators/enrollments";
 import { deleteGroupWhenEmpty } from "@/lib/services/groups";
 import { resolveEnrollmentEndDate } from "@/lib/services/enrollment-dates";
+import { getConfiguredCenterTimeZone } from "@/lib/services/session-dates";
 import { listGroups } from "@/lib/data/groups";
 
 export async function createEnrollmentForStudent(input: CreateEnrollmentInput) {
@@ -114,9 +115,11 @@ export async function updateEnrollmentStatus(
   const isTerminal = ["COMPLETED", "CANCELLED"].includes(parsed.status);
   const endDate = resolveEnrollmentEndDate({
     status: parsed.status,
+    currentStatus: enrollment.status,
     startDate: enrollment.startDate,
     currentEndDate: enrollment.endDate,
     requestedEndDate: parsed.endDate ? new Date(parsed.endDate) : undefined,
+    timeZone: getConfiguredCenterTimeZone(),
   });
 
   const updated = await updateEnrollment(id, {

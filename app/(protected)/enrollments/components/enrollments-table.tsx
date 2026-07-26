@@ -10,7 +10,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { StudentAvatar } from "@/components/entity-avatar";
-import { formatDate } from "@/lib/utils/dates";
+import { formatCalendarDate } from "@/lib/utils/dates";
 import { formatUSD } from "@/lib/utils/money";
 import { EnrollmentPopup } from "./enrollment-popup";
 
@@ -46,8 +46,10 @@ type EnrollmentRow = {
 
 export function EnrollmentsTable({
   enrollments,
+  centerTimeZone,
 }: {
   enrollments: EnrollmentRow[];
+  centerTimeZone: string;
 }) {
   const [selectedEnrollmentId, setSelectedEnrollmentId] = useState<string | null>(
     null,
@@ -140,7 +142,7 @@ export function EnrollmentsTable({
                   )}
                 </TableCell>
                 <TableCell className="text-sm text-muted-foreground">
-                  {formatDate(enrollment.startDate)}
+                  {formatCalendarDate(enrollment.startDate)}
                 </TableCell>
                 <TableCell>
                   <span
@@ -156,6 +158,7 @@ export function EnrollmentsTable({
       </Table>
 
       <EnrollmentPopup
+        centerTimeZone={centerTimeZone}
         enrollmentId={selectedEnrollmentId}
         open={open}
         onOpenChange={setOpen}

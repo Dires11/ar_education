@@ -29,10 +29,11 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { StudentAvatar } from "@/components/entity-avatar";
-import { formatDate, formatDateTime } from "@/lib/utils/dates";
+import { formatCalendarDate, formatDate } from "@/lib/utils/dates";
 import { formatUSD } from "@/lib/utils/money";
 import { EnrollmentStatusSelect } from "./enrollment-status";
 import { DiscountManager } from "./discount-manager";
+import { formatInstantInTimeZone } from "@/lib/utils/time-zone";
 
 type EnrollmentData = NonNullable<Awaited<ReturnType<typeof getEnrollmentAction>>>;
 
@@ -51,10 +52,12 @@ function toDateInput(value: Date | string | null | undefined) {
 
 export function EnrollmentPopup({
   enrollmentId,
+  centerTimeZone,
   open,
   onOpenChange,
 }: {
   enrollmentId: string | null;
+  centerTimeZone: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
@@ -147,7 +150,7 @@ export function EnrollmentPopup({
                       onUpdated={loadEnrollment}
                     />
                     <Badge variant="outline" className="rounded-full bg-background/80">
-                      Started {formatDate(enrollment.startDate)}
+                      Started {formatCalendarDate(enrollment.startDate)}
                     </Badge>
                     <Badge variant="outline" className="rounded-full bg-background/80">
                       {formatUSD(effectivePrice)}
@@ -257,7 +260,11 @@ export function EnrollmentPopup({
                             <TableCell className="text-sm">
                               <div className="flex items-center gap-2">
                                 <CalendarClockIcon className="h-3.5 w-3.5 text-muted-foreground" />
-                                {formatDateTime(session.scheduledFor)}
+                                {formatInstantInTimeZone(
+                                  session.scheduledFor,
+                                  "MMM d, yyyy h:mm a",
+                                  centerTimeZone,
+                                )}
                               </div>
                             </TableCell>
                             <TableCell>

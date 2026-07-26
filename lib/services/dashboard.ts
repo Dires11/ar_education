@@ -1,6 +1,5 @@
 import "server-only";
 
-import { addDays, endOfDay, startOfDay } from "date-fns";
 import {
   getSessionsForDay,
   getActiveStudentCount,
@@ -16,16 +15,65 @@ import {
   materializeGroupSessions,
 } from "@/lib/services/session-materialization";
 import { Prisma } from "../../generated/prisma";
+import {
+  addCalendarDays,
+  addCalendarMonths,
+  combineDateAndTime,
+  getCalendarDateInTimeZone,
+  getCalendarMonthKey,
+  getCalendarMonthRange,
+  getCalendarWeekRange,
+  getConfiguredCenterTimeZone,
+} from "@/lib/services/session-dates";
 
 export async function getDashboardStats() {
-  const today = new Date();
-  const tomorrow = addDays(today, 1);
+  const now = new Date();
+  const timeZone = getConfiguredCenterTimeZone();
+  const today = getCalendarDateInTimeZone(now, timeZone);
+  const tomorrow = addCalendarDays(today, 1);
+  const dayAfterTomorrow = addCalendarDays(today, 2);
+  const todayStart = combineDateAndTime(today, "00:00", timeZone);
+  const tomorrowStart = combineDateAndTime(tomorrow, "00:00", timeZone);
+  const dayAfterTomorrowStart = combineDateAndTime(
+    dayAfterTomorrow,
+    "00:00",
+    timeZone,
+  );
+  const week = getCalendarWeekRange(now, timeZone);
+  const currentMonth = getCalendarMonthRange(
+    getCalendarMonthKey(now, timeZone),
+    timeZone,
+  );
+  const revenueRanges = Array.from({ length: 6 }, (_, index) => {
+    const calendarStart = addCalendarMonths(
+      currentMonth.calendarStart,
+      index - 5,
+    );
+    const range = getCalendarMonthRange(
+      calendarStart.toISOString().slice(0, 7),
+      timeZone,
+    );
+    return {
+      month: new Intl.DateTimeFormat("en-US", {
+        month: "short",
+        timeZone: "UTC",
+      }).format(calendarStart),
+      start: range.start,
+      endExclusive: range.endExclusive,
+    };
+  });
 
   // Materialize today's + tomorrow's recurring sessions before querying,
   // so the dashboard is accurate even without a prior schedule-page visit.
   await Promise.all([
-    materializeSessions(startOfDay(today), endOfDay(tomorrow)),
-    materializeGroupSessions(startOfDay(today), endOfDay(tomorrow)),
+    materializeSessions(
+      todayStart,
+      new Date(dayAfterTomorrowStart.getTime() - 1),
+    ),
+    materializeGroupSessions(
+      todayStart,
+      new Date(dayAfterTomorrowStart.getTime() - 1),
+    ),
   ]);
 
   const [
@@ -38,14 +86,14 @@ export async function getDashboardStats() {
     weeklySessionsByDay,
     monthlyRevenue,
   ] = await Promise.all([
-    getSessionsForDay(today),
-    getSessionsForDay(tomorrow),
+    getSessionsForDay(todayStart, tomorrowStart),
+    getSessionsForDay(tomorrowStart, dayAfterTomorrowStart),
     getActiveStudentCount(),
-    getUpcomingPackageEndings(14),
-    getTutorSessionCountsThisWeek(),
+    getUpcomingPackageEndings(today, 14),
+    getTutorSessionCountsThisWeek(week.start, week.endExclusive),
     getStudentsWithBalance(),
-    getWeeklySessionsByDay(),
-    getMonthlyRevenue(6),
+    getWeeklySessionsByDay(week.start, week.endExclusive, timeZone),
+    getMonthlyRevenue(revenueRanges),
   ]);
 
   // Compute unpaid balances

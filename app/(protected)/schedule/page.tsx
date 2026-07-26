@@ -35,6 +35,7 @@ export default async function SchedulePage() {
   return (
     <ScheduleView
       monthKey={monthKey}
+      centerTimeZone={centerTimeZone}
       sessions={sessions.map((s) => ({
         id: s.id,
         scheduledFor: s.scheduledFor.toISOString(),

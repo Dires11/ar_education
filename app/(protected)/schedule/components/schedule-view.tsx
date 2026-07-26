@@ -14,6 +14,7 @@ import {
   UsersIcon,
 } from "lucide-react";
 import type { SessionEnrollment, SessionGroup, Subject, Tutor } from "./session-form-types";
+import { getPickerDateInTimeZone } from "@/lib/utils/time-zone";
 
 function mergeAll(
   sessions: CalendarSession[],
@@ -37,6 +38,7 @@ function getLocalMonthStart(monthKey: string): Date {
 
 export function ScheduleView({
   monthKey,
+  centerTimeZone,
   sessions: initialSessions,
   virtualSessions: initialVirtual,
   tutors,
@@ -45,6 +47,7 @@ export function ScheduleView({
   groups,
 }: {
   monthKey: string;
+  centerTimeZone: string;
   sessions: CalendarSession[];
   virtualSessions: VirtualSession[];
   tutors: Tutor[];
@@ -59,7 +62,7 @@ export function ScheduleView({
     mergeAll(initialSessions, initialVirtual)
   );
   const [selectedDay, setSelectedDay] = useState<Date | null>(() => {
-    const today = new Date();
+    const today = getPickerDateInTimeZone(new Date(), centerTimeZone);
     return isSameMonth(today, initialMonthStart) ? today : null;
   });
   const navVersion = useRef(0);
@@ -111,6 +114,7 @@ export function ScheduleView({
         ]}
         action={
           <NewSessionDialog
+            centerTimeZone={centerTimeZone}
             tutors={tutors}
             subjects={subjects}
             enrollments={enrollments}
@@ -122,6 +126,7 @@ export function ScheduleView({
       />
 
       <MonthCalendar
+        centerTimeZone={centerTimeZone}
         monthStart={monthStart}
         sessions={allSessions}
         selectedDay={selectedDay}

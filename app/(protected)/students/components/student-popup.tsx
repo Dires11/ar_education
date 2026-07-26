@@ -56,7 +56,7 @@ import {
   deleteStudentAction,
   updateStudentStatusAction,
 } from "@/app/actions/students";
-import { formatDate } from "@/lib/utils/dates";
+import { formatCalendarDate, formatDate } from "@/lib/utils/dates";
 import { EditStudentDialog } from "./edit-student-dialog";
 import { StudentStatusMenu } from "./student-status-menu";
 import { CloudinaryImageUpload } from "@/components/cloudinary-image-upload";
@@ -498,7 +498,9 @@ export function StudentPopup({
                         </p>
                       </div>
                       <p className="text-sm font-medium">
-                        {student.dob ? formatDate(student.dob) : "—"}
+                        {student.dob
+                          ? formatCalendarDate(student.dob)
+                          : "—"}
                       </p>
                     </div>
                     {isAdult && (

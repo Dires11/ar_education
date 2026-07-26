@@ -593,7 +593,7 @@ export async function getGroupRecurringRulesInRange(
 export async function getSessionsForRecurrenceRulesInRange(
   recurrenceRuleIds: string[],
   from: Date,
-  to: Date
+  toExclusive: Date
 ) {
   if (recurrenceRuleIds.length === 0) return [];
 
@@ -603,15 +603,15 @@ export async function getSessionsForRecurrenceRulesInRange(
       OR: [
         {
           recurrenceOccurrenceFor: {
-            gte: startOfDay(from),
-            lte: endOfDay(to),
+            gte: from,
+            lt: toExclusive,
           },
         },
         {
           recurrenceOccurrenceFor: null,
           scheduledFor: {
-            gte: startOfDay(from),
-            lte: endOfDay(to),
+            gte: from,
+            lt: toExclusive,
           },
         },
       ],
@@ -629,7 +629,7 @@ export async function getSessionsForRecurrenceRulesInRange(
 export async function getNonCancelledEnrollmentSessionsInRange(
   enrollmentIds: string[],
   from: Date,
-  to: Date
+  toExclusive: Date
 ) {
   if (enrollmentIds.length === 0) return [];
 
@@ -638,8 +638,8 @@ export async function getNonCancelledEnrollmentSessionsInRange(
       enrollmentId: { in: enrollmentIds },
       status: { notIn: ["CANCELLED_BY_TUTOR", "CANCELLED_BY_STUDENT"] },
       scheduledFor: {
-        gte: startOfDay(from),
-        lte: endOfDay(to),
+        gte: from,
+        lt: toExclusive,
       },
     },
     select: {
@@ -752,8 +752,10 @@ export function getRecurringSchedulesForConflictWindow(
 ) {
   return prisma.recurrenceRule.findMany({
     where: {
-      startsOn: { lte: to },
-      OR: [{ endsOn: null }, { endsOn: { gte: from } }],
+      // These columns are date-only markers while from/to are instants.
+      // Pad this coarse filter and validate exact occurrences in the service.
+      startsOn: { lte: addDays(to, 1) },
+      OR: [{ endsOn: null }, { endsOn: { gte: addDays(from, -1) } }],
     },
     include: {
       enrollment: {
@@ -776,21 +778,24 @@ export function getRecurringSchedulesForConflictWindow(
 export async function getEnrollmentWeekScheduleData(
   enrollmentId: string,
   weekStart: Date,
-  weekEnd: Date,
+  weekEndExclusive: Date,
 ) {
   const [realCount, rules, realForDedup] = await Promise.all([
     prisma.session.count({
       where: {
         enrollmentId,
         status: { notIn: ["CANCELLED_BY_TUTOR", "CANCELLED_BY_STUDENT"] },
-        scheduledFor: { gte: weekStart, lte: weekEnd },
+        scheduledFor: { gte: weekStart, lt: weekEndExclusive },
       },
     }),
     prisma.recurrenceRule.findMany({
       where: {
         enrollmentId,
-        startsOn: { lte: weekEnd },
-        OR: [{ endsOn: null }, { endsOn: { gte: weekStart } }],
+        startsOn: { lte: addDays(weekEndExclusive, 1) },
+        OR: [
+          { endsOn: null },
+          { endsOn: { gte: addDays(weekStart, -1) } },
+        ],
       },
     }),
     prisma.session.findMany({
@@ -798,11 +803,14 @@ export async function getEnrollmentWeekScheduleData(
         enrollmentId,
         OR: [
           {
-            recurrenceOccurrenceFor: { gte: weekStart, lte: weekEnd },
+            recurrenceOccurrenceFor: {
+              gte: weekStart,
+              lt: weekEndExclusive,
+            },
           },
           {
             recurrenceOccurrenceFor: null,
-            scheduledFor: { gte: weekStart, lte: weekEnd },
+            scheduledFor: { gte: weekStart, lt: weekEndExclusive },
           },
         ],
       },
