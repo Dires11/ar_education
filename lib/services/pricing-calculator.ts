@@ -111,6 +111,21 @@ export function applyDiscounts(
   return isFree ? new Prisma.Decimal(0) : price;
 }
 
+export function calculateOutstandingAmount(
+  amountDue: Prisma.Decimal,
+  paymentAmounts: Prisma.Decimal[],
+): Prisma.Decimal {
+  const paidAmount = paymentAmounts.reduce(
+    (total, paymentAmount) => total.add(paymentAmount),
+    new Prisma.Decimal(0),
+  );
+
+  return Prisma.Decimal.max(
+    new Prisma.Decimal(0),
+    amountDue.sub(paidAmount),
+  );
+}
+
 export type EnrollmentForPricing = {
   startDate: Date;
   endDate: Date | null;

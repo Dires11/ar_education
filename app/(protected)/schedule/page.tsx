@@ -3,13 +3,17 @@ import { listTutors } from "@/lib/data/tutors";
 import { listSubjects } from "@/lib/data/subjects";
 import { listEnrollments } from "@/lib/data/enrollments";
 import { listGroups } from "@/lib/data/groups";
-import { format, startOfMonth } from "date-fns";
+import {
+  getCalendarMonthKey,
+  getConfiguredCenterTimeZone,
+} from "@/lib/services/session-dates";
 import { ScheduleView } from "./components/schedule-view";
 
 export const dynamic = "force-dynamic";
 
 export default async function SchedulePage() {
-  const monthStart = startOfMonth(new Date());
+  const centerTimeZone = getConfiguredCenterTimeZone();
+  const monthKey = getCalendarMonthKey(new Date(), centerTimeZone);
 
   const [
     { realSessions: sessions, virtualSessions, paidMonths },
@@ -18,7 +22,7 @@ export default async function SchedulePage() {
     enrollments,
     groups,
   ] = await Promise.all([
-    getMonthSchedule(monthStart),
+    getMonthSchedule(monthKey),
     listTutors({ status: "ACTIVE" }),
     listSubjects(),
     listEnrollments({ status: "ACTIVE" }),
@@ -30,7 +34,7 @@ export default async function SchedulePage() {
 
   return (
     <ScheduleView
-      monthStart={monthStart}
+      monthKey={monthKey}
       sessions={sessions.map((s) => ({
         id: s.id,
         scheduledFor: s.scheduledFor.toISOString(),
@@ -66,12 +70,24 @@ export default async function SchedulePage() {
         intervalWeeks: s.recurrenceRule?.intervalWeeks ?? null,
         color: s.recurrenceRule?.color ?? null,
         isPaid: s.enrollmentId
-          ? paidMonths.has(`${s.enrollmentId}:${format(s.scheduledFor, "yyyy-MM")}`)
+          ? paidMonths.has(
+              `${s.enrollmentId}:${getCalendarMonthKey(
+                s.scheduledFor,
+                centerTimeZone,
+              )}`,
+            )
           : null as boolean | null,
       }))}
       virtualSessions={virtualSessions.map((v) => ({
         ...v,
-        isPaid: v.enrollmentId ? paidMonths.has(`${v.enrollmentId}:${format(new Date(v.scheduledFor), "yyyy-MM")}`) : null,
+        isPaid: v.enrollmentId
+          ? paidMonths.has(
+              `${v.enrollmentId}:${getCalendarMonthKey(
+                new Date(v.scheduledFor),
+                centerTimeZone,
+              )}`,
+            )
+          : null,
       }))}
       tutors={tutorsData.tutors.map((t) => ({
         id: t.id,

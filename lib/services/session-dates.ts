@@ -2,6 +2,19 @@ import { TZDate } from "@date-fns/tz";
 
 export const DEFAULT_CENTER_TIME_ZONE = "America/Los_Angeles";
 
+export function getConfiguredCenterTimeZone(): string {
+  const timeZone =
+    process.env.CENTER_TIME_ZONE ?? DEFAULT_CENTER_TIME_ZONE;
+
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone });
+  } catch {
+    throw new Error("CENTER_TIME_ZONE is not a valid IANA time zone");
+  }
+
+  return timeZone;
+}
+
 export function addCalendarDays(date: Date, days: number): Date {
   return new Date(
     Date.UTC(
@@ -62,6 +75,49 @@ export function getCalendarDateKey(
   const month = String(zoned.getMonth() + 1).padStart(2, "0");
   const day = String(zoned.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
+}
+
+export function getCalendarMonthKey(
+  date: Date,
+  timeZone = DEFAULT_CENTER_TIME_ZONE,
+): string {
+  return getCalendarDateKey(date, timeZone).slice(0, 7);
+}
+
+export function getCalendarMonthStart(monthKey: string): Date {
+  const [year, month] = monthKey.split("-").map(Number);
+  return new Date(Date.UTC(year, month - 1, 1));
+}
+
+export function addCalendarMonths(date: Date, months: number): Date {
+  return new Date(
+    Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + months, 1),
+  );
+}
+
+export function getCalendarMonthRange(
+  monthKey: string,
+  timeZone = DEFAULT_CENTER_TIME_ZONE,
+): {
+  calendarStart: Date;
+  calendarEnd: Date;
+  start: Date;
+  endExclusive: Date;
+} {
+  const calendarStart = getCalendarMonthStart(monthKey);
+  const nextCalendarStart = addCalendarMonths(calendarStart, 1);
+  const calendarEnd = addCalendarDays(nextCalendarStart, -1);
+
+  return {
+    calendarStart,
+    calendarEnd,
+    start: combineDateAndTime(calendarStart, "00:00", timeZone),
+    endExclusive: combineDateAndTime(
+      nextCalendarStart,
+      "00:00",
+      timeZone,
+    ),
+  };
 }
 
 export function getCalendarDateInTimeZone(

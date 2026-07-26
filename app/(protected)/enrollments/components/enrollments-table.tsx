@@ -25,6 +25,7 @@ type EnrollmentRow = {
   id: string;
   status: keyof typeof STATUS_COLORS;
   startDate: string;
+  priceAtEnrollment: string;
   customPriceOverride: string | null;
   student: {
     firstName: string;
@@ -34,7 +35,6 @@ type EnrollmentRow = {
   subject: { name: string };
   package: {
     name: string;
-    basePrice: string;
     lessonType: string;
   };
   group: { name: string } | null;
@@ -136,7 +136,7 @@ export function EnrollmentsTable({
                 <TableCell className="text-sm font-medium">
                   {formatUSD(
                     enrollment.customPriceOverride ??
-                      enrollment.package.basePrice,
+                      enrollment.priceAtEnrollment,
                   )}
                 </TableCell>
                 <TableCell className="text-sm text-muted-foreground">

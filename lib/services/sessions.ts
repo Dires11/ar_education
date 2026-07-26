@@ -3,13 +3,7 @@ import "server-only";
 import {
   addDays,
   format,
-  startOfDay,
-  startOfWeek,
-  endOfMonth,
-  endOfWeek,
   isBefore,
-  subMonths,
-  addMonths,
 } from "date-fns";
 import { getEnrollmentPaidMonths } from "@/lib/services/payments";
 import {
@@ -33,11 +27,13 @@ import {
 } from "@/lib/data/sessions";
 import { getGroupWithMembers } from "@/lib/data/groups";
 import {
+  addCalendarMonths,
   addCalendarDays,
   combineDateAndTime,
-  DEFAULT_CENTER_TIME_ZONE,
   getCalendarDateInTimeZone,
   getCalendarDateKey,
+  getCalendarMonthRange,
+  getConfiguredCenterTimeZone,
   getEnrollmentWeekKey,
   getFirstMatchingDate,
 } from "@/lib/services/session-dates";
@@ -55,7 +51,6 @@ import type {
   CreateRecurrenceInput,
   MarkAttendanceInput,
 } from "@/lib/validators/sessions";
-import { isValidTimeZone } from "@/lib/validators/common";
 import {
   assertEnrollmentHasMonthlyCapacity,
   getRecurringSchedulePreview,
@@ -192,10 +187,7 @@ export async function createRecurringSchedule(input: CreateRecurrenceInput) {
   const intervalWeeks = parsed.intervalWeeks ? Number(parsed.intervalWeeks) : 1;
   const startsOn = new Date(parsed.startsOn);
   const endsOn = parsed.endsOn ? new Date(parsed.endsOn) : undefined;
-  const timeZone = process.env.CENTER_TIME_ZONE ?? DEFAULT_CENTER_TIME_ZONE;
-  if (!isValidTimeZone(timeZone)) {
-    throw new Error("CENTER_TIME_ZONE is not a valid IANA time zone");
-  }
+  const timeZone = getConfiguredCenterTimeZone();
 
   let ruleEnrollmentId: string | undefined;
   let ruleGroupId: string | undefined;
@@ -303,7 +295,13 @@ export async function getVirtualSessionsForMonth(
     Date.UTC(monthStart.getUTCFullYear(), monthStart.getUTCMonth() + 1, 0),
   );
   const today = new Date();
-  const rules = prefetchedRules ?? await getRecurrenceRulesForMonth(monthStart);
+  const centerTimeZone = getConfiguredCenterTimeZone();
+  const rules =
+    prefetchedRules ??
+    (await getRecurrenceRulesForMonth(
+      calendarMonthStart,
+      calendarMonthEnd,
+    ));
 
   const plannedPerEnrollmentWeek = new Map<string, number>();
   for (const s of realSessions) {
@@ -315,10 +313,16 @@ export async function getVirtualSessionsForMonth(
     }
     const d = new Date(s.scheduledFor);
     if (
-      getCalendarDateKey(d) >= calendarMonthStart.toISOString().slice(0, 10) &&
-      getCalendarDateKey(d) <= calendarMonthEnd.toISOString().slice(0, 10)
+      getCalendarDateKey(d, centerTimeZone) >=
+        calendarMonthStart.toISOString().slice(0, 10) &&
+      getCalendarDateKey(d, centerTimeZone) <=
+        calendarMonthEnd.toISOString().slice(0, 10)
     ) {
-      const key = getEnrollmentWeekKey(s.enrollmentId, d);
+      const key = getEnrollmentWeekKey(
+        s.enrollmentId,
+        d,
+        centerTimeZone,
+      );
       plannedPerEnrollmentWeek.set(key, (plannedPerEnrollmentWeek.get(key) ?? 0) + 1);
     }
   }
@@ -415,7 +419,10 @@ export async function getVirtualSessionsForMonth(
   }
 
   // ─── Group virtual sessions ────────────────────────────────────────────────
-  const groupRules = await getGroupRecurrenceRulesForMonth(monthStart);
+  const groupRules = await getGroupRecurrenceRulesForMonth(
+    calendarMonthStart,
+    calendarMonthEnd,
+  );
 
   for (const rule of groupRules) {
     if (!rule.group) continue;
@@ -488,9 +495,28 @@ export async function getEnrollmentSessionSummaries(
   realSessions: RealSessionSlim[],
   prefetchedRules?: MonthRules
 ): Promise<EnrollmentSessionSummary[]> {
-  const weekStart = startOfWeek(monthStart, { weekStartsOn: 1 });
-  const weekEnd = endOfWeek(monthStart, { weekStartsOn: 1 });
-  const rules = prefetchedRules ?? await getRecurrenceRulesForMonth(monthStart);
+  const centerTimeZone = getConfiguredCenterTimeZone();
+  const daysSinceMonday = (monthStart.getUTCDay() + 6) % 7;
+  const calendarWeekStart = addCalendarDays(
+    monthStart,
+    -daysSinceMonday,
+  );
+  const weekStart = combineDateAndTime(
+    calendarWeekStart,
+    "00:00",
+    centerTimeZone,
+  );
+  const weekEndExclusive = combineDateAndTime(
+    addCalendarDays(calendarWeekStart, 7),
+    "00:00",
+    centerTimeZone,
+  );
+  const calendarMonthEnd = new Date(
+    Date.UTC(monthStart.getUTCFullYear(), monthStart.getUTCMonth() + 1, 0),
+  );
+  const rules =
+    prefetchedRules ??
+    (await getRecurrenceRulesForMonth(monthStart, calendarMonthEnd));
 
   const seen = new Map<string, EnrollmentSessionSummary>();
 
@@ -505,7 +531,7 @@ export async function getEnrollmentSessionSummaries(
         s.enrollmentId === rule.enrollmentId &&
         (s.status === "COMPLETED" || s.status === "NO_SHOW") &&
         new Date(s.scheduledFor) >= weekStart &&
-        new Date(s.scheduledFor) <= weekEnd
+        new Date(s.scheduledFor) < weekEndExclusive
     ).length;
 
     const remaining =
@@ -721,19 +747,22 @@ export async function deleteRecurringSchedule(ruleId: string) {
 
 // ─── Optimized month fetch (sessions + rules fetched in parallel) ─────────────
 
-export async function getMonthSchedule(monthStart: Date) {
+export async function getMonthSchedule(monthKey: string) {
+  const centerTimeZone = getConfiguredCenterTimeZone();
+  const range = getCalendarMonthRange(monthKey, centerTimeZone);
+
   // Materialize any past recurring slots so they show as real DB records
   const now = new Date();
-  const monthEnd = endOfMonth(monthStart);
-  if (isBefore(monthStart, now)) {
-    const pastEnd = isBefore(monthEnd, now) ? monthEnd : now;
-    await materializeSessions(startOfDay(monthStart), pastEnd);
-    await materializeGroupSessions(startOfDay(monthStart), pastEnd);
+  const rangeEnd = new Date(range.endExclusive.getTime() - 1);
+  if (isBefore(range.start, now)) {
+    const pastEnd = isBefore(rangeEnd, now) ? rangeEnd : now;
+    await materializeSessions(range.start, pastEnd);
+    await materializeGroupSessions(range.start, pastEnd);
   }
 
   const [realSessions, rules] = await Promise.all([
-    getSessionsByMonth(monthStart),
-    getRecurrenceRulesForMonth(monthStart),
+    getSessionsByMonth(range.start, range.endExclusive),
+    getRecurrenceRulesForMonth(range.calendarStart, range.calendarEnd),
   ]);
 
   const enrollmentIds = [...new Set([
@@ -741,15 +770,19 @@ export async function getMonthSchedule(monthStart: Date) {
     ...realSessions.filter((s) => s.enrollmentId != null).map((s) => s.enrollmentId as string),
   ])];
   // Cover the calendar grid which may show days from adjacent months
-  const months = [
-    format(subMonths(monthStart, 1), "yyyy-MM"),
-    format(monthStart, "yyyy-MM"),
-    format(addMonths(monthStart, 1), "yyyy-MM"),
-  ];
+  const months = [-1, 0, 1].map((offset) =>
+    addCalendarMonths(range.calendarStart, offset)
+      .toISOString()
+      .slice(0, 7),
+  );
 
   const [virtualSessions, summaries, paidMonthRecords] = await Promise.all([
-    getVirtualSessionsForMonth(monthStart, realSessions, rules),
-    getEnrollmentSessionSummaries(monthStart, realSessions, rules),
+    getVirtualSessionsForMonth(range.calendarStart, realSessions, rules),
+    getEnrollmentSessionSummaries(
+      range.calendarStart,
+      realSessions,
+      rules,
+    ),
     getEnrollmentPaidMonths(enrollmentIds, months),
   ]);
 

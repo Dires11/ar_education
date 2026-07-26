@@ -109,6 +109,7 @@ export default async function EnrollmentsPage() {
             id: enrollment.id,
             status: enrollment.status,
             startDate: enrollment.startDate.toISOString(),
+            priceAtEnrollment: enrollment.priceAtEnrollment.toString(),
             customPriceOverride:
               enrollment.customPriceOverride?.toString() ?? null,
             student: {
@@ -119,7 +120,6 @@ export default async function EnrollmentsPage() {
             subject: { name: enrollment.subject.name },
             package: {
               name: enrollment.package.name,
-              basePrice: enrollment.package.basePrice.toString(),
               lessonType: enrollment.package.lessonType,
             },
             group: enrollment.group ? { name: enrollment.group.name } : null,

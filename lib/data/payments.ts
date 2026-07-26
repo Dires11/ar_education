@@ -231,7 +231,10 @@ export function getActiveSubscriptionEnrollments() {
   });
 }
 
-export function getEnrollmentForPaymentReminder(id: string) {
+export function getEnrollmentForPaymentReminder(
+  id: string,
+  coversMonth: string,
+) {
   return prisma.enrollment.findUnique({
     where: { id },
     include: {
@@ -247,6 +250,10 @@ export function getEnrollmentForPaymentReminder(id: string) {
       subject: true,
       tutor: true,
       discounts: true,
+      payments: {
+        where: { coversMonth },
+        select: { amount: true },
+      },
     },
   });
 }

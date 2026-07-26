@@ -15,16 +15,15 @@ import {
 import {
   addCalendarDays,
   combineDateAndTime,
-  DEFAULT_CENTER_TIME_ZONE,
   getCalendarDateInTimeZone,
   getEnrollmentWeekKey,
   getFirstRecurrenceOnOrAfter,
+  getConfiguredCenterTimeZone,
 } from "@/lib/services/session-dates";
 import {
   createRecurrenceSchema,
   type CreateRecurrenceInput,
 } from "@/lib/validators/sessions";
-import { isValidTimeZone } from "@/lib/validators/common";
 
 export type EnrollmentMonthSummary = {
   sessionsPerWeek: number | null;
@@ -93,10 +92,7 @@ export async function getRecurringSchedulePreview(
     : 1;
   const startsOn = new Date(parsed.startsOn);
   const endsOn = parsed.endsOn ? new Date(parsed.endsOn) : undefined;
-  const timeZone = process.env.CENTER_TIME_ZONE ?? DEFAULT_CENTER_TIME_ZONE;
-  if (!isValidTimeZone(timeZone)) {
-    throw new Error("CENTER_TIME_ZONE is not a valid IANA time zone");
-  }
+  const timeZone = getConfiguredCenterTimeZone();
   const today = getCalendarDateInTimeZone(fromDate, timeZone);
   const previewEnd = getCalendarDateInTimeZone(toDate, timeZone);
   const windowStart = startsOn > today ? startsOn : today;

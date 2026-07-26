@@ -84,7 +84,7 @@ export function EnrollmentPopup({
   }, [loadEnrollment, open, enrollmentId]);
 
   const effectivePrice = enrollment
-    ? enrollment.customPriceOverride ?? enrollment.package.basePrice
+    ? enrollment.customPriceOverride ?? enrollment.priceAtEnrollment
     : 0;
 
   return (
@@ -177,7 +177,8 @@ export function EnrollmentPopup({
                 <p className="text-sm font-semibold">{formatUSD(effectivePrice)}</p>
                 {enrollment.customPriceOverride && (
                   <p className="text-xs text-muted-foreground">
-                    Base: {formatUSD(enrollment.package.basePrice)}
+                    Enrollment price:{" "}
+                    {formatUSD(enrollment.priceAtEnrollment)}
                   </p>
                 )}
               </div>

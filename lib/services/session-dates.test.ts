@@ -3,6 +3,8 @@ import {
   addCalendarDays,
   combineDateAndTime,
   getCalendarDateKey,
+  getCalendarMonthKey,
+  getCalendarMonthRange,
   getFirstMatchingDate,
   getFirstRecurrenceOnOrAfter,
 } from "@/lib/services/session-dates";
@@ -47,5 +49,44 @@ describe("session date calculations", () => {
       new Date("2026-07-13T00:00:00.000Z"),
     );
     expect(occurrence.toISOString()).toBe("2026-07-20T00:00:00.000Z");
+  });
+
+  it("builds month boundaries in the center time zone", () => {
+    const range = getCalendarMonthRange(
+      "2026-01",
+      "America/Los_Angeles",
+    );
+
+    expect(range.calendarStart.toISOString()).toBe(
+      "2026-01-01T00:00:00.000Z",
+    );
+    expect(range.calendarEnd.toISOString()).toBe(
+      "2026-01-31T00:00:00.000Z",
+    );
+    expect(range.start.toISOString()).toBe("2026-01-01T08:00:00.000Z");
+    expect(range.endExclusive.toISOString()).toBe(
+      "2026-02-01T08:00:00.000Z",
+    );
+  });
+
+  it("assigns late center-time sessions to their local calendar month", () => {
+    expect(
+      getCalendarMonthKey(
+        new Date("2026-02-01T04:00:00.000Z"),
+        "America/Los_Angeles",
+      ),
+    ).toBe("2026-01");
+  });
+
+  it("uses the correct offset on each side of a DST-changing month", () => {
+    const range = getCalendarMonthRange(
+      "2026-03",
+      "America/Los_Angeles",
+    );
+
+    expect(range.start.toISOString()).toBe("2026-03-01T08:00:00.000Z");
+    expect(range.endExclusive.toISOString()).toBe(
+      "2026-04-01T07:00:00.000Z",
+    );
   });
 });

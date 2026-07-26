@@ -1,7 +1,6 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { format, startOfMonth, parse } from "date-fns";
 import { requireAdmin } from "@/lib/utils/auth";
 import {
   createAdHocSession,
@@ -35,10 +34,14 @@ import {
   updateSessionSchema,
 } from "@/lib/validators/sessions";
 import {
-  dateSchema,
   idSchema,
   isoDateTimeSchema,
+  monthSchema,
 } from "@/lib/validators/common";
+import {
+  getCalendarMonthKey,
+  getConfiguredCenterTimeZone,
+} from "@/lib/services/session-dates";
 import { z } from "zod";
 
 const sessionStatusSchema = z.enum([
@@ -279,12 +282,11 @@ export async function getRecurringSchedulePreviewAction(
 export async function fetchScheduleForMonth(monthParam: string) {
   await requireAdmin();
 
-  const parsedDate = dateSchema.parse(monthParam);
-  const monthStart = startOfMonth(
-    parse(parsedDate, "yyyy-MM-dd", new Date()),
-  );
+  const monthKey = monthSchema.parse(monthParam);
+  const centerTimeZone = getConfiguredCenterTimeZone();
 
-  const { realSessions, virtualSessions, paidMonths } = await getMonthSchedule(monthStart);
+  const { realSessions, virtualSessions, paidMonths } =
+    await getMonthSchedule(monthKey);
 
   const sessions = realSessions.map((s) => ({
     id: s.id,
@@ -318,7 +320,12 @@ export async function fetchScheduleForMonth(monthParam: string) {
     intervalWeeks: s.recurrenceRule?.intervalWeeks ?? null,
     color: s.recurrenceRule?.color ?? null,
     isPaid: s.enrollmentId
-      ? paidMonths.has(`${s.enrollmentId}:${format(s.scheduledFor, "yyyy-MM")}`)
+      ? paidMonths.has(
+          `${s.enrollmentId}:${getCalendarMonthKey(
+            s.scheduledFor,
+            centerTimeZone,
+          )}`,
+        )
       : null as boolean | null,
   }));
 
@@ -326,7 +333,14 @@ export async function fetchScheduleForMonth(monthParam: string) {
     ...v,
     notes: null as string | null,
     recurrenceRuleId: null as string | null,
-    isPaid: v.enrollmentId ? paidMonths.has(`${v.enrollmentId}:${format(new Date(v.scheduledFor), "yyyy-MM")}`) : null,
+    isPaid: v.enrollmentId
+      ? paidMonths.has(
+          `${v.enrollmentId}:${getCalendarMonthKey(
+            new Date(v.scheduledFor),
+            centerTimeZone,
+          )}`,
+        )
+      : null,
   }));
 
   return { sessions, virtual };

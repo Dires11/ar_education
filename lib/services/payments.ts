@@ -23,6 +23,7 @@ import {
   applyDiscounts,
   billingMonthDifference,
   billingPeriodMonths,
+  calculateOutstandingAmount,
   startOfBillingMonth,
 } from "@/lib/services/pricing-calculator";
 import { sendEmail } from "@/lib/utils/email";
@@ -167,19 +168,20 @@ export async function getUpcomingPaymentDues(): Promise<PaymentDue[]> {
         enrollment.discounts,
         { date: monthDate, billingPeriodIndex },
       );
-      const amount = amountDecimal.toFixed(2);
       const periodEnd = addBillingMonths(monthDate, periodMonths - 1);
       const monthLabel =
         periodMonths === 1
           ? formatBillingMonthLabel(monthDate)
           : `${formatBillingMonthLabel(monthDate, true)} - ${formatBillingMonthLabel(periodEnd, true)}`;
-      const paidAmount = enrollment.payments
+      const paymentAmounts = enrollment.payments
         .filter((payment) => payment.coversMonth === monthStr)
-        .reduce(
-          (sum, payment) => sum.add(payment.amount),
-          new Prisma.Decimal(0),
-        );
-      const isPaid = paidAmount.greaterThanOrEqualTo(amountDecimal);
+        .map((payment) => payment.amount);
+      const outstandingAmount = calculateOutstandingAmount(
+        amountDecimal,
+        paymentAmounts,
+      );
+      const amount = outstandingAmount.toFixed(2);
+      const isPaid = outstandingAmount.isZero();
 
       dues.push({
         key: `${enrollment.id}_${monthStr}`,
@@ -282,7 +284,7 @@ export async function sendPaymentReminderEmail(
   month: string
 ) {
   const [enrollment, template] = await Promise.all([
-    getEnrollmentForPaymentReminder(enrollmentId),
+    getEnrollmentForPaymentReminder(enrollmentId, month),
     getLatestEmailTemplate("PAYMENT_REMINDER"),
   ]);
 
@@ -295,25 +297,33 @@ export async function sendPaymentReminderEmail(
   if (!recipientEmail)
     throw new Error("No email address found for this student");
 
-  const amount = applyDiscounts(
+  const periodDate = new Date(`${month}-01T00:00:00.000Z`);
+  const amountDue = applyDiscounts(
     enrollment.customPriceOverride ?? enrollment.priceAtEnrollment,
     enrollment.discounts,
     {
-      date: new Date(`${month}-01T00:00:00.000Z`),
+      date: periodDate,
       billingPeriodIndex: Math.max(
         0,
         Math.floor(
           billingMonthDifference(
-            new Date(`${month}-01T00:00:00.000Z`),
+            periodDate,
             startOfBillingMonth(enrollment.startDate),
           ) / billingPeriodMonths(enrollment.package.billingPeriod),
         ),
       ),
     },
-  ).toString();
-  const monthLabel = formatBillingMonthLabel(
-    new Date(`${month}-01T00:00:00.000Z`),
   );
+  const outstandingAmount = calculateOutstandingAmount(
+    amountDue,
+    enrollment.payments.map((payment) => payment.amount),
+  );
+  if (outstandingAmount.isZero()) {
+    throw new Error("This billing period is already paid");
+  }
+
+  const amount = outstandingAmount.toFixed(2);
+  const monthLabel = formatBillingMonthLabel(periodDate);
 
   const ctx = {
     studentFirstName: student.firstName,

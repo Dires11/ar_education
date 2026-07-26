@@ -30,8 +30,13 @@ function mergeAll(
   ];
 }
 
+function getLocalMonthStart(monthKey: string): Date {
+  const [year, month] = monthKey.split("-").map(Number);
+  return new Date(year, month - 1, 1);
+}
+
 export function ScheduleView({
-  monthStart: initialMonthStart,
+  monthKey,
   sessions: initialSessions,
   virtualSessions: initialVirtual,
   tutors,
@@ -39,7 +44,7 @@ export function ScheduleView({
   enrollments,
   groups,
 }: {
-  monthStart: Date;
+  monthKey: string;
   sessions: CalendarSession[];
   virtualSessions: VirtualSession[];
   tutors: Tutor[];
@@ -47,6 +52,7 @@ export function ScheduleView({
   enrollments: SessionEnrollment[];
   groups: SessionGroup[];
 }) {
+  const initialMonthStart = getLocalMonthStart(monthKey);
   const [isPending, startTransition] = useTransition();
   const [monthStart, setMonthStart] = useState(initialMonthStart);
   const [allSessions, setAllSessions] = useState<CalendarSession[]>(
@@ -60,7 +66,7 @@ export function ScheduleView({
 
   function navigate(newMonth: Date) {
     setSelectedDay(null);
-    const param = format(newMonth, "yyyy-MM-dd");
+    const param = format(newMonth, "yyyy-MM");
     const version = ++navVersion.current;
     startTransition(async () => {
       const data = await fetchScheduleForMonth(param);
@@ -71,7 +77,7 @@ export function ScheduleView({
   }
 
   function refresh() {
-    const param = format(monthStart, "yyyy-MM-dd");
+    const param = format(monthStart, "yyyy-MM");
     startTransition(async () => {
       const data = await fetchScheduleForMonth(param);
       setAllSessions(mergeAll(data.sessions as CalendarSession[], data.virtual as VirtualSession[]));

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { Prisma } from "../../generated/prisma";
 import {
   applyDiscounts,
+  calculateOutstandingAmount,
   calculateEnrollmentCharges,
   type DiscountRow,
 } from "@/lib/services/pricing-calculator";
@@ -106,5 +107,23 @@ describe("pricing calculations", () => {
     );
 
     expect(charge.toNumber()).toBe(50);
+  });
+
+  it("subtracts partial payments from the amount still due", () => {
+    const outstanding = calculateOutstandingAmount(
+      new Prisma.Decimal(100),
+      [new Prisma.Decimal(30), new Prisma.Decimal(20)],
+    );
+
+    expect(outstanding.toFixed(2)).toBe("50.00");
+  });
+
+  it("does not return a negative balance for overpayments", () => {
+    const outstanding = calculateOutstandingAmount(
+      new Prisma.Decimal(100),
+      [new Prisma.Decimal(120)],
+    );
+
+    expect(outstanding.toFixed(2)).toBe("0.00");
   });
 });

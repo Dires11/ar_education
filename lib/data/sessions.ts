@@ -1,7 +1,7 @@
 import "server-only";
 
 import { prisma } from "@/lib/prisma";
-import { addDays, startOfDay, endOfDay, endOfMonth } from "date-fns";
+import { addDays, startOfDay, endOfDay } from "date-fns";
 import { Prisma } from "../../generated/prisma";
 
 export async function getSessionsByWeek(weekStart: Date) {
@@ -23,13 +23,15 @@ export async function getSessionsByWeek(weekStart: Date) {
   });
 }
 
-export async function getSessionsByMonth(monthStart: Date) {
-  const monthEnd = endOfMonth(monthStart);
+export async function getSessionsByMonth(
+  rangeStart: Date,
+  rangeEndExclusive: Date,
+) {
   return prisma.session.findMany({
     where: {
       scheduledFor: {
-        gte: startOfDay(monthStart),
-        lte: endOfDay(monthEnd),
+        gte: rangeStart,
+        lt: rangeEndExclusive,
       },
     },
     include: {
@@ -196,12 +198,17 @@ export async function createManySessionAttendances(
   return prisma.sessionAttendance.createMany({ data, skipDuplicates: true });
 }
 
-export async function getRecurrenceRulesForMonth(monthStart: Date) {
-  const monthEnd = endOfMonth(monthStart);
+export async function getRecurrenceRulesForMonth(
+  calendarMonthStart: Date,
+  calendarMonthEnd: Date,
+) {
   const rules = await prisma.recurrenceRule.findMany({
     where: {
-      startsOn: { lte: monthEnd },
-      OR: [{ endsOn: null }, { endsOn: { gte: monthStart } }],
+      startsOn: { lte: calendarMonthEnd },
+      OR: [
+        { endsOn: null },
+        { endsOn: { gte: calendarMonthStart } },
+      ],
       enrollment: { status: { in: ["ACTIVE", "PAUSED"] } },
     },
     include: {
@@ -215,13 +222,18 @@ export async function getRecurrenceRulesForMonth(monthStart: Date) {
   return rules.filter((r) => !r.endsOn || r.endsOn >= r.startsOn);
 }
 
-export async function getGroupRecurrenceRulesForMonth(monthStart: Date) {
-  const monthEnd = endOfMonth(monthStart);
+export async function getGroupRecurrenceRulesForMonth(
+  calendarMonthStart: Date,
+  calendarMonthEnd: Date,
+) {
   const rules = await prisma.recurrenceRule.findMany({
     where: {
       groupId: { not: null },
-      startsOn: { lte: monthEnd },
-      OR: [{ endsOn: null }, { endsOn: { gte: monthStart } }],
+      startsOn: { lte: calendarMonthEnd },
+      OR: [
+        { endsOn: null },
+        { endsOn: { gte: calendarMonthStart } },
+      ],
     },
     include: {
       group: {
@@ -529,8 +541,11 @@ export async function getRecurringRulesInRange(
       id: options?.recurrenceRuleIds?.length
         ? { in: options.recurrenceRuleIds }
         : undefined,
-      startsOn: { lte: to },
-      OR: [{ endsOn: null }, { endsOn: { gte: from } }],
+      // Date-only rule bounds are compared against an instant window. Pad the
+      // coarse database filter, then let occurrence generation apply each
+      // rule's own time zone precisely.
+      startsOn: { lte: addDays(to, 1) },
+      OR: [{ endsOn: null }, { endsOn: { gte: addDays(from, -1) } }],
       enrollment: { status: { in: ["ACTIVE", "PAUSED"] } },
     },
     include: {
@@ -555,8 +570,8 @@ export async function getGroupRecurringRulesInRange(
       id: options?.recurrenceRuleIds?.length
         ? { in: options.recurrenceRuleIds }
         : undefined,
-      startsOn: { lte: to },
-      OR: [{ endsOn: null }, { endsOn: { gte: from } }],
+      startsOn: { lte: addDays(to, 1) },
+      OR: [{ endsOn: null }, { endsOn: { gte: addDays(from, -1) } }],
     },
     include: {
       group: {
