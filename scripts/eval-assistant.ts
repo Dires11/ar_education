@@ -8,6 +8,11 @@ const cases = [
     expectedNamespace: "students",
   },
   {
+    prompt: "Who is the youngest student?",
+    expectedNamespace: "students",
+    expectedTool: "query_student_directory",
+  },
+  {
     prompt:
       "Create student Maya Thompson, born 2012-04-08, with no guardian yet.",
     expectedNamespace: "students",
@@ -70,12 +75,15 @@ async function main() {
     const call = response.output.find(
       (output) => output.type === "function_call",
     );
-    const passed = call?.namespace === item.expectedNamespace;
+    const passed =
+      call?.namespace === item.expectedNamespace &&
+      (!("expectedTool" in item) || call?.name === item.expectedTool);
     if (!passed) failed += 1;
     console.log(
       JSON.stringify({
         prompt: item.prompt,
         expectedNamespace: item.expectedNamespace,
+        expectedTool: "expectedTool" in item ? item.expectedTool : null,
         actualNamespace: call?.namespace ?? null,
         actualTool: call?.name ?? null,
         passed,

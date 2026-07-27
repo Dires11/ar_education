@@ -108,6 +108,91 @@ export const archiveAssistantThreadSchema = z.object({
   archived: z.boolean(),
 });
 
+const assistantResultCardFieldIconSchema = z.enum([
+  "BOOK",
+  "CALENDAR",
+  "CLOCK",
+  "GRADUATION",
+  "GUARDIAN",
+  "LOCATION",
+  "MAIL",
+  "MONEY",
+  "PACKAGE",
+  "PAYMENT",
+  "PHONE",
+  "STATUS",
+  "USER",
+]);
+
+export const assistantResultCardSchema = z.object({
+  kind: z.enum([
+    "STUDENT",
+    "GUARDIAN",
+    "TUTOR",
+    "SUBJECT",
+    "PACKAGE",
+    "ENROLLMENT",
+    "GROUP",
+    "SESSION",
+    "PAYMENT",
+    "EMAIL",
+    "TEAM",
+  ]),
+  entityKey: z.string().trim().min(1).max(160),
+  title: z.string().trim().min(1).max(160),
+  subtitle: z.string().trim().min(1).max(240).optional(),
+  avatar: z
+    .object({
+      kind: z.enum(["STUDENT", "GUARDIAN", "TUTOR"]),
+      firstName: z.string().max(100).nullable().optional(),
+      lastName: z.string().max(100).nullable().optional(),
+      avatarUrl: z.url().nullable().optional(),
+    })
+    .optional(),
+  badges: z
+    .array(
+      z.object({
+        label: z.string().trim().min(1).max(80),
+        tone: z
+          .enum(["SUCCESS", "NEUTRAL", "WARNING", "DESTRUCTIVE"])
+          .default("NEUTRAL"),
+      }),
+    )
+    .max(4)
+    .default([]),
+  fields: z
+    .array(
+      z.object({
+        label: z.string().trim().min(1).max(80),
+        value: z.string().trim().min(1).max(240),
+        icon: assistantResultCardFieldIconSchema,
+      }),
+    )
+    .max(6)
+    .default([]),
+  href: z
+    .string()
+    .trim()
+    .regex(/^\/(?!\/)/, "Result card links must be internal"),
+  actionLabel: z.string().trim().min(1).max(100),
+  suggestedActions: z
+    .array(
+      z.discriminatedUnion("kind", [
+        z.object({
+          kind: z.literal("PROMPT"),
+          label: z.string().trim().min(1).max(100),
+          prompt: z.string().trim().min(1).max(500),
+        }),
+        z.object({
+          kind: z.literal("DISMISS"),
+          label: z.string().trim().min(1).max(100),
+        }),
+      ]),
+    )
+    .max(3)
+    .default([]),
+});
+
 export type AssistantTurnInput = z.input<typeof assistantTurnSchema>;
 export type AssistantDecisionInput = z.infer<typeof assistantDecisionSchema>;
 export type AssistantAttachmentInput = z.infer<
@@ -116,3 +201,4 @@ export type AssistantAttachmentInput = z.infer<
 export type AssistantAttachmentMetadata = z.infer<
   typeof assistantAttachmentMetadataSchema
 >;
+export type AssistantResultCard = z.infer<typeof assistantResultCardSchema>;

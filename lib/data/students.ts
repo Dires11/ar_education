@@ -1,7 +1,7 @@
 import "server-only";
 
 import { prisma } from "@/lib/prisma";
-import { PersonStatus } from "../../generated/prisma";
+import { PersonStatus, Prisma } from "../../generated/prisma";
 
 export type StudentFilters = {
   search?: string;
@@ -9,6 +9,36 @@ export type StudentFilters = {
   page?: number;
   pageSize?: number;
 };
+
+function studentSearchWhere(search: string): Prisma.StudentWhereInput {
+  const tokens = search.trim().split(/\s+/).filter(Boolean).slice(0, 10);
+  return {
+    AND: tokens.map((token) => ({
+      OR: [
+        { firstName: { contains: token, mode: "insensitive" } },
+        { lastName: { contains: token, mode: "insensitive" } },
+        { email: { contains: token, mode: "insensitive" } },
+        { phone: { contains: token, mode: "insensitive" } },
+        { school: { contains: token, mode: "insensitive" } },
+        { gradeLevel: { contains: token, mode: "insensitive" } },
+        {
+          guardians: {
+            some: {
+              guardian: {
+                OR: [
+                  { firstName: { contains: token, mode: "insensitive" } },
+                  { lastName: { contains: token, mode: "insensitive" } },
+                  { email: { contains: token, mode: "insensitive" } },
+                  { phone: { contains: token, mode: "insensitive" } },
+                ],
+              },
+            },
+          },
+        },
+      ],
+    })),
+  };
+}
 
 export async function listStudents({
   search,
@@ -18,34 +48,7 @@ export async function listStudents({
 }: StudentFilters = {}) {
   const where = {
     ...(status && { status }),
-    ...(search && {
-      OR: [
-        { firstName: { contains: search, mode: "insensitive" as const } },
-        { lastName: { contains: search, mode: "insensitive" as const } },
-        {
-          guardians: {
-            some: {
-              guardian: {
-                OR: [
-                  {
-                    firstName: {
-                      contains: search,
-                      mode: "insensitive" as const,
-                    },
-                  },
-                  {
-                    email: {
-                      contains: search,
-                      mode: "insensitive" as const,
-                    },
-                  },
-                ],
-              },
-            },
-          },
-        },
-      ],
-    }),
+    ...(search && studentSearchWhere(search)),
   };
 
   const [students, total] = await Promise.all([
@@ -65,6 +68,92 @@ export async function listStudents({
   ]);
 
   return { students, total, page, pageSize };
+}
+
+export type StudentDirectoryDataQuery = {
+  query?: string;
+  status?: PersonStatus;
+  school?: string;
+  gradeLevel?: string;
+  sortBy:
+    | "DATE_OF_BIRTH"
+    | "CREATED_AT"
+    | "UPDATED_AT"
+    | "LAST_NAME"
+    | "FIRST_NAME";
+  sortOrder: "ASC" | "DESC";
+  page: number;
+  limit: number;
+};
+
+export async function queryStudentDirectoryData({
+  query,
+  status,
+  school,
+  gradeLevel,
+  sortBy,
+  sortOrder,
+  page,
+  limit,
+}: StudentDirectoryDataQuery) {
+  const matchingWhere: Prisma.StudentWhereInput = {
+    ...(status && { status }),
+    ...(school && {
+      school: { contains: school, mode: "insensitive" as const },
+    }),
+    ...(gradeLevel && {
+      gradeLevel: { contains: gradeLevel, mode: "insensitive" as const },
+    }),
+    ...(query && studentSearchWhere(query)),
+  };
+  const rankedWhere: Prisma.StudentWhereInput =
+    sortBy === "DATE_OF_BIRTH"
+      ? { AND: [matchingWhere, { dob: { not: null } }] }
+      : matchingWhere;
+  const direction = sortOrder === "ASC" ? "asc" : "desc";
+  const orderBy: Prisma.StudentOrderByWithRelationInput[] =
+    sortBy === "DATE_OF_BIRTH"
+      ? [{ dob: direction }, { lastName: "asc" }, { firstName: "asc" }]
+      : sortBy === "CREATED_AT"
+        ? [{ createdAt: direction }, { lastName: "asc" }, { firstName: "asc" }]
+        : sortBy === "UPDATED_AT"
+          ? [{ updatedAt: direction }, { lastName: "asc" }, { firstName: "asc" }]
+          : sortBy === "FIRST_NAME"
+            ? [{ firstName: direction }, { lastName: "asc" }]
+            : [{ lastName: direction }, { firstName: "asc" }];
+
+  const [students, matchingCount, rankedCount] = await Promise.all([
+    prisma.student.findMany({
+      where: rankedWhere,
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        dob: true,
+        school: true,
+        gradeLevel: true,
+        status: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+      orderBy,
+      skip: (page - 1) * limit,
+      take: limit,
+    }),
+    prisma.student.count({ where: matchingWhere }),
+    prisma.student.count({ where: rankedWhere }),
+  ]);
+
+  return {
+    students,
+    matchingCount,
+    rankedCount,
+    missingDateOfBirthCount:
+      sortBy === "DATE_OF_BIRTH" ? matchingCount - rankedCount : 0,
+    page,
+    limit,
+    hasMore: page * limit < rankedCount,
+  };
 }
 
 export async function getStudent(id: string) {

@@ -35,6 +35,11 @@ import {
 import { toast } from "sonner";
 import { archiveAssistantThreadAction } from "@/app/actions/assistant";
 import { AssistantMarkdown } from "./assistant-markdown";
+import {
+  AssistantEntityCard,
+  AssistantResultCards,
+  parseAssistantResultCardValue,
+} from "./assistant-result-card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -459,6 +464,7 @@ function formatPreviewValue(value: unknown): string {
 function confirmationContent(tool: ToolItem) {
   const preview = isRecord(tool.preview) ? tool.preview : {};
   const argumentsValue = isRecord(preview.arguments) ? preview.arguments : {};
+  const card = parseAssistantResultCardValue(preview.card);
 
   return {
     title:
@@ -469,10 +475,16 @@ function confirmationContent(tool: ToolItem) {
       typeof preview.warning === "string"
         ? preview.warning
         : "This action will change CRM data after approval.",
-    details: Object.entries(argumentsValue).map(([key, value]) => ({
-      label: humanizeKey(key),
-      value: formatPreviewValue(value),
-    })),
+    card,
+    details: Object.entries(argumentsValue)
+      .filter(
+        ([key]) =>
+          !card || !/(?:^id$|Id$|Ids$)/.test(key),
+      )
+      .map(([key, value]) => ({
+        label: humanizeKey(key),
+        value: formatPreviewValue(value),
+      })),
   };
 }
 
@@ -533,6 +545,8 @@ function ConfirmationCard({
             </p>
           </div>
         </div>
+
+        {content.card ? <AssistantEntityCard card={content.card} /> : null}
 
         {content.details.length > 0 ? (
           <dl className="grid gap-x-5 gap-y-2 rounded-lg border bg-background/70 p-3 text-xs sm:grid-cols-[minmax(7rem,auto)_1fr]">
@@ -608,7 +622,7 @@ function ToolActivity({
       tool.status === "REJECTED" ||
       tool.status === "EXPIRED",
   );
-  const [activityOpen, setActivityOpen] = useState(hasActive || hasProblem);
+  const [activityOpen, setActivityOpen] = useState(false);
   const completedCount = activity.filter(
     (tool) => tool.status === "COMPLETED",
   ).length;
@@ -631,12 +645,8 @@ function ToolActivity({
       {activity.length > 0 ? (
         <details
           className="group overflow-hidden rounded-lg border bg-muted/25"
-          open={hasActive || hasProblem || activityOpen}
-          onToggle={(event) => {
-            if (!hasActive && !hasProblem) {
-              setActivityOpen(event.currentTarget.open);
-            }
-          }}
+          open={activityOpen}
+          onToggle={(event) => setActivityOpen(event.currentTarget.open)}
         >
           <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted/50 [&::-webkit-details-marker]:hidden">
             <span className="flex min-w-0 items-center gap-2">
@@ -1294,6 +1304,14 @@ export function AssistantShell({
                               />
                             </div>
                           ) : null}
+
+                          <AssistantResultCards
+                            results={turn.tools
+                              .filter((tool) => tool.status === "COMPLETED")
+                              .map((tool) => tool.result)}
+                            disabled={busy || Boolean(decisionToolId)}
+                            onPrompt={(prompt) => void sendMessage(prompt)}
+                          />
 
                           {isLast &&
                           busy &&

@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { GraduationCapIcon } from "lucide-react";
 import { PersonStatus } from "@/generated/prisma";
 import { Badge } from "@/components/ui/badge";
@@ -39,14 +40,36 @@ type StudentRow = {
   }>;
 };
 
-export function StudentsTable({ students }: { students: StudentRow[] }) {
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [dialogOpen, setDialogOpen] = useState(false);
+export function StudentsTable({
+  students,
+  initialStudentId,
+}: {
+  students: StudentRow[];
+  initialStudentId: string | null;
+}) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const [selectedId, setSelectedId] = useState<string | null>(initialStudentId);
   const [isPending, startTransition] = useTransition();
+
+  useEffect(() => {
+    setSelectedId(initialStudentId);
+  }, [initialStudentId]);
+
+  function updateStudentUrl(id: string | null) {
+    const nextSearchParams = new URLSearchParams(searchParams.toString());
+    if (id) nextSearchParams.set("student", id);
+    else nextSearchParams.delete("student");
+    const query = nextSearchParams.toString();
+    router.replace(query ? `${pathname}?${query}` : pathname, {
+      scroll: false,
+    });
+  }
 
   function openStudent(id: string) {
     setSelectedId(id);
-    setDialogOpen(true);
+    updateStudentUrl(id);
   }
 
   return (
@@ -172,8 +195,12 @@ export function StudentsTable({ students }: { students: StudentRow[] }) {
 
       <StudentPopup
         studentId={selectedId}
-        open={dialogOpen}
-        onOpenChange={setDialogOpen}
+        open={Boolean(selectedId)}
+        onOpenChange={(open) => {
+          if (open) return;
+          setSelectedId(null);
+          updateStudentUrl(null);
+        }}
       />
     </>
   );

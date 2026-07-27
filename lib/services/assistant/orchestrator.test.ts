@@ -26,6 +26,7 @@ const dataMocks = vi.hoisted(() => ({
 }));
 
 const executeMock = vi.hoisted(() => vi.fn());
+const confirmationCardMock = vi.hoisted(() => vi.fn());
 
 vi.mock("openai", () => ({
   default: class FakeOpenAI {
@@ -50,6 +51,7 @@ vi.mock("@/lib/data/assistant", () => dataMocks);
 
 vi.mock("@/lib/services/assistant/executor", () => ({
   executeAssistantTool: executeMock,
+  getAssistantConfirmationCard: confirmationCardMock,
 }));
 
 vi.mock("@/lib/services/assistant/tools", async () => {
@@ -83,6 +85,7 @@ describe("assistant orchestration", () => {
     responses.queue.length = 0;
     responses.requests.length = 0;
     process.env.OPENAI_API_KEY = "test-key";
+    confirmationCardMock.mockResolvedValue(undefined);
     dataMocks.createAssistantTurn.mockResolvedValue({
       thread: { id: "thread-1", title: "Test request" },
       run: { id: "run-1", messages: [], toolRuns: [], status: "RUNNING" },
@@ -149,6 +152,14 @@ describe("assistant orchestration", () => {
     );
     expect(responses.requests[0].instructions).toEqual(
       expect.stringContaining("descriptive Markdown links"),
+    );
+    expect(responses.requests[0].instructions).toEqual(
+      expect.stringContaining(
+        "Apply that follow-up behavior across the CRM, not only to students",
+      ),
+    );
+    expect(responses.requests[0].instructions).toEqual(
+      expect.stringContaining("structured card"),
     );
   });
 
@@ -253,6 +264,91 @@ describe("assistant orchestration", () => {
     expect(events.at(-1)?.type).toBe("assistant_completed");
     expect(JSON.stringify(responses.requests[1].input)).not.toContain(
       "parsed_arguments",
+    );
+  });
+
+  it("answers a youngest-student question with one ranked directory call", async () => {
+    const directoryArguments = {
+      sortBy: "DATE_OF_BIRTH",
+      sortOrder: "DESC",
+      page: 1,
+      limit: 1,
+    };
+    responses.queue.push(
+      {
+        events: [],
+        final: {
+          output_text: "",
+          output: [
+            {
+              type: "function_call",
+              namespace: "students",
+              name: "query_student_directory",
+              call_id: "call-youngest",
+              arguments: JSON.stringify(directoryArguments),
+            },
+          ],
+          usage,
+        },
+      },
+      {
+        events: [],
+        final: {
+          output_text:
+            "The youngest student with a recorded birth date is **Maya Chen**, age **9**.",
+          output: [],
+          usage,
+        },
+      },
+    );
+    dataMocks.createOrGetAssistantToolRun.mockResolvedValue({
+      id: "tool-youngest",
+      runId: "run-1",
+      callId: "call-youngest",
+      namespace: "students",
+      toolName: "query_student_directory",
+      arguments: directoryArguments,
+      status: "RUNNING",
+      requiresConfirmation: false,
+    });
+    executeMock.mockResolvedValue({
+      ok: true,
+      data: {
+        matchingStudentCount: 23,
+        rankedStudentCount: 20,
+        missingDateOfBirthCount: 3,
+        students: [
+          {
+            id: "student-1",
+            name: "Maya Chen",
+            dateOfBirth: "2016-09-14",
+            ageYears: 9,
+          },
+        ],
+      },
+    });
+
+    await processAssistantTurn(
+      { id: "admin-1", role: "STAFF" },
+      {
+        clientTurnId: "c7bcb6f9-41e7-4c17-bf0d-3e1b04c8e0d4",
+        message: "Who is the youngest student?",
+      },
+      () => undefined,
+    );
+
+    expect(executeMock).toHaveBeenCalledTimes(1);
+    expect(executeMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        namespace: "students",
+        name: "query_student_directory",
+        argumentsValue: directoryArguments,
+      }),
+    );
+    expect(dataMocks.completeAssistantRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: expect.stringContaining("youngest student"),
+      }),
     );
   });
 
@@ -567,6 +663,17 @@ describe("assistant orchestration", () => {
       status: "PENDING_CONFIRMATION",
       requiresConfirmation: true,
     });
+    const card = {
+      kind: "STUDENT",
+      entityKey: "student:student-1",
+      title: "Maya Thompson",
+      href: "/students?student=student-1",
+      actionLabel: "View Maya's record",
+      badges: [],
+      fields: [],
+      suggestedActions: [],
+    };
+    confirmationCardMock.mockResolvedValue(card);
     const events: Array<Record<string, unknown>> = [];
 
     await processAssistantTurn(
@@ -580,12 +687,18 @@ describe("assistant orchestration", () => {
 
     expect(executeMock).not.toHaveBeenCalled();
     expect(dataMocks.pauseAssistantRun).toHaveBeenCalledTimes(1);
+    expect(dataMocks.createOrGetAssistantToolRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        preview: expect.objectContaining({ card }),
+      }),
+    );
     expect(events.at(-1)).toEqual(
       expect.objectContaining({
         type: "confirmation_required",
         toolRunId: "tool-payment",
         namespace: "billing",
         toolName: "record_payment",
+        preview: expect.objectContaining({ card }),
       }),
     );
   });

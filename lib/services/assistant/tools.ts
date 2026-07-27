@@ -6,6 +6,7 @@ import { idSchema, isoDateTimeSchema, monthSchema } from "@/lib/validators/commo
 import {
   createStudentSchema,
   guardianSchema,
+  studentDirectoryQuerySchema,
   updateStudentSchema,
 } from "@/lib/validators/students";
 import {
@@ -66,8 +67,16 @@ const toolSpecs: AssistantToolSpec[] = [
   {
     namespace: "students",
     name: "search_students",
-    description: "Search students and guardians by name or email. Use before any student mutation when an ID is not already known.",
+    description: "Search students and guardians by name, contact information, or school. Returns compact profile fields and IDs for resolving a person before a mutation. Do not use this tool for directory-wide rankings or superlatives.",
     schema: searchSchema,
+    requiresConfirmation: false,
+  },
+  {
+    namespace: "students",
+    name: "query_student_directory",
+    description:
+      "Query, filter, paginate, and rank the student directory in one call. Use for counts, lists, demographic comparisons, and superlatives such as youngest, oldest, newest, or most recently updated. For youngest use DATE_OF_BIRTH DESC with limit 1; for oldest use DATE_OF_BIRTH ASC with limit 1. Date-of-birth rankings exclude missing DOB values and report how many records were excluded. Do not fetch each student individually.",
+    schema: studentDirectoryQuerySchema,
     requiresConfirmation: false,
   },
   {
@@ -80,7 +89,8 @@ const toolSpecs: AssistantToolSpec[] = [
   {
     namespace: "students",
     name: "create_student",
-    description: "Create one student, optionally with a first guardian. Collect all required guardian fields before calling.",
+    description:
+      "Create one student, optionally with a first guardian. A guardian is optional and must not block creating the student; if guardian details were requested, collect every required guardian field before calling, otherwise offer guardian setup as a next step after creation.",
     schema: createStudentSchema,
     requiresConfirmation: false,
   },
@@ -613,7 +623,8 @@ export function getAssistantOpenAITools(
   }
 
   const descriptions: Record<string, string> = {
-    students: "Student profile lookup and lifecycle management.",
+    students:
+      "Student directory search, demographic ranking, profile lookup, and lifecycle management.",
     guardians: "Guardian records linked to students.",
     tutors: "Tutor profiles, subject assignments, and payroll lookup.",
     catalog: "Subjects and educational package offerings.",

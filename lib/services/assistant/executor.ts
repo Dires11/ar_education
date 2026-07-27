@@ -9,6 +9,7 @@ import { listPackages, getPackage } from "@/lib/data/packages";
 import { listEnrollments, getEnrollment } from "@/lib/data/enrollments";
 import { listGroups } from "@/lib/data/groups";
 import { listPayments } from "@/lib/data/payments";
+import { getSession as getSessionData } from "@/lib/data/sessions";
 import {
   createStudentWithGuardian,
   updateStudentProfile,
@@ -18,6 +19,7 @@ import {
   addGuardianToStudent,
   updateGuardianDetails,
   removeGuardianFromStudent,
+  queryStudentDirectory,
 } from "@/lib/services/students";
 import {
   createTutorWithSubjects,
@@ -90,6 +92,10 @@ import {
   type AssistantToolSpec,
 } from "@/lib/services/assistant/tools";
 import { minimizeAssistantDto } from "@/lib/services/assistant/dto";
+import { getConfiguredCenterTimeZone } from "@/lib/services/session-dates";
+import { formatCalendarDate, formatDateTime } from "@/lib/utils/dates";
+import { getInstantCalendarDateKey } from "@/lib/utils/time-zone";
+import type { AssistantResultCard } from "@/lib/validators/assistant";
 
 type ToolArguments = Record<string, unknown>;
 
@@ -101,8 +107,17 @@ function safeJson<T>(value: T) {
   return JSON.parse(JSON.stringify(value)) as unknown;
 }
 
-function toolResult(data: unknown, href?: string) {
-  return safeJson({ ok: true, data: minimizeAssistantDto(safeJson(data)), href });
+function toolResult(
+  data: unknown,
+  href?: string,
+  card?: AssistantResultCard,
+) {
+  return safeJson({
+    ok: true,
+    data: minimizeAssistantDto(safeJson(data)),
+    href,
+    card,
+  });
 }
 
 function requireRecord(value: unknown): ToolArguments {
@@ -124,6 +139,573 @@ function dateValue(value: unknown) {
   return new Date(z.iso.datetime().parse(value));
 }
 
+function ageInYears(dateOfBirth: Date, todayKey: string) {
+  const [todayYear, todayMonth, todayDay] = todayKey.split("-").map(Number);
+  const birthYear = dateOfBirth.getUTCFullYear();
+  const birthMonth = dateOfBirth.getUTCMonth() + 1;
+  const birthDay = dateOfBirth.getUTCDate();
+  const birthdayHasPassed =
+    todayMonth > birthMonth ||
+    (todayMonth === birthMonth && todayDay >= birthDay);
+  return todayYear - birthYear - (birthdayHasPassed ? 0 : 1);
+}
+
+function titleCase(value: string) {
+  return value
+    .toLowerCase()
+    .replaceAll("_", " ")
+    .replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
+function formatMoney(value: unknown) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return String(value);
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+  }).format(amount);
+}
+
+type StudentCardSource = {
+  id: string;
+  firstName: string;
+  lastName: string;
+  avatarUrl?: string | null;
+  createdAt: Date;
+  status: string;
+  dob?: Date | null;
+  school?: string | null;
+  gradeLevel?: string | null;
+  guardians?: Array<{
+    isPrimary?: boolean;
+    guardian: { firstName: string; lastName: string };
+  }>;
+  enrollments?: Array<{ status: string }>;
+};
+
+function studentResultCard(
+  student: StudentCardSource,
+  subtitle: string,
+): AssistantResultCard {
+  const fullName = `${student.firstName} ${student.lastName}`;
+  const todayKey = getInstantCalendarDateKey(
+    new Date(),
+    getConfiguredCenterTimeZone(),
+  );
+  const age = student.dob ? ageInYears(student.dob, todayKey) : null;
+  const primaryGuardian =
+    student.guardians?.find((item) => item.isPrimary)?.guardian ??
+    student.guardians?.[0]?.guardian;
+  const hasActiveEnrollment = student.enrollments?.some(
+    (enrollment) => enrollment.status === "ACTIVE",
+  );
+  const suggestedActions: AssistantResultCard["suggestedActions"] = [];
+
+  if (!primaryGuardian) {
+    suggestedActions.push({
+      kind: "PROMPT",
+      label: "Add guardian",
+      prompt: `Add a guardian for ${fullName}.`,
+    });
+  }
+  if (!hasActiveEnrollment) {
+    suggestedActions.push({
+      kind: "PROMPT",
+      label: "Enroll in a package",
+      prompt: `Enroll ${fullName} in a package.`,
+    });
+  }
+  suggestedActions.push({ kind: "DISMISS", label: "Done for now" });
+
+  return {
+    kind: "STUDENT",
+    entityKey: `student:${student.id}`,
+    title: fullName,
+    subtitle,
+    avatar: {
+      kind: "STUDENT",
+      firstName: student.firstName,
+      lastName: student.lastName,
+      avatarUrl: student.avatarUrl ?? null,
+    },
+    badges: [
+      {
+        label: titleCase(student.status),
+        tone:
+          student.status === "ACTIVE"
+            ? "SUCCESS"
+            : student.status === "PAUSED"
+              ? "WARNING"
+              : "NEUTRAL",
+      },
+      ...(age === null
+        ? []
+        : [
+            {
+              label: `${age} years old`,
+              tone: "NEUTRAL" as const,
+            },
+            {
+              label: age < 18 ? "Minor student" : "Adult student",
+              tone: "NEUTRAL" as const,
+            },
+          ]),
+    ],
+    fields: [
+      ...(student.dob
+        ? [
+            {
+              label: "Date of birth",
+              value: formatCalendarDate(student.dob),
+              icon: "CALENDAR" as const,
+            },
+          ]
+        : []),
+      {
+        label: "Guardian",
+        value: primaryGuardian
+          ? `${primaryGuardian.firstName} ${primaryGuardian.lastName}`
+          : "No guardian added",
+        icon: "GUARDIAN",
+      },
+      ...(student.school
+        ? [
+            {
+              label: "School",
+              value: student.school,
+              icon: "GRADUATION" as const,
+            },
+          ]
+        : []),
+      ...(student.gradeLevel
+        ? [
+            {
+              label: "Grade",
+              value: student.gradeLevel,
+              icon: "BOOK" as const,
+            },
+          ]
+        : []),
+    ],
+    href: `/students?student=${student.id}`,
+    actionLabel: `View ${student.firstName}'s record`,
+    suggestedActions: suggestedActions.slice(0, 3),
+  };
+}
+
+type TutorCardSource = {
+  id: string;
+  firstName: string;
+  lastName: string;
+  avatarUrl?: string | null;
+  status: string;
+  email: string;
+  phone: string;
+  hourlyRate: { toString(): string } | string | number;
+  subjects?: Array<{ subject: { name: string } }>;
+};
+
+function tutorResultCard(
+  tutor: TutorCardSource,
+  subtitle: string,
+): AssistantResultCard {
+  const fullName = `${tutor.firstName} ${tutor.lastName}`;
+  const hasSubjects = Boolean(tutor.subjects?.length);
+  const suggestedActions: AssistantResultCard["suggestedActions"] = [];
+  if (!hasSubjects) {
+    suggestedActions.push({
+      kind: "PROMPT",
+      label: "Assign subjects",
+      prompt: `Assign subjects to tutor ${fullName}.`,
+    });
+  }
+  suggestedActions.push(
+    {
+      kind: "PROMPT",
+      label: "Create enrollment",
+      prompt: `Create an enrollment with tutor ${fullName}.`,
+    },
+    { kind: "DISMISS", label: "Done for now" },
+  );
+
+  return {
+    kind: "TUTOR",
+    entityKey: `tutor:${tutor.id}`,
+    title: fullName,
+    subtitle,
+    avatar: {
+      kind: "TUTOR",
+      firstName: tutor.firstName,
+      lastName: tutor.lastName,
+      avatarUrl: tutor.avatarUrl ?? null,
+    },
+    badges: [
+      {
+        label: titleCase(tutor.status),
+        tone: tutor.status === "ACTIVE" ? "SUCCESS" : "NEUTRAL",
+      },
+      ...(hasSubjects
+        ? [
+            {
+              label: `${tutor.subjects!.length} ${
+                tutor.subjects!.length === 1 ? "subject" : "subjects"
+              }`,
+              tone: "NEUTRAL" as const,
+            },
+          ]
+        : []),
+    ],
+    fields: [
+      { label: "Email", value: tutor.email, icon: "MAIL" },
+      { label: "Phone", value: tutor.phone, icon: "PHONE" },
+      {
+        label: "Hourly rate",
+        value: `${formatMoney(tutor.hourlyRate.toString())}/hr`,
+        icon: "MONEY",
+      },
+      ...(hasSubjects
+        ? [
+            {
+              label: "Subjects",
+              value: tutor
+                .subjects!.map((item) => item.subject.name)
+                .join(", "),
+              icon: "BOOK" as const,
+            },
+          ]
+        : []),
+    ],
+    href: `/tutors/${tutor.id}`,
+    actionLabel: `View ${tutor.firstName}'s record`,
+    suggestedActions: suggestedActions.slice(0, 3),
+  };
+}
+
+type PackageCardSource = {
+  id: string;
+  name: string;
+  type: string;
+  lessonType: string;
+  basePrice: { toString(): string } | string | number;
+  durationMinutes: number;
+  sessionsPerWeek?: number | null;
+  isActive?: boolean;
+  subject?: { name: string } | null;
+};
+
+function packageResultCard(
+  pkg: PackageCardSource,
+  subtitle: string,
+): AssistantResultCard {
+  return {
+    kind: "PACKAGE",
+    entityKey: `package:${pkg.id}`,
+    title: pkg.name,
+    subtitle,
+    badges: [
+      {
+        label: pkg.isActive === false ? "Inactive" : "Active",
+        tone: pkg.isActive === false ? "NEUTRAL" : "SUCCESS",
+      },
+      { label: titleCase(pkg.lessonType), tone: "NEUTRAL" },
+    ],
+    fields: [
+      { label: "Price", value: formatMoney(pkg.basePrice.toString()), icon: "MONEY" },
+      {
+        label: "Duration",
+        value: `${pkg.durationMinutes} minutes`,
+        icon: "CLOCK",
+      },
+      {
+        label: "Billing",
+        value: titleCase(pkg.type),
+        icon: "PAYMENT",
+      },
+      ...(pkg.subject
+        ? [
+            {
+              label: "Subject",
+              value: pkg.subject.name,
+              icon: "BOOK" as const,
+            },
+          ]
+        : []),
+    ],
+    href: `/packages/${pkg.id}/edit`,
+    actionLabel: "View package",
+    suggestedActions: [
+      {
+        kind: "PROMPT",
+        label: "Create enrollment",
+        prompt: `Create a student enrollment using the ${pkg.name} package.`,
+      },
+      { kind: "DISMISS", label: "Done for now" },
+    ],
+  };
+}
+
+type EnrollmentCardSource = NonNullable<
+  Awaited<ReturnType<typeof getEnrollment>>
+>;
+
+function enrollmentResultCard(
+  enrollment: EnrollmentCardSource,
+  subtitle: string,
+): AssistantResultCard {
+  const studentName = `${enrollment.student.firstName} ${enrollment.student.lastName}`;
+  return {
+    kind: "ENROLLMENT",
+    entityKey: `enrollment:${enrollment.id}`,
+    title: `${studentName} · ${enrollment.subject.name}`,
+    subtitle,
+    avatar: {
+      kind: "STUDENT",
+      firstName: enrollment.student.firstName,
+      lastName: enrollment.student.lastName,
+      avatarUrl: enrollment.student.avatarUrl,
+    },
+    badges: [
+      {
+        label: titleCase(enrollment.status),
+        tone: enrollment.status === "ACTIVE" ? "SUCCESS" : "NEUTRAL",
+      },
+      { label: titleCase(enrollment.package.lessonType), tone: "NEUTRAL" },
+    ],
+    fields: [
+      { label: "Package", value: enrollment.package.name, icon: "PACKAGE" },
+      {
+        label: "Tutor",
+        value: `${enrollment.tutor.firstName} ${enrollment.tutor.lastName}`,
+        icon: "USER",
+      },
+      {
+        label: "Starts",
+        value: formatCalendarDate(enrollment.startDate),
+        icon: "CALENDAR",
+      },
+      {
+        label: "Price",
+        value: formatMoney(
+          enrollment.customPriceOverride ?? enrollment.priceAtEnrollment,
+        ),
+        icon: "MONEY",
+      },
+    ],
+    href: `/enrollments?enrollment=${enrollment.id}`,
+    actionLabel: "View enrollment",
+    suggestedActions: [
+      {
+        kind: "PROMPT",
+        label: "Build schedule",
+        prompt: `Create a schedule for ${studentName}'s ${enrollment.subject.name} enrollment.`,
+      },
+      {
+        kind: "PROMPT",
+        label: "Record payment",
+        prompt: `Record a payment for ${studentName}'s ${enrollment.subject.name} enrollment.`,
+      },
+      { kind: "DISMISS", label: "Done for now" },
+    ],
+  };
+}
+
+function sessionResultCard(
+  session: { id: string; scheduledFor: Date; durationMinutes: number; room?: string | null },
+  subtitle: string,
+): AssistantResultCard {
+  return {
+    kind: "SESSION",
+    entityKey: `session:${session.id}`,
+    title: "Scheduled session",
+    subtitle,
+    badges: [{ label: "Scheduled", tone: "SUCCESS" }],
+    fields: [
+      {
+        label: "Date & time",
+        value: formatDateTime(session.scheduledFor),
+        icon: "CALENDAR",
+      },
+      {
+        label: "Duration",
+        value: `${session.durationMinutes} minutes`,
+        icon: "CLOCK",
+      },
+      ...(session.room
+        ? [{ label: "Room", value: session.room, icon: "LOCATION" as const }]
+        : []),
+    ],
+    href: "/schedule",
+    actionLabel: "View schedule",
+    suggestedActions: [
+      {
+        kind: "PROMPT",
+        label: "Schedule another",
+        prompt: "Schedule another session like this one.",
+      },
+      { kind: "DISMISS", label: "Done for now" },
+    ],
+  };
+}
+
+function paymentResultCard(
+  payment: {
+    id: string;
+    amount: { toString(): string } | string | number;
+    method: string;
+    paidAt: Date;
+    coversMonth?: string | null;
+  },
+  student: StudentCardSource,
+): AssistantResultCard {
+  const fullName = `${student.firstName} ${student.lastName}`;
+  return {
+    kind: "PAYMENT",
+    entityKey: `payment:${payment.id}`,
+    title: `${fullName} payment`,
+    subtitle: "Payment recorded",
+    avatar: {
+      kind: "STUDENT",
+      firstName: student.firstName,
+      lastName: student.lastName,
+      avatarUrl: student.avatarUrl ?? null,
+    },
+    badges: [{ label: "Recorded", tone: "SUCCESS" }],
+    fields: [
+      {
+        label: "Amount",
+        value: formatMoney(payment.amount.toString()),
+        icon: "MONEY",
+      },
+      {
+        label: "Method",
+        value: titleCase(payment.method),
+        icon: "PAYMENT",
+      },
+      {
+        label: "Paid on",
+        value: formatCalendarDate(payment.paidAt),
+        icon: "CALENDAR",
+      },
+      ...(payment.coversMonth
+        ? [
+            {
+              label: "Covers",
+              value: payment.coversMonth,
+              icon: "STATUS" as const,
+            },
+          ]
+        : []),
+    ],
+    href: "/payments",
+    actionLabel: "View payments",
+    suggestedActions: [{ kind: "DISMISS", label: "Done for now" }],
+  };
+}
+
+export async function getAssistantConfirmationCard(input: {
+  namespace: string;
+  name: string;
+  argumentsValue: Record<string, unknown>;
+}): Promise<AssistantResultCard | undefined> {
+  const { namespace, name, argumentsValue } = input;
+  const value = (key: string) =>
+    typeof argumentsValue[key] === "string"
+      ? (argumentsValue[key] as string)
+      : undefined;
+
+  if (namespace === "students") {
+    const studentId = value("id");
+    if (!studentId) return undefined;
+    const student = await getStudentData(studentId);
+    if (!student) return undefined;
+    const subtitle =
+      name === "delete_student"
+        ? "Student selected for permanent deletion"
+        : name === "archive_student"
+          ? "Student selected for archiving"
+          : "Student affected by this change";
+    return studentResultCard(student, subtitle);
+  }
+
+  if (namespace === "guardians") {
+    const studentId = value("studentId");
+    if (!studentId) return undefined;
+    const student = await getStudentData(studentId);
+    return student
+      ? studentResultCard(student, "Guardian relationship affected")
+      : undefined;
+  }
+
+  if (namespace === "tutors") {
+    const tutorId = value("id");
+    if (!tutorId) return undefined;
+    const tutor = await getTutorData(tutorId);
+    return tutor
+      ? tutorResultCard(tutor, "Tutor selected for archiving")
+      : undefined;
+  }
+
+  if (namespace === "catalog" && name === "set_package_active") {
+    const packageId = value("id");
+    if (!packageId) return undefined;
+    const pkg = await getPackage(packageId);
+    return pkg
+      ? packageResultCard(pkg, "Package affected by this change")
+      : undefined;
+  }
+
+  if (namespace === "enrollments") {
+    const enrollmentId = value("id") ?? value("enrollmentId");
+    if (!enrollmentId) return undefined;
+    const enrollment = await getEnrollment(enrollmentId);
+    return enrollment
+      ? enrollmentResultCard(enrollment, "Enrollment affected by this change")
+      : undefined;
+  }
+
+  if (namespace === "schedule") {
+    const sessionId = value("sessionId");
+    if (!sessionId) return undefined;
+    const session = await getSessionData(sessionId);
+    return session
+      ? sessionResultCard(session, "Session affected by this change")
+      : undefined;
+  }
+
+  if (namespace === "billing") {
+    const studentId = value("studentId");
+    if (!studentId) return undefined;
+    const student = await getStudentData(studentId);
+    return student
+      ? studentResultCard(student, "Payment action for this student")
+      : undefined;
+  }
+
+  if (namespace === "recurrence") {
+    const enrollmentId = value("enrollmentId");
+    if (!enrollmentId) return undefined;
+    const enrollment = await getEnrollment(enrollmentId);
+    return enrollment
+      ? enrollmentResultCard(enrollment, "Recurring schedule affected")
+      : undefined;
+  }
+
+  if (namespace === "communications") {
+    const studentIds = Array.isArray(argumentsValue.studentIds)
+      ? argumentsValue.studentIds.filter(
+          (item): item is string => typeof item === "string",
+        )
+      : [];
+    if (studentIds.length !== 1) return undefined;
+    const student = await getStudentData(studentIds[0]);
+    return student
+      ? studentResultCard(student, "Email recipient")
+      : undefined;
+  }
+
+  return undefined;
+}
+
 async function executeStudents(name: string, args: ToolArguments) {
   switch (name) {
     case "search_students": {
@@ -140,6 +722,11 @@ async function executeStudents(name: string, args: ToolArguments) {
           status: student.status,
           email: student.email,
           phone: student.phone,
+          dateOfBirth: student.dob?.toISOString().slice(0, 10) ?? null,
+          school: student.school,
+          gradeLevel: student.gradeLevel,
+          createdAt: student.createdAt,
+          updatedAt: student.updatedAt,
           primaryGuardian: student.guardians[0]
             ? {
                 id: student.guardians[0].guardian.id,
@@ -152,17 +739,63 @@ async function executeStudents(name: string, args: ToolArguments) {
         })),
       });
     }
+    case "query_student_directory": {
+      const result = await queryStudentDirectory(
+        args as Parameters<typeof queryStudentDirectory>[0],
+      );
+      const todayKey = getInstantCalendarDateKey(
+        new Date(),
+        getConfiguredCenterTimeZone(),
+      );
+      return toolResult(
+        {
+          matchingStudentCount: result.matchingCount,
+          rankedStudentCount: result.rankedCount,
+          missingDateOfBirthCount: result.missingDateOfBirthCount,
+          page: result.page,
+          limit: result.limit,
+          hasMore: result.hasMore,
+          sortBy: args.sortBy,
+          sortOrder: args.sortOrder,
+          students: result.students.map((student) => ({
+            id: student.id,
+            name: `${student.firstName} ${student.lastName}`,
+            status: student.status,
+            dateOfBirth: student.dob?.toISOString().slice(0, 10) ?? null,
+            ageYears: student.dob
+              ? ageInYears(student.dob, todayKey)
+              : null,
+            school: student.school,
+            gradeLevel: student.gradeLevel,
+            createdAt: student.createdAt,
+            updatedAt: student.updatedAt,
+            href: `/students?student=${student.id}`,
+          })),
+        },
+        "/students",
+      );
+    }
     case "get_student": {
       const id = stringValue(args, "id");
       const student = await getStudentData(id);
       if (!student) throw new Error("Student not found");
-      return toolResult(student, `/students?student=${id}`);
+      return toolResult(
+        student,
+        `/students?student=${id}`,
+        studentResultCard(student, "Student record"),
+      );
     }
     case "create_student": {
-      const student = await createStudentWithGuardian(args as never);
+      const created = await createStudentWithGuardian(args as never);
+      const student = await getStudentData(created.id);
+      if (!student) throw new Error("Created student could not be loaded");
       return toolResult(
         { id: student.id, name: `${student.firstName} ${student.lastName}` },
         `/students?student=${student.id}`,
+        studentResultCard(
+          student,
+          `Student created ${formatCalendarDate(student.createdAt)}`,
+        ),
       );
     }
     case "update_student": {
@@ -188,14 +821,26 @@ async function executeStudents(name: string, args: ToolArguments) {
           (args.gradeLevel as string | undefined) ?? current.gradeLevel ?? "",
         notes: (args.notes as string | undefined) ?? current.notes ?? "",
       });
-      return toolResult({ id: updated.id }, `/students?student=${id}`);
+      const student = await getStudentData(updated.id);
+      if (!student) throw new Error("Updated student could not be loaded");
+      return toolResult(
+        { id: updated.id },
+        `/students?student=${id}`,
+        studentResultCard(student, "Student details updated"),
+      );
     }
     case "set_student_status": {
       const updated = await updateStudentStatusById(
         stringValue(args, "id"),
         z.enum(["ACTIVE", "PAUSED", "INACTIVE"]).parse(args.status),
       );
-      return toolResult({ id: updated.id, status: updated.status }, `/students`);
+      const student = await getStudentData(updated.id);
+      if (!student) throw new Error("Updated student could not be loaded");
+      return toolResult(
+        { id: updated.id, status: updated.status },
+        `/students?student=${updated.id}`,
+        studentResultCard(student, "Student status updated"),
+      );
     }
     case "archive_student": {
       const updated = await archiveStudentById(stringValue(args, "id"));
@@ -217,7 +862,13 @@ async function executeGuardians(name: string, args: ToolArguments) {
       const guardian = { ...args };
       delete guardian.studentId;
       const created = await addGuardianToStudent(studentId, guardian as never);
-      return toolResult({ id: created.id, studentId }, `/students?student=${studentId}`);
+      const student = await getStudentData(studentId);
+      if (!student) throw new Error("Student not found");
+      return toolResult(
+        { id: created.id, studentId },
+        `/students?student=${studentId}`,
+        studentResultCard(student, "Guardian added"),
+      );
     }
     case "update_guardian": {
       const guardianId = stringValue(args, "guardianId");
@@ -229,7 +880,13 @@ async function executeGuardians(name: string, args: ToolArguments) {
         studentId,
         guardian as never,
       );
-      return toolResult({ id: updated.id, studentId }, `/students?student=${studentId}`);
+      const student = await getStudentData(studentId);
+      if (!student) throw new Error("Student not found");
+      return toolResult(
+        { id: updated.id, studentId },
+        `/students?student=${studentId}`,
+        studentResultCard(student, "Guardian details updated"),
+      );
     }
     case "remove_guardian": {
       const guardianId = stringValue(args, "guardianId");
@@ -271,13 +928,20 @@ async function executeTutors(name: string, args: ToolArguments) {
       const id = stringValue(args, "id");
       const tutor = await getTutorData(id);
       if (!tutor) throw new Error("Tutor not found");
-      return toolResult(tutor, `/tutors/${id}`);
+      return toolResult(
+        tutor,
+        `/tutors/${id}`,
+        tutorResultCard(tutor, "Tutor record"),
+      );
     }
     case "create_tutor": {
-      const tutor = await createTutorWithSubjects(args as never);
+      const created = await createTutorWithSubjects(args as never);
+      const tutor = await getTutorData(created.id);
+      if (!tutor) throw new Error("Created tutor could not be loaded");
       return toolResult(
         { id: tutor.id, name: `${tutor.firstName} ${tutor.lastName}` },
         `/tutors/${tutor.id}`,
+        tutorResultCard(tutor, "Tutor created"),
       );
     }
     case "update_tutor": {
@@ -298,12 +962,24 @@ async function executeTutors(name: string, args: ToolArguments) {
           (args.hourlyRate as string | undefined) ?? current.hourlyRate.toString(),
         notes: (args.notes as string | undefined) ?? current.notes ?? "",
       });
-      return toolResult({ id: updated.id }, `/tutors/${id}`);
+      const tutor = await getTutorData(updated.id);
+      if (!tutor) throw new Error("Updated tutor could not be loaded");
+      return toolResult(
+        { id: updated.id },
+        `/tutors/${id}`,
+        tutorResultCard(tutor, "Tutor details updated"),
+      );
     }
     case "set_tutor_subjects": {
       const id = stringValue(args, "id");
       await updateTutorSubjectsList(id, z.array(z.string()).parse(args.subjectIds));
-      return toolResult({ id, subjectIds: args.subjectIds }, `/tutors/${id}`);
+      const tutor = await getTutorData(id);
+      if (!tutor) throw new Error("Tutor not found");
+      return toolResult(
+        { id, subjectIds: args.subjectIds },
+        `/tutors/${id}`,
+        tutorResultCard(tutor, "Tutor subjects updated"),
+      );
     }
     case "archive_tutor": {
       const tutor = await archiveTutorById(stringValue(args, "id"));
@@ -353,11 +1029,21 @@ async function executeCatalog(name: string, args: ToolArguments) {
       const id = stringValue(args, "id");
       const pkg = await getPackage(id);
       if (!pkg) throw new Error("Package not found");
-      return toolResult(pkg, `/packages/${id}/edit`);
+      return toolResult(
+        pkg,
+        `/packages/${id}/edit`,
+        packageResultCard(pkg, "Package details"),
+      );
     }
     case "create_package": {
-      const pkg = await createPackageOffering(args as never);
-      return toolResult(pkg, `/packages/${pkg.id}/edit`);
+      const created = await createPackageOffering(args as never);
+      const pkg = await getPackage(created.id);
+      if (!pkg) throw new Error("Created package could not be loaded");
+      return toolResult(
+        pkg,
+        `/packages/${pkg.id}/edit`,
+        packageResultCard(pkg, "Package created"),
+      );
     }
     case "update_package": {
       const id = stringValue(args, "id");
@@ -390,14 +1076,29 @@ async function executeCatalog(name: string, args: ToolArguments) {
           (args.durationMinutes as string | undefined) ??
           current.durationMinutes.toString(),
       });
-      return toolResult(updated, `/packages/${id}/edit`);
+      const pkg = await getPackage(updated.id);
+      if (!pkg) throw new Error("Updated package could not be loaded");
+      return toolResult(
+        pkg,
+        `/packages/${id}/edit`,
+        packageResultCard(pkg, "Package updated"),
+      );
     }
     case "set_package_active": {
       const updated = await setPackageActive(
         stringValue(args, "id"),
         z.boolean().parse(args.isActive),
       );
-      return toolResult(updated, "/packages");
+      const pkg = await getPackage(updated.id);
+      if (!pkg) throw new Error("Updated package could not be loaded");
+      return toolResult(
+        pkg,
+        `/packages/${pkg.id}/edit`,
+        packageResultCard(
+          pkg,
+          pkg.isActive ? "Package activated" : "Package deactivated",
+        ),
+      );
     }
     default:
       throw new Error(`Unknown catalog tool: ${name}`);
@@ -419,11 +1120,21 @@ async function executeEnrollments(name: string, args: ToolArguments) {
       const id = stringValue(args, "id");
       const enrollment = await getEnrollment(id);
       if (!enrollment) throw new Error("Enrollment not found");
-      return toolResult(enrollment, `/enrollments?enrollment=${id}`);
+      return toolResult(
+        enrollment,
+        `/enrollments?enrollment=${id}`,
+        enrollmentResultCard(enrollment, "Enrollment details"),
+      );
     }
     case "create_enrollment": {
-      const enrollment = await createEnrollmentForStudent(args as never);
-      return toolResult(enrollment, `/enrollments?enrollment=${enrollment.id}`);
+      const created = await createEnrollmentForStudent(args as never);
+      const enrollment = await getEnrollment(created.id);
+      if (!enrollment) throw new Error("Created enrollment could not be loaded");
+      return toolResult(
+        enrollment,
+        `/enrollments?enrollment=${enrollment.id}`,
+        enrollmentResultCard(enrollment, "Enrollment created"),
+      );
     }
     case "update_enrollment": {
       const id = stringValue(args, "id");
@@ -432,7 +1143,13 @@ async function executeEnrollments(name: string, args: ToolArguments) {
         status: args.status as never,
         customPriceOverride: args.customPriceOverride as string | undefined,
       });
-      return toolResult(updated, `/enrollments?enrollment=${id}`);
+      const enrollment = await getEnrollment(updated.id);
+      if (!enrollment) throw new Error("Updated enrollment could not be loaded");
+      return toolResult(
+        enrollment,
+        `/enrollments?enrollment=${id}`,
+        enrollmentResultCard(enrollment, "Enrollment updated"),
+      );
     }
     case "add_discount": {
       const enrollmentId = stringValue(args, "enrollmentId");
@@ -442,7 +1159,13 @@ async function executeEnrollments(name: string, args: ToolArguments) {
         enrollmentId,
         discount as never,
       );
-      return toolResult(created, `/enrollments?enrollment=${enrollmentId}`);
+      const enrollment = await getEnrollment(enrollmentId);
+      if (!enrollment) throw new Error("Enrollment not found");
+      return toolResult(
+        created,
+        `/enrollments?enrollment=${enrollmentId}`,
+        enrollmentResultCard(enrollment, "Discount added"),
+      );
     }
     case "remove_discount": {
       const discountId = stringValue(args, "discountId");
@@ -477,7 +1200,11 @@ async function executeSchedule(name: string, args: ToolArguments) {
       return toolResult(await getMonthSchedule(stringValue(args, "month")), "/schedule");
     case "create_one_time_session": {
       const session = await createAdHocSession(args as never);
-      return toolResult(session, "/schedule");
+      return toolResult(
+        session,
+        "/schedule",
+        sessionResultCard(session, "One-time session created"),
+      );
     }
     case "update_session": {
       const sessionId = stringValue(args, "sessionId");
@@ -489,7 +1216,11 @@ async function executeSchedule(name: string, args: ToolArguments) {
         ...rest,
         scheduledFor: scheduledFor ? new Date(String(scheduledFor)) : undefined,
       } as never);
-      return toolResult(updated, "/schedule");
+      return toolResult(
+        updated,
+        "/schedule",
+        sessionResultCard(updated, "Session updated"),
+      );
     }
     case "mark_attendance": {
       const sessionId = stringValue(args, "sessionId");
@@ -596,11 +1327,23 @@ async function executeBilling(
       return toolResult(await getPaymentStats(), "/payments");
     case "record_payment": {
       const payment = await recordPayment(args as never, adminId);
-      return toolResult(payment, "/payments");
+      const student = await getStudentData(stringValue(args, "studentId"));
+      if (!student) throw new Error("Student not found");
+      return toolResult(
+        payment,
+        "/payments",
+        paymentResultCard(payment, student),
+      );
     }
     case "mark_due_paid": {
       const payment = await recordPaymentForDue(args, adminId);
-      return toolResult(payment, "/payments");
+      const student = await getStudentData(stringValue(args, "studentId"));
+      if (!student) throw new Error("Student not found");
+      return toolResult(
+        payment,
+        "/payments",
+        paymentResultCard(payment, student),
+      );
     }
     case "delete_payment": {
       const paymentId = stringValue(args, "paymentId");

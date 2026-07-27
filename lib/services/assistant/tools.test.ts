@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { assistantTurnSchema } from "@/lib/validators/assistant";
+import {
+  assistantResultCardSchema,
+  assistantTurnSchema,
+} from "@/lib/validators/assistant";
 import {
   assistantToolRequiresConfirmation,
   getAssistantNamespaceCounts,
@@ -93,6 +96,29 @@ describe("assistant tool registry", () => {
       }),
     ).toBe(true);
   });
+
+  it("provides one bounded student-directory tool for rankings", () => {
+    const directoryQuery = getAssistantToolSpec(
+      "students",
+      "query_student_directory",
+      "STAFF",
+    )!;
+
+    expect(
+      directoryQuery.schema.parse({
+        sortBy: "DATE_OF_BIRTH",
+        sortOrder: "DESC",
+        limit: 1,
+      }),
+    ).toEqual({
+      sortBy: "DATE_OF_BIRTH",
+      sortOrder: "DESC",
+      page: 1,
+      limit: 1,
+    });
+    expect(directoryQuery.description).toContain("youngest");
+    expect(assistantToolRequiresConfirmation(directoryQuery, {})).toBe(false);
+  });
 });
 
 describe("assistant request validation", () => {
@@ -137,6 +163,38 @@ describe("assistant request validation", () => {
             dataBase64: "aGVsbG8=",
           },
         ],
+      }),
+    ).toThrow();
+  });
+
+  it("accepts typed internal result cards and rejects external record links", () => {
+    const card = {
+      kind: "STUDENT",
+      entityKey: "student:student-1",
+      title: "Maya Thompson",
+      href: "/students?student=student-1",
+      actionLabel: "View Maya's record",
+      fields: [
+        {
+          label: "Guardian",
+          value: "No guardian added",
+          icon: "GUARDIAN",
+        },
+      ],
+      suggestedActions: [
+        {
+          kind: "PROMPT",
+          label: "Add guardian",
+          prompt: "Add a guardian for Maya Thompson.",
+        },
+      ],
+    };
+
+    expect(assistantResultCardSchema.parse(card)).toMatchObject(card);
+    expect(() =>
+      assistantResultCardSchema.parse({
+        ...card,
+        href: "https://example.com/students/student-1",
       }),
     ).toThrow();
   });

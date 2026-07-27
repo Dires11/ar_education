@@ -12,11 +12,14 @@ import {
   setGuardianPrimary,
   getStudent,
   getGuardian,
+  queryStudentDirectoryData,
 } from "@/lib/data/students";
 import {
   createStudentSchema,
+  studentDirectoryQuerySchema,
   updateStudentSchema,
   type CreateStudentInput,
+  type StudentDirectoryQueryInput,
   type UpdateStudentInput,
   type GuardianInput,
   guardianSchema,
@@ -54,6 +57,13 @@ export async function createStudentWithGuardian(input: CreateStudentInput) {
     },
     guardianData,
   );
+}
+
+export async function queryStudentDirectory(
+  input: StudentDirectoryQueryInput,
+) {
+  const parsed = studentDirectoryQuerySchema.parse(input);
+  return queryStudentDirectoryData(parsed);
 }
 
 export async function updateStudentProfile(

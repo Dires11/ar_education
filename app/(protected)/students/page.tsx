@@ -11,7 +11,12 @@ import { StudentsTable } from "./components/students-table";
 export default async function StudentsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ search?: string; status?: string; page?: string }>;
+  searchParams: Promise<{
+    search?: string;
+    status?: string;
+    page?: string;
+    student?: string;
+  }>;
 }) {
   const params = await searchParams;
   const search = params.search;
@@ -84,7 +89,10 @@ export default async function StudentsPage({
         <StudentsSearch defaultSearch={search} defaultStatus={status} />
       </section>
 
-      <StudentsTable students={students} />
+      <StudentsTable
+        students={students}
+        initialStudentId={params.student ?? null}
+      />
 
       {totalPages > 1 && (
         <div className="flex items-center justify-between rounded-2xl border bg-card px-4 py-3 text-sm shadow-sm">

@@ -248,7 +248,7 @@ export async function createOrGetAssistantToolRun(input: {
 }) {
   return prisma.assistantToolRun.upsert({
     where: { runId_callId: { runId: input.runId, callId: input.callId } },
-    update: {},
+    update: input.preview ? { preview: input.preview } : {},
     create: {
       runId: input.runId,
       callId: input.callId,
