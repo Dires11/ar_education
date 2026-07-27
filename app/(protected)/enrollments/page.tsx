@@ -1,4 +1,8 @@
-import { listEnrollments, listGroups } from "@/lib/services/enrollments";
+import {
+  getEnrollment,
+  listEnrollments,
+  listGroups,
+} from "@/lib/services/enrollments";
 import { listStudents } from "@/lib/data/students";
 import { listTutors } from "@/lib/data/tutors";
 import { listSubjects } from "@/lib/data/subjects";
@@ -11,20 +15,42 @@ import { ClipboardListIcon, UserCheckIcon, UsersIcon } from "lucide-react";
 import { EnrollmentsTable } from "./components/enrollments-table";
 import { getConfiguredCenterTimeZone } from "@/lib/services/session-dates";
 
-export default async function EnrollmentsPage() {
+export default async function EnrollmentsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ enrollment?: string | string[] }>;
+}) {
+  const requestedEnrollment = (await searchParams).enrollment;
+  const requestedEnrollmentId =
+    typeof requestedEnrollment === "string" ? requestedEnrollment : undefined;
   const centerTimeZone = getConfiguredCenterTimeZone();
-  const [enrollments, studentsData, tutorsData, subjects, packages, groups] =
-    await Promise.all([
+  const [
+    activeEnrollments,
+    selectedEnrollment,
+    studentsData,
+    tutorsData,
+    subjects,
+    packages,
+    groups,
+  ] = await Promise.all([
       listEnrollments({ status: "ACTIVE" }),
+      requestedEnrollmentId
+        ? getEnrollment(requestedEnrollmentId)
+        : Promise.resolve(null),
       listStudents({ status: "ACTIVE", pageSize: 200 }),
       listTutors({ status: "ACTIVE" }),
       listSubjects(),
       listPackages(true),
       listGroups(),
     ]);
+  const enrollments =
+    selectedEnrollment &&
+    !activeEnrollments.some((enrollment) => enrollment.id === selectedEnrollment.id)
+      ? [selectedEnrollment, ...activeEnrollments]
+      : activeEnrollments;
 
   const uniqueStudents = new Set(
-    enrollments.map((e) => e.student.id)
+    activeEnrollments.map((e) => e.student.id)
   ).size;
   const groupOptions = groups.map((g) => ({
     id: g.id,
@@ -49,7 +75,7 @@ export default async function EnrollmentsPage() {
           {
             icon: ClipboardListIcon,
             label: "Active",
-            value: enrollments.length,
+            value: activeEnrollments.length,
           },
           {
             icon: UsersIcon,
@@ -59,7 +85,7 @@ export default async function EnrollmentsPage() {
           {
             icon: UserCheckIcon,
             label: "Tutors Active",
-            value: new Set(enrollments.map((e) => e.tutor.id)).size,
+            value: new Set(activeEnrollments.map((e) => e.tutor.id)).size,
           },
         ]}
         action={
@@ -103,11 +129,12 @@ export default async function EnrollmentsPage() {
             </p>
           </div>
           <Badge variant="outline" className="rounded-full">
-            {enrollments.length} active
+            {activeEnrollments.length} active
           </Badge>
         </div>
         <EnrollmentsTable
           centerTimeZone={centerTimeZone}
+          initialEnrollmentId={selectedEnrollment?.id ?? null}
           enrollments={enrollments.map((enrollment) => ({
             id: enrollment.id,
             status: enrollment.status,

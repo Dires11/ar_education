@@ -17,6 +17,7 @@ import {
   completeAssistantToolRun,
   createAssistantTurn,
   createOrGetAssistantToolRun,
+  expireAssistantRuns,
   failAssistantRun,
   failAssistantToolRun,
   getAssistantContext,
@@ -24,9 +25,11 @@ import {
   getAssistantThread,
   getAssistantToolRunForDecision,
   pauseAssistantRun,
+  recordAssistantModelStep,
   claimAssistantToolRun,
   rejectAssistantToolRun,
   setAssistantThreadSummary,
+  touchAssistantRun,
 } from "@/lib/data/assistant";
 import type {
   AssistantAttachmentInput,
@@ -429,26 +432,21 @@ async function executeRecordedTool(input: {
     namespace: input.toolRun.namespace,
     toolName: input.toolRun.toolName,
   });
+  let result: unknown;
   try {
-    const result = await executeAssistantTool({
+    result = await executeAssistantTool({
       namespace: input.toolRun.namespace,
       name: input.toolRun.toolName,
       argumentsValue: input.toolRun.arguments,
-      context: { admin: input.admin },
+      context: {
+        admin: input.admin,
+        idempotencyKey: input.toolRun.id,
+      },
     });
-    await completeAssistantToolRun(input.toolRun.id, safeJson(result));
-    input.emit({
-      type: "tool_completed",
-      toolRunId: input.toolRun.id,
-      namespace: input.toolRun.namespace,
-      toolName: input.toolRun.toolName,
-      result,
-    });
-    return result;
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Tool execution failed";
-    await failAssistantToolRun(input.toolRun.id, message);
+    await failAssistantToolRun(input.toolRun.id, message).catch(() => undefined);
     const result = { ok: false, error: message };
     input.emit({
       type: "tool_completed",
@@ -459,6 +457,22 @@ async function executeRecordedTool(input: {
     });
     return result;
   }
+
+  try {
+    await completeAssistantToolRun(input.toolRun.id, safeJson(result));
+  } catch {
+    throw new Error(
+      "The action may have completed, but its audit record could not be finalized. Reload before retrying to avoid a duplicate action.",
+    );
+  }
+  input.emit({
+    type: "tool_completed",
+    toolRunId: input.toolRun.id,
+    namespace: input.toolRun.namespace,
+    toolName: input.toolRun.toolName,
+    result,
+  });
+  return result;
 }
 
 async function runModelLoop(input: {
@@ -472,11 +486,11 @@ async function runModelLoop(input: {
 }) {
   const client = getOpenAIClient();
   const tools = getAssistantOpenAITools(input.admin.role);
-  const usage = emptyUsage();
   let responseInput = input.responseInput;
   let assistantContent = input.initialAssistantContent ?? "";
 
-  for (let toolCount = 0; toolCount <= MAX_TOOL_CALLS; toolCount += 1) {
+  while (true) {
+    await touchAssistantRun(input.runId);
     const stream = client.responses.stream({
       model: ASSISTANT_MODEL,
       instructions: assistantInstructions(input.admin),
@@ -491,7 +505,12 @@ async function runModelLoop(input: {
       prompt_cache_key: safetyIdentifier(input.admin.id),
     });
 
+    let lastHeartbeatAt = Date.now();
     for await (const event of stream) {
+      if (Date.now() - lastHeartbeatAt >= 30_000) {
+        await touchAssistantRun(input.runId);
+        lastHeartbeatAt = Date.now();
+      }
       if (event.type === "response.output_text.delta") {
         input.emit({ type: "assistant_delta", delta: event.delta });
       }
@@ -503,7 +522,6 @@ async function runModelLoop(input: {
     }
 
     const response = await stream.finalResponse();
-    if (response.usage) addUsage(usage, response.usage);
     if (response.output_text) {
       assistantContent = [assistantContent, response.output_text]
         .filter(Boolean)
@@ -517,6 +535,17 @@ async function runModelLoop(input: {
     const call = response.output.find(
       (item) => item.type === "function_call",
     );
+    const stepUsage = emptyUsage();
+    if (response.usage) addUsage(stepUsage, response.usage);
+    const modelStep = await recordAssistantModelStep({
+      runId: input.runId,
+      hasToolCall: Boolean(call),
+      maxToolCalls: MAX_TOOL_CALLS,
+      usage: stepUsage,
+    });
+    if (!modelStep.toolCallAllowed) {
+      throw new Error("Assistant tool-call limit reached");
+    }
     if (!call) {
       const content =
         assistantContent.trim() ||
@@ -525,7 +554,6 @@ async function runModelLoop(input: {
         runId: input.runId,
         threadId: input.threadId,
         content,
-        usage,
       });
       await refreshAssistantSummary(client, input.admin, input.threadId).catch(
         () => undefined,
@@ -537,10 +565,6 @@ async function runModelLoop(input: {
         content,
       });
       return;
-    }
-
-    if (toolCount === MAX_TOOL_CALLS) {
-      throw new Error("Assistant tool-call limit reached");
     }
 
     const namespace = call.namespace ?? "";
@@ -594,9 +618,19 @@ async function runModelLoop(input: {
         name: call.name,
         argumentsValue,
       }).catch(() => undefined);
+      if (!card) {
+        responseInput.push(
+          toolOutput(call.call_id, {
+            ok: false,
+            error:
+              "The confirmation target could not be resolved. Look up the exact record and try again.",
+          }),
+        );
+        continue;
+      }
       preview = {
         ...getAssistantToolPreview(spec, argumentsValue),
-        ...(card ? { card } : {}),
+        card,
       };
     }
     const expiresAt = requiresConfirmation
@@ -678,6 +712,17 @@ function replayDuplicate(
       return true;
     }
   }
+  if (created.run.status === "FAILED") {
+    const usedTools = created.run.toolRuns.length > 0;
+    emit({
+      type: "error",
+      message: usedTools
+        ? "This request stopped after using CRM tools, so an action may have completed. Reload before starting a new request."
+        : (created.run.error ??
+          "This request did not complete. Start a new request to try again."),
+    });
+    return true;
+  }
   return false;
 }
 
@@ -740,6 +785,35 @@ export async function processAssistantDecision(
 ) {
   const existing = await getAssistantToolRunForDecision(admin.id, toolRunId);
   if (!existing) throw new Error("Confirmation not found");
+  if (existing.status === "COMPLETED" || existing.status === "REJECTED") {
+    const result =
+      existing.result ??
+      (existing.status === "REJECTED"
+        ? { ok: false, status: "rejected_by_user" }
+        : { ok: true });
+    emit({
+      type: "tool_completed",
+      toolRunId: existing.id,
+      namespace: existing.namespace,
+      toolName: existing.toolName,
+      result,
+    });
+    const message = existing.run.messages.find(
+      (item) => item.role === "ASSISTANT",
+    );
+    if (message) {
+      emit({
+        type: "assistant_completed",
+        runId: existing.run.id,
+        messageId: message.id,
+        content: message.content,
+      });
+      return;
+    }
+    throw new Error(
+      "The decision was already accepted and is still being finalized. Reload in a moment.",
+    );
+  }
   if (existing.run.status !== "WAITING_CONFIRMATION") {
     throw new Error("Confirmation is no longer available");
   }
@@ -797,6 +871,7 @@ export async function getAssistantPageData(
   selectedThreadId?: string,
 ) {
   const { listAssistantThreads } = await import("@/lib/data/assistant");
+  await expireAssistantRuns(adminId);
   const threads = await listAssistantThreads(adminId);
   const selectedId =
     selectedThreadId && threads.some((thread) => thread.id === selectedThreadId)

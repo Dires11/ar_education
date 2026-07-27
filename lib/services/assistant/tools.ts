@@ -5,6 +5,7 @@ import { z } from "zod";
 import { idSchema, isoDateTimeSchema, monthSchema } from "@/lib/validators/common";
 import {
   createStudentSchema,
+  guardianPatchSchema,
   guardianSchema,
   studentDirectoryQuerySchema,
   updateStudentSchema,
@@ -136,7 +137,7 @@ const toolSpecs: AssistantToolSpec[] = [
     namespace: "guardians",
     name: "update_guardian",
     description: "Update selected guardian fields for a known student.",
-    schema: guardianSchema.partial().extend({
+    schema: guardianPatchSchema.extend({
       studentId: idSchema,
       guardianId: idSchema,
     }),
@@ -276,6 +277,7 @@ const toolSpecs: AssistantToolSpec[] = [
       studentId: idSchema.optional(),
       tutorId: idSchema.optional(),
       status: z.enum(["ACTIVE", "PAUSED", "COMPLETED", "CANCELLED"]).optional(),
+      limit: z.number().int().min(1).max(30).default(20),
     }),
     requiresConfirmation: false,
   },
@@ -299,7 +301,9 @@ const toolSpecs: AssistantToolSpec[] = [
     description: "Update enrollment status, end date, or price override.",
     schema: updateEnrollmentSchema.extend({ id: idSchema }),
     requiresConfirmation: (args) =>
-      args.status === "COMPLETED" || args.status === "CANCELLED",
+      (typeof args.endDate === "string" && args.endDate.length > 0) ||
+      args.status === "COMPLETED" ||
+      args.status === "CANCELLED",
   },
   {
     namespace: "enrollments",
@@ -358,7 +362,16 @@ const toolSpecs: AssistantToolSpec[] = [
     name: "mark_attendance",
     description: "Set student attendance and billable flags for a session.",
     schema: markAttendanceSchema.extend({ sessionId: idSchema }),
-    requiresConfirmation: false,
+    requiresConfirmation: (args) =>
+      Array.isArray(args.attendances) &&
+      args.attendances.some(
+        (attendance) =>
+          attendance !== null &&
+          typeof attendance === "object" &&
+          "status" in attendance &&
+          (attendance.status === "CANCELLED_BY_TUTOR" ||
+            attendance.status === "CANCELLED_BY_STUDENT"),
+      ),
   },
   {
     namespace: "schedule",

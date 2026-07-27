@@ -73,9 +73,18 @@ export async function getRecurrenceRuleWithParticipants(id: string) {
   return prisma.recurrenceRule.findUnique({
     where: { id },
     include: {
-      enrollment: { include: { student: true } },
+      enrollment: {
+        include: {
+          student: true,
+          tutor: true,
+          subject: true,
+          package: true,
+        },
+      },
       group: {
         include: {
+          tutor: true,
+          subject: true,
           enrollments: {
             where: { status: { in: ["ACTIVE", "PAUSED"] } },
             include: { student: true },

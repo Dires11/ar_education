@@ -284,7 +284,8 @@ export async function getPaymentStats() {
 
 export async function sendPaymentReminderEmail(
   enrollmentId: string,
-  month: string
+  month: string,
+  idempotencyKey?: string,
 ) {
   const [enrollment, template] = await Promise.all([
     getEnrollmentForPaymentReminder(enrollmentId, month),
@@ -359,6 +360,7 @@ export async function sendPaymentReminderEmail(
     to: recipientEmail,
     subject: emailSubject,
     html: emailHtml,
+    idempotencyKey,
   });
 }
 

@@ -45,10 +45,12 @@ export async function sendEmailToStudents({
   studentIds,
   subject,
   body,
+  idempotencyKey,
 }: {
   studentIds: string[];
   subject: string;
   body: string;
+  idempotencyKey?: string;
 }) {
   const students = await getStudentsForEmail(studentIds);
 
@@ -85,6 +87,9 @@ export async function sendEmailToStudents({
           .split("\n")
           .map((line) => `<p>${line}</p>`)
           .join(""),
+        idempotencyKey: idempotencyKey
+          ? `${idempotencyKey}:${student.id}`
+          : undefined,
       });
       results.push({ studentId: student.id, email: recipientEmail, success: true });
     } catch {

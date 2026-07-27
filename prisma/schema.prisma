@@ -467,11 +467,12 @@ model AssistantMessage {
 model AssistantRun {
   id                String             @id @default(cuid())
   threadId          String
-  clientTurnId      String
+  clientTurnId      String             @unique
   status            AssistantRunStatus @default(RUNNING)
   model             String
   hasAttachments    Boolean            @default(false)
   resumeInput       Json?
+  toolCallCount     Int                @default(0)
   inputTokens       Int?
   outputTokens      Int?
   reasoningTokens   Int?
@@ -486,7 +487,6 @@ model AssistantRun {
   messages AssistantMessage[]
   toolRuns AssistantToolRun[]
 
-  @@unique([threadId, clientTurnId])
   @@index([threadId, status])
 }
 

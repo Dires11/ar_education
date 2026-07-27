@@ -26,6 +26,52 @@ export async function listEnrollments(filters?: {
   });
 }
 
+export async function searchEnrollmentsForAssistant(filters: {
+  studentId?: string;
+  tutorId?: string;
+  status?: EnrollmentStatus;
+  limit: number;
+}) {
+  const where = {
+    ...(filters.studentId && { studentId: filters.studentId }),
+    ...(filters.tutorId && { tutorId: filters.tutorId }),
+    ...(filters.status && { status: filters.status }),
+  };
+  const [enrollments, total] = await Promise.all([
+    prisma.enrollment.findMany({
+      where,
+      select: {
+        id: true,
+        status: true,
+        startDate: true,
+        endDate: true,
+        priceAtEnrollment: true,
+        customPriceOverride: true,
+        student: {
+          select: { id: true, firstName: true, lastName: true },
+        },
+        tutor: {
+          select: { id: true, firstName: true, lastName: true },
+        },
+        package: {
+          select: { id: true, name: true, lessonType: true },
+        },
+        subject: { select: { id: true, name: true } },
+        group: { select: { id: true, name: true } },
+      },
+      orderBy: { createdAt: "desc" },
+      take: filters.limit,
+    }),
+    prisma.enrollment.count({ where }),
+  ]);
+  return {
+    enrollments,
+    total,
+    limit: filters.limit,
+    hasMore: total > enrollments.length,
+  };
+}
+
 export async function getEnrollment(id: string) {
   return prisma.enrollment.findUnique({
     where: { id },
@@ -35,6 +81,7 @@ export async function getEnrollment(id: string) {
       tutor: true,
       subject: true,
       discounts: true,
+      group: true,
       sessions: {
         orderBy: { scheduledFor: "desc" },
         take: 10,
@@ -162,6 +209,33 @@ export async function createDiscount(data: {
 
 export async function deleteDiscount(id: string) {
   return prisma.discount.delete({ where: { id } });
+}
+
+export async function getDiscountWithEnrollment(id: string) {
+  return prisma.discount.findUnique({
+    where: { id },
+    include: {
+      enrollment: {
+        include: {
+          student: true,
+          package: true,
+          tutor: true,
+          subject: true,
+          discounts: true,
+          group: true,
+          sessions: {
+            orderBy: { scheduledFor: "desc" },
+            take: 10,
+            include: { attendance: { include: { student: true } } },
+          },
+          payments: {
+            orderBy: { paidAt: "desc" },
+            take: 10,
+          },
+        },
+      },
+    },
+  });
 }
 
 export function getTutorSubjectAssignment(tutorId: string, subjectId: string) {

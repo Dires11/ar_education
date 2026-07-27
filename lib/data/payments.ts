@@ -54,6 +54,77 @@ export async function listPayments({
   return { payments, total, page, pageSize };
 }
 
+export async function listPaymentsForAssistant(filters: PaymentFilters = {}) {
+  const {
+    studentId,
+    enrollmentId,
+    method,
+    from,
+    to,
+    page = 1,
+    pageSize = 20,
+  } = filters;
+  const where = {
+    ...(studentId && { studentId }),
+    ...(enrollmentId && { enrollmentId }),
+    ...(method && {
+      method: method as "CASH" | "BANK_TRANSFER" | "CARD" | "OTHER",
+    }),
+    ...(from || to
+      ? {
+          paidAt: {
+            ...(from && { gte: from }),
+            ...(to && { lte: to }),
+          },
+        }
+      : {}),
+  };
+  const [payments, total] = await Promise.all([
+    prisma.payment.findMany({
+      where,
+      select: {
+        id: true,
+        amount: true,
+        method: true,
+        paidAt: true,
+        coversMonth: true,
+        student: {
+          select: { id: true, firstName: true, lastName: true },
+        },
+        enrollment: {
+          select: {
+            id: true,
+            subject: { select: { name: true } },
+            package: { select: { name: true } },
+          },
+        },
+      },
+      orderBy: { paidAt: "desc" },
+      skip: (page - 1) * pageSize,
+      take: pageSize,
+    }),
+    prisma.payment.count({ where }),
+  ]);
+  return { payments, total, page, pageSize };
+}
+
+export async function getPaymentForAssistantConfirmation(id: string) {
+  return prisma.payment.findUnique({
+    where: { id },
+    include: {
+      student: {
+        include: {
+          guardians: {
+            include: { guardian: true },
+            orderBy: { isPrimary: "desc" },
+          },
+          enrollments: true,
+        },
+      },
+    },
+  });
+}
+
 export async function createPayment(data: {
   studentId: string;
   amount: string;

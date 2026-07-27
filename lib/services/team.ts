@@ -23,7 +23,17 @@ export async function inviteTeamMember(email: string) {
   if (!appUrl) throw new Error("NEXT_PUBLIC_APP_URL is not configured");
 
   const client = await clerkClient();
-  await client.invitations.createInvitation({
+  const pending = await client.invitations.getInvitationList({
+    status: "pending",
+    query: email,
+  });
+  const existing = pending.data.find(
+    (invitation) =>
+      invitation.emailAddress.toLowerCase() === email.toLowerCase(),
+  );
+  if (existing) return existing;
+
+  return client.invitations.createInvitation({
     emailAddress: email,
     publicMetadata: ADMIN_INVITATION_METADATA,
     redirectUrl: new URL("/sign-up", appUrl).toString(),

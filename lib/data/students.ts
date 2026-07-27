@@ -319,6 +319,66 @@ export async function getGuardian(id: string) {
   return prisma.guardian.findUnique({ where: { id } });
 }
 
+export function updateLinkedGuardian(input: {
+  studentId: string;
+  guardianId: string;
+  data: {
+    firstName?: string;
+    lastName?: string;
+    avatarUrl?: string | null;
+    avatarPublicId?: string | null;
+    email?: string;
+    phone?: string;
+    relationship?: "PARENT" | "GUARDIAN" | "OTHER";
+    notes?: string;
+  };
+  isPrimary?: boolean;
+}) {
+  return prisma.$transaction(async (tx) => {
+    const link = await tx.studentGuardian.findUnique({
+      where: {
+        studentId_guardianId: {
+          studentId: input.studentId,
+          guardianId: input.guardianId,
+        },
+      },
+      include: { guardian: true },
+    });
+    if (!link) {
+      throw new Error("Guardian is not linked to this student");
+    }
+
+    if (input.isPrimary === true) {
+      await tx.studentGuardian.updateMany({
+        where: {
+          studentId: input.studentId,
+          guardianId: { not: input.guardianId },
+        },
+        data: { isPrimary: false },
+      });
+    }
+
+    const updated = await tx.guardian.update({
+      where: { id: input.guardianId },
+      data: input.data,
+    });
+
+    if (input.isPrimary !== undefined) {
+      await tx.studentGuardian.update({
+        where: {
+          studentId_guardianId: {
+            studentId: input.studentId,
+            guardianId: input.guardianId,
+          },
+        },
+        data: { isPrimary: input.isPrimary },
+      });
+    }
+
+    return { existing: link.guardian, updated };
+  });
+}
+
 export async function unlinkGuardian(studentId: string, guardianId: string) {
   return prisma.studentGuardian.delete({
     where: { studentId_guardianId: { studentId, guardianId } },

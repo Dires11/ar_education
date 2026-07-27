@@ -12,6 +12,97 @@ const ACTIVE_RUN_STATUSES: AssistantRunStatus[] = [
   "RUNNING",
   "WAITING_CONFIRMATION",
 ];
+// Keep this above the route's five-minute execution window so a legitimate
+// long-running response cannot be reclaimed by a second browser tab.
+export const ASSISTANT_RUN_STALE_AFTER_MS = 6 * 60 * 1000;
+
+async function expireAssistantRunsInTransaction(
+  tx: Prisma.TransactionClient,
+  input: {
+    adminId: string;
+    threadId?: string;
+    now: Date;
+  },
+) {
+  const threadWhere = {
+    adminId: input.adminId,
+    ...(input.threadId ? { id: input.threadId } : {}),
+  };
+  const expiredConfirmations = await tx.assistantToolRun.findMany({
+    where: {
+      status: "PENDING_CONFIRMATION",
+      expiresAt: { lte: input.now },
+      run: {
+        status: "WAITING_CONFIRMATION",
+        thread: threadWhere,
+      },
+    },
+    select: { id: true, runId: true },
+  });
+  if (expiredConfirmations.length > 0) {
+    const toolRunIds = expiredConfirmations.map((toolRun) => toolRun.id);
+    const runIds = [...new Set(expiredConfirmations.map((toolRun) => toolRun.runId))];
+    await tx.assistantToolRun.updateMany({
+      where: { id: { in: toolRunIds }, status: "PENDING_CONFIRMATION" },
+      data: {
+        status: "EXPIRED",
+        error: "Confirmation expired",
+        completedAt: input.now,
+      },
+    });
+    await tx.assistantRun.updateMany({
+      where: { id: { in: runIds }, status: "WAITING_CONFIRMATION" },
+      data: {
+        status: "FAILED",
+        error: "Confirmation expired",
+        resumeInput: Prisma.JsonNull,
+        completedAt: input.now,
+      },
+    });
+  }
+
+  const staleBefore = new Date(
+    input.now.getTime() - ASSISTANT_RUN_STALE_AFTER_MS,
+  );
+  const staleRuns = await tx.assistantRun.findMany({
+    where: {
+      status: "RUNNING",
+      updatedAt: { lte: staleBefore },
+      thread: threadWhere,
+    },
+    select: { id: true },
+  });
+  if (staleRuns.length > 0) {
+    const runIds = staleRuns.map((run) => run.id);
+    await tx.assistantToolRun.updateMany({
+      where: { runId: { in: runIds }, status: "RUNNING" },
+      data: {
+        status: "FAILED",
+        error: "Assistant request was interrupted",
+        completedAt: input.now,
+      },
+    });
+    await tx.assistantRun.updateMany({
+      where: { id: { in: runIds }, status: "RUNNING" },
+      data: {
+        status: "FAILED",
+        error: "Assistant request was interrupted. It is safe to retry.",
+        resumeInput: Prisma.JsonNull,
+        completedAt: input.now,
+      },
+    });
+  }
+}
+
+export function expireAssistantRuns(adminId: string, threadId?: string) {
+  return prisma.$transaction((tx) =>
+    expireAssistantRunsInTransaction(tx, {
+      adminId,
+      threadId,
+      now: new Date(),
+    }),
+  );
+}
 
 export async function listAssistantThreads(adminId: string) {
   return prisma.assistantThread.findMany({
@@ -151,77 +242,128 @@ export async function createAssistantTurn(input: {
   try {
     return await prisma.$transaction(
       async (tx) => {
-      let thread = input.threadId
-        ? await tx.assistantThread.findFirst({
-            where: {
-              id: input.threadId,
-              adminId: input.adminId,
-              archivedAt: null,
-            },
-          })
-        : null;
-
-      if (input.threadId && !thread) {
-        throw new Error("Assistant thread not found");
-      }
-
-      if (!thread) {
-        thread = await tx.assistantThread.create({
-          data: {
-            adminId: input.adminId,
-            title: threadTitle(
-              input.message || (input.hasAttachments ? "Attachment review" : ""),
-            ),
+        const duplicate = await tx.assistantRun.findUnique({
+          where: { clientTurnId: input.clientTurnId },
+          include: {
+            thread: true,
+            messages: true,
+            toolRuns: true,
           },
         });
-      }
+        if (duplicate) {
+          if (
+            duplicate.thread.adminId !== input.adminId ||
+            duplicate.thread.archivedAt
+          ) {
+            throw new Error("Assistant request identifier is unavailable");
+          }
+          await expireAssistantRunsInTransaction(tx, {
+            adminId: input.adminId,
+            threadId: duplicate.threadId,
+            now: new Date(),
+          });
+          const refreshed = await tx.assistantRun.findUniqueOrThrow({
+            where: { id: duplicate.id },
+            include: {
+              thread: true,
+              messages: true,
+              toolRuns: true,
+            },
+          });
+          if (refreshed.status === "FAILED" && refreshed.toolRuns.length === 0) {
+            const restarted = await tx.assistantRun.update({
+              where: { id: refreshed.id },
+              data: {
+                status: "RUNNING",
+                error: null,
+                completedAt: null,
+              },
+              include: {
+                thread: true,
+                messages: true,
+                toolRuns: true,
+              },
+            });
+            return {
+              thread: restarted.thread,
+              run: restarted,
+              duplicate: false,
+            };
+          }
+          return {
+            thread: refreshed.thread,
+            run: refreshed,
+            duplicate: true,
+          };
+        }
 
-      const duplicate = await tx.assistantRun.findUnique({
-        where: {
-          threadId_clientTurnId: {
+        let thread = input.threadId
+          ? await tx.assistantThread.findFirst({
+              where: {
+                id: input.threadId,
+                adminId: input.adminId,
+                archivedAt: null,
+              },
+            })
+          : null;
+
+        if (input.threadId && !thread) {
+          throw new Error("Assistant thread not found");
+        }
+
+        if (!thread) {
+          thread = await tx.assistantThread.create({
+            data: {
+              adminId: input.adminId,
+              title: threadTitle(
+                input.message ||
+                  (input.hasAttachments ? "Attachment review" : ""),
+              ),
+            },
+          });
+        }
+
+        await expireAssistantRunsInTransaction(tx, {
+          adminId: input.adminId,
+          threadId: thread.id,
+          now: new Date(),
+        });
+
+        const activeRun = await tx.assistantRun.findFirst({
+          where: {
+            threadId: thread.id,
+            status: { in: ACTIVE_RUN_STATUSES },
+          },
+          select: { id: true },
+        });
+        if (activeRun) {
+          throw new Error("This conversation already has an active request");
+        }
+
+        const run = await tx.assistantRun.create({
+          data: {
             threadId: thread.id,
             clientTurnId: input.clientTurnId,
-          },
-        },
-        include: { messages: true, toolRuns: true },
-      });
-      if (duplicate) return { thread, run: duplicate, duplicate: true };
-
-      const activeRun = await tx.assistantRun.findFirst({
-        where: {
-          threadId: thread.id,
-          status: { in: ACTIVE_RUN_STATUSES },
-        },
-        select: { id: true },
-      });
-      if (activeRun) {
-        throw new Error("This conversation already has an active request");
-      }
-
-      const run = await tx.assistantRun.create({
-        data: {
-          threadId: thread.id,
-          clientTurnId: input.clientTurnId,
-          model: input.model,
-          hasAttachments: Boolean(input.hasAttachments),
-          messages: {
-            create: {
-              threadId: thread.id,
-              role: "USER",
-              content: input.message,
-              attachments: input.attachments,
+            model: input.model,
+            hasAttachments: Boolean(input.hasAttachments),
+            messages: {
+              create: {
+                threadId: thread.id,
+                role: "USER",
+                content: input.message,
+                attachments: input.attachments,
+              },
             },
           },
-        },
-        include: { messages: true, toolRuns: true },
-      });
+          include: { messages: true, toolRuns: true },
+        });
 
-      await tx.assistantThread.update({
-        where: { id: thread.id },
-        data: { updatedAt: new Date() },
-      });
+        await tx.assistantThread.update({
+          where: { id: thread.id },
+          data: { updatedAt: new Date() },
+        });
 
-      return { thread, run, duplicate: false };
+        return { thread, run, duplicate: false };
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
     );
@@ -280,6 +422,64 @@ export async function completeAssistantToolRun(
   });
 }
 
+export function touchAssistantRun(runId: string) {
+  return prisma.assistantRun.update({
+    where: { id: runId },
+    data: { updatedAt: new Date() },
+  });
+}
+
+export function recordAssistantModelStep(input: {
+  runId: string;
+  hasToolCall: boolean;
+  maxToolCalls: number;
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+    reasoningTokens: number;
+    cachedInputTokens: number;
+    cacheWriteTokens: number;
+  };
+}) {
+  return prisma.$transaction(async (tx) => {
+    const run = await tx.assistantRun.findUniqueOrThrow({
+      where: { id: input.runId },
+      select: {
+        toolCallCount: true,
+        inputTokens: true,
+        outputTokens: true,
+        reasoningTokens: true,
+        cachedInputTokens: true,
+        cacheWriteTokens: true,
+      },
+    });
+    const usage = input.usage;
+    const toolCallAllowed =
+      !input.hasToolCall || run.toolCallCount < input.maxToolCalls;
+    await tx.assistantRun.update({
+      where: { id: input.runId },
+      data: {
+        inputTokens: (run.inputTokens ?? 0) + (usage?.inputTokens ?? 0),
+        outputTokens: (run.outputTokens ?? 0) + (usage?.outputTokens ?? 0),
+        reasoningTokens:
+          (run.reasoningTokens ?? 0) + (usage?.reasoningTokens ?? 0),
+        cachedInputTokens:
+          (run.cachedInputTokens ?? 0) + (usage?.cachedInputTokens ?? 0),
+        cacheWriteTokens:
+          (run.cacheWriteTokens ?? 0) + (usage?.cacheWriteTokens ?? 0),
+        ...(input.hasToolCall && toolCallAllowed
+          ? { toolCallCount: { increment: 1 } }
+          : {}),
+      },
+    });
+    return {
+      toolCallAllowed,
+      toolCallCount:
+        run.toolCallCount + (input.hasToolCall && toolCallAllowed ? 1 : 0),
+    };
+  });
+}
+
 export async function failAssistantToolRun(id: string, error: string) {
   return prisma.assistantToolRun.update({
     where: { id },
@@ -314,6 +514,7 @@ export async function getAssistantToolRunForDecision(
       run: {
         include: {
           thread: true,
+          messages: true,
         },
       },
     },
@@ -461,13 +662,6 @@ export async function completeAssistantRun(input: {
   runId: string;
   threadId: string;
   content: string;
-  usage?: {
-    inputTokens: number;
-    outputTokens: number;
-    reasoningTokens: number;
-    cachedInputTokens: number;
-    cacheWriteTokens: number;
-  };
 }) {
   return prisma.$transaction(async (tx) => {
     const message = await tx.assistantMessage.create({
@@ -484,11 +678,6 @@ export async function completeAssistantRun(input: {
         status: "COMPLETED",
         resumeInput: Prisma.JsonNull,
         completedAt: new Date(),
-        inputTokens: input.usage?.inputTokens,
-        outputTokens: input.usage?.outputTokens,
-        reasoningTokens: input.usage?.reasoningTokens,
-        cachedInputTokens: input.usage?.cachedInputTokens,
-        cacheWriteTokens: input.usage?.cacheWriteTokens,
       },
     });
     await tx.assistantThread.update({

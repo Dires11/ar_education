@@ -6,6 +6,10 @@ export async function listSubjects() {
   return prisma.subject.findMany({ orderBy: { name: "asc" } });
 }
 
+export async function getSubject(id: string) {
+  return prisma.subject.findUnique({ where: { id } });
+}
+
 export async function createSubject(data: {
   name: string;
   description?: string;

@@ -25,4 +25,69 @@ describe("assistant DTO minimization", () => {
       payments: [{ id: "payment-1", amount: "120" }],
     });
   });
+
+  it("drops future and nested fields unless they are explicitly allowlisted", () => {
+    expect(
+      minimizeAssistantDto({
+        id: "payment-1",
+        amount: "120",
+        futureSensitiveField: "do-not-send",
+        recordedBy: {
+          id: "admin-1",
+          email: "owner@example.com",
+        },
+        student: {
+          id: "student-1",
+          firstName: "Maya",
+          privateFutureField: "do-not-send",
+        },
+      }),
+    ).toEqual({
+      id: "payment-1",
+      amount: "120",
+      student: {
+        id: "student-1",
+        firstName: "Maya",
+      },
+    });
+  });
+
+  it("preserves the bounded schedule and reporting fields the model needs", () => {
+    expect(
+      minimizeAssistantDto({
+        realSessions: [
+          {
+            id: "session-1",
+            scheduledFor: "2026-07-27T17:00:00.000Z",
+            durationMinutes: 60,
+            internalFutureField: "hidden",
+          },
+        ],
+        summaries: [
+          {
+            enrollmentId: "enrollment-1",
+            usedThisWeek: 1,
+            remaining: 1,
+          },
+        ],
+        monthlyRevenue: [{ month: "Jul", revenue: 1200 }],
+      }),
+    ).toEqual({
+      realSessions: [
+        {
+          id: "session-1",
+          scheduledFor: "2026-07-27T17:00:00.000Z",
+          durationMinutes: 60,
+        },
+      ],
+      summaries: [
+        {
+          enrollmentId: "enrollment-1",
+          usedThisWeek: 1,
+          remaining: 1,
+        },
+      ],
+      monthlyRevenue: [{ month: "Jul", revenue: 1200 }],
+    });
+  });
 });

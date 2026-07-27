@@ -5,11 +5,15 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
     count: vi.fn(),
   },
+  $transaction: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({ prisma: prismaMock }));
 
-import { queryStudentDirectoryData } from "@/lib/data/students";
+import {
+  queryStudentDirectoryData,
+  updateLinkedGuardian,
+} from "@/lib/data/students";
 
 describe("student directory data queries", () => {
   beforeEach(() => {
@@ -94,6 +98,76 @@ describe("student directory data queries", () => {
           { lastName: { contains: "Student", mode: "insensitive" } },
         ]),
       }),
+    );
+  });
+});
+
+describe("linked guardian updates", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("rejects mismatched student and guardian IDs before changing either record", async () => {
+    const tx = {
+      studentGuardian: {
+        findUnique: vi.fn().mockResolvedValue(null),
+        updateMany: vi.fn(),
+        update: vi.fn(),
+      },
+      guardian: { update: vi.fn() },
+    };
+    prismaMock.$transaction.mockImplementation(
+      (callback: (client: typeof tx) => unknown) => callback(tx),
+    );
+
+    await expect(
+      updateLinkedGuardian({
+        studentId: "student-2",
+        guardianId: "guardian-1",
+        data: { phone: "555-0100" },
+      }),
+    ).rejects.toThrow("Guardian is not linked to this student");
+
+    expect(tx.guardian.update).not.toHaveBeenCalled();
+    expect(tx.studentGuardian.update).not.toHaveBeenCalled();
+  });
+
+  it("updates guardian details and primary state in one transaction", async () => {
+    const existing = {
+      id: "guardian-1",
+      phone: "555-0000",
+      relationship: "GUARDIAN",
+    };
+    const updated = { ...existing, phone: "555-0100" };
+    const tx = {
+      studentGuardian: {
+        findUnique: vi
+          .fn()
+          .mockResolvedValue({ guardian: existing, isPrimary: false }),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        update: vi.fn().mockResolvedValue({}),
+      },
+      guardian: { update: vi.fn().mockResolvedValue(updated) },
+    };
+    prismaMock.$transaction.mockImplementation(
+      (callback: (client: typeof tx) => unknown) => callback(tx),
+    );
+
+    await expect(
+      updateLinkedGuardian({
+        studentId: "student-1",
+        guardianId: "guardian-1",
+        data: { phone: "555-0100" },
+        isPrimary: true,
+      }),
+    ).resolves.toEqual({ existing, updated });
+
+    expect(tx.guardian.update).toHaveBeenCalledWith({
+      where: { id: "guardian-1" },
+      data: { phone: "555-0100" },
+    });
+    expect(tx.studentGuardian.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { isPrimary: true } }),
     );
   });
 });

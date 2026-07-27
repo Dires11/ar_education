@@ -7,11 +7,9 @@ import {
   deleteStudent,
   archiveStudent,
   createGuardianAndLink,
-  updateGuardian,
+  updateLinkedGuardian,
   unlinkGuardian,
-  setGuardianPrimary,
   getStudent,
-  getGuardian,
   queryStudentDirectoryData,
 } from "@/lib/data/students";
 import {
@@ -22,7 +20,8 @@ import {
   type StudentDirectoryQueryInput,
   type UpdateStudentInput,
   type GuardianInput,
-  guardianSchema,
+  type GuardianPatchInput,
+  guardianPatchSchema,
 } from "@/lib/validators/students";
 import { PersonStatus } from "@/generated/prisma";
 import { deleteCloudinaryImageIfUnreferenced } from "@/lib/services/media";
@@ -124,29 +123,29 @@ export async function addGuardianToStudent(
 export async function updateGuardianDetails(
   guardianId: string,
   studentId: string,
-  input: Partial<GuardianInput>
+  input: GuardianPatchInput,
 ) {
-  const parsed = guardianSchema.partial().parse(input);
-  const existing = await getGuardian(guardianId);
-  if (!existing) throw new Error("Guardian not found");
+  const parsed = guardianPatchSchema.parse(input);
   const email = parsed.email || undefined;
-  const updated = await updateGuardian(guardianId, {
-    firstName: parsed.firstName,
-    lastName: parsed.lastName,
-    avatarUrl:
-      parsed.avatarUrl === undefined ? undefined : parsed.avatarUrl || null,
-    avatarPublicId:
-      parsed.avatarPublicId === undefined
-        ? undefined
-        : parsed.avatarPublicId || null,
-    phone: parsed.phone,
-    email,
-    relationship: parsed.relationship,
-    notes: parsed.notes,
+  const { existing, updated } = await updateLinkedGuardian({
+    guardianId,
+    studentId,
+    data: {
+      firstName: parsed.firstName,
+      lastName: parsed.lastName,
+      avatarUrl:
+        parsed.avatarUrl === undefined ? undefined : parsed.avatarUrl || null,
+      avatarPublicId:
+        parsed.avatarPublicId === undefined
+          ? undefined
+          : parsed.avatarPublicId || null,
+      phone: parsed.phone,
+      email,
+      relationship: parsed.relationship,
+      notes: parsed.notes,
+    },
+    isPrimary: parsed.isPrimary,
   });
-  if (parsed.isPrimary !== undefined) {
-    await setGuardianPrimary(studentId, guardianId, parsed.isPrimary);
-  }
   if (
     existing.avatarPublicId &&
     existing.avatarPublicId !== updated.avatarPublicId

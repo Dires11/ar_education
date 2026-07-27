@@ -29,6 +29,11 @@ export const guardianSchema = z.object({
   isPrimary: z.boolean().default(true),
 });
 
+export const guardianPatchSchema = guardianSchema.partial().extend({
+  relationship: guardianRelationshipSchema.optional(),
+  isPrimary: z.boolean().optional(),
+});
+
 export const createStudentSchema = z.object({
   firstName: z.string().trim().min(1, "First name is required").max(100),
   lastName: z.string().trim().min(1, "Last name is required").max(100),
@@ -111,6 +116,7 @@ export type UpdateStudentFormValues = z.input<typeof updateStudentSchema>;
 export type UpdateStudentInput = z.output<typeof updateStudentSchema>;
 export type GuardianFormValues = z.input<typeof guardianSchema>;
 export type GuardianInput = z.output<typeof guardianSchema>;
+export type GuardianPatchInput = z.output<typeof guardianPatchSchema>;
 export type StudentDirectoryQueryInput = z.output<
   typeof studentDirectoryQuerySchema
 >;

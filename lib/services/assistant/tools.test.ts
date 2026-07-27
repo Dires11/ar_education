@@ -95,6 +95,83 @@ describe("assistant tool registry", () => {
         isActive: false,
       }),
     ).toBe(true);
+
+    const attendance = getAssistantToolSpec(
+      "schedule",
+      "mark_attendance",
+      "OWNER",
+    )!;
+    expect(
+      assistantToolRequiresConfirmation(attendance, {
+        sessionId: "session-1",
+        attendances: [
+          {
+            studentId: "student-1",
+            status: "COMPLETED",
+            billable: true,
+          },
+        ],
+      }),
+    ).toBe(false);
+    expect(
+      assistantToolRequiresConfirmation(attendance, {
+        sessionId: "session-1",
+        attendances: [
+          {
+            studentId: "student-1",
+            status: "CANCELLED_BY_STUDENT",
+            billable: false,
+          },
+        ],
+      }),
+    ).toBe(true);
+
+    const enrollmentUpdate = getAssistantToolSpec(
+      "enrollments",
+      "update_enrollment",
+      "OWNER",
+    )!;
+    expect(
+      assistantToolRequiresConfirmation(enrollmentUpdate, {
+        id: "enrollment-1",
+        status: "ACTIVE",
+        endDate: "2026-08-01",
+      }),
+    ).toBe(true);
+    expect(
+      assistantToolRequiresConfirmation(enrollmentUpdate, {
+        id: "enrollment-1",
+        status: "ACTIVE",
+        customPriceOverride: "150",
+      }),
+    ).toBe(false);
+  });
+
+  it("keeps partial guardian edits partial and bounds enrollment searches", () => {
+    const guardianUpdate = getAssistantToolSpec(
+      "guardians",
+      "update_guardian",
+      "STAFF",
+    )!;
+    expect(
+      guardianUpdate.schema.parse({
+        studentId: "student-1",
+        guardianId: "guardian-1",
+        phone: "555-0100",
+      }),
+    ).toEqual({
+      studentId: "student-1",
+      guardianId: "guardian-1",
+      phone: "555-0100",
+    });
+
+    const enrollmentSearch = getAssistantToolSpec(
+      "enrollments",
+      "search_enrollments",
+      "STAFF",
+    )!;
+    expect(enrollmentSearch.schema.parse({})).toEqual({ limit: 20 });
+    expect(() => enrollmentSearch.schema.parse({ limit: 31 })).toThrow();
   });
 
   it("provides one bounded student-directory tool for rankings", () => {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Table,
   TableBody,
@@ -47,14 +47,21 @@ type EnrollmentRow = {
 export function EnrollmentsTable({
   enrollments,
   centerTimeZone,
+  initialEnrollmentId,
 }: {
   enrollments: EnrollmentRow[];
   centerTimeZone: string;
+  initialEnrollmentId: string | null;
 }) {
   const [selectedEnrollmentId, setSelectedEnrollmentId] = useState<string | null>(
-    null,
+    initialEnrollmentId,
   );
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(Boolean(initialEnrollmentId));
+
+  useEffect(() => {
+    setSelectedEnrollmentId(initialEnrollmentId);
+    setOpen(Boolean(initialEnrollmentId));
+  }, [initialEnrollmentId]);
 
   function openEnrollment(id: string) {
     setSelectedEnrollmentId(id);

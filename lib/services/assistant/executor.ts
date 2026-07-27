@@ -2,14 +2,28 @@ import "server-only";
 
 import { z } from "zod";
 import type { Admin } from "@/generated/prisma";
-import { listStudents, getStudent as getStudentData } from "@/lib/data/students";
+import {
+  getStudent as getStudentData,
+  listStudents,
+} from "@/lib/data/students";
 import { listTutors, getTutor as getTutorData } from "@/lib/data/tutors";
-import { listSubjects } from "@/lib/data/subjects";
+import { getSubject, listSubjects } from "@/lib/data/subjects";
 import { listPackages, getPackage } from "@/lib/data/packages";
-import { listEnrollments, getEnrollment } from "@/lib/data/enrollments";
+import {
+  getDiscountWithEnrollment,
+  getEnrollment,
+  searchEnrollmentsForAssistant,
+} from "@/lib/data/enrollments";
 import { listGroups } from "@/lib/data/groups";
-import { listPayments } from "@/lib/data/payments";
-import { getSession as getSessionData } from "@/lib/data/sessions";
+import {
+  getPaymentForAssistantConfirmation,
+  listPaymentsForAssistant,
+} from "@/lib/data/payments";
+import {
+  getRecurrenceRuleWithParticipants,
+  getSession as getSessionData,
+} from "@/lib/data/sessions";
+import { getEmailTemplate, getStudentsForEmail } from "@/lib/data/emails";
 import {
   createStudentWithGuardian,
   updateStudentProfile,
@@ -101,6 +115,7 @@ type ToolArguments = Record<string, unknown>;
 
 export type AssistantToolExecutionContext = {
   admin: Pick<Admin, "id" | "role">;
+  idempotencyKey?: string;
 };
 
 function safeJson<T>(value: T) {
@@ -547,6 +562,65 @@ function sessionResultCard(
   };
 }
 
+function sessionDraftResultCard(
+  argumentsValue: Record<string, unknown>,
+): AssistantResultCard | undefined {
+  const scheduledFor =
+    typeof argumentsValue.scheduledFor === "string"
+      ? new Date(argumentsValue.scheduledFor)
+      : null;
+  const durationMinutes = Number(argumentsValue.durationMinutes);
+  const studentIds = Array.isArray(argumentsValue.studentIds)
+    ? argumentsValue.studentIds.filter(
+        (item): item is string => typeof item === "string",
+      )
+    : [];
+  if (
+    !scheduledFor ||
+    Number.isNaN(scheduledFor.getTime()) ||
+    !Number.isFinite(durationMinutes)
+  ) {
+    return undefined;
+  }
+  return {
+    kind: "SESSION",
+    entityKey: `session-draft:${scheduledFor.toISOString()}:${studentIds
+      .slice()
+      .sort()
+      .join(":")}`,
+    title:
+      studentIds.length <= 1
+        ? "New one-time session"
+        : `New session for ${studentIds.length} students`,
+    subtitle: "Session extracted from an attachment",
+    badges: [{ label: "New session", tone: "WARNING" }],
+    fields: [
+      {
+        label: "Date & time",
+        value: formatDateTime(scheduledFor),
+        icon: "CALENDAR",
+      },
+      {
+        label: "Duration",
+        value: `${durationMinutes} minutes`,
+        icon: "CLOCK",
+      },
+      ...(typeof argumentsValue.room === "string" && argumentsValue.room
+        ? [
+            {
+              label: "Room",
+              value: argumentsValue.room,
+              icon: "LOCATION" as const,
+            },
+          ]
+        : []),
+    ],
+    href: "/schedule",
+    actionLabel: "View schedule",
+    suggestedActions: [],
+  };
+}
+
 function paymentResultCard(
   payment: {
     id: string;
@@ -556,20 +630,27 @@ function paymentResultCard(
     coversMonth?: string | null;
   },
   student: StudentCardSource,
+  subtitle = "Payment recorded",
+  destructive = false,
 ): AssistantResultCard {
   const fullName = `${student.firstName} ${student.lastName}`;
   return {
     kind: "PAYMENT",
     entityKey: `payment:${payment.id}`,
     title: `${fullName} payment`,
-    subtitle: "Payment recorded",
+    subtitle,
     avatar: {
       kind: "STUDENT",
       firstName: student.firstName,
       lastName: student.lastName,
       avatarUrl: student.avatarUrl ?? null,
     },
-    badges: [{ label: "Recorded", tone: "SUCCESS" }],
+    badges: [
+      {
+        label: destructive ? "Permanent action" : "Recorded",
+        tone: destructive ? "DESTRUCTIVE" : "SUCCESS",
+      },
+    ],
     fields: [
       {
         label: "Amount",
@@ -602,6 +683,192 @@ function paymentResultCard(
   };
 }
 
+function guardianResultCard(
+  guardian: {
+    id: string;
+    firstName: string;
+    lastName: string;
+    avatarUrl?: string | null;
+    email?: string | null;
+    phone: string;
+    relationship: string;
+  },
+  studentId: string,
+  subtitle: string,
+): AssistantResultCard {
+  return {
+    kind: "GUARDIAN",
+    entityKey: `guardian:${guardian.id}`,
+    title: `${guardian.firstName} ${guardian.lastName}`,
+    subtitle,
+    avatar: {
+      kind: "GUARDIAN",
+      firstName: guardian.firstName,
+      lastName: guardian.lastName,
+      avatarUrl: guardian.avatarUrl ?? null,
+    },
+    badges: [{ label: titleCase(guardian.relationship), tone: "NEUTRAL" }],
+    fields: [
+      { label: "Phone", value: guardian.phone, icon: "PHONE" },
+      ...(guardian.email
+        ? [{ label: "Email", value: guardian.email, icon: "MAIL" as const }]
+        : []),
+    ],
+    href: `/students?student=${studentId}`,
+    actionLabel: "View guardian relationship",
+    suggestedActions: [],
+  };
+}
+
+function subjectResultCard(
+  subject: { id: string; name: string; description?: string | null },
+  subtitle: string,
+): AssistantResultCard {
+  return {
+    kind: "SUBJECT",
+    entityKey: `subject:${subject.id}`,
+    title: subject.name,
+    subtitle,
+    badges: [{ label: "Subject", tone: "NEUTRAL" }],
+    fields: subject.description
+      ? [{ label: "Description", value: subject.description, icon: "BOOK" }]
+      : [],
+    href: "/subjects",
+    actionLabel: "View subjects",
+    suggestedActions: [],
+  };
+}
+
+function recurrenceResultCard(
+  rule: NonNullable<
+    Awaited<ReturnType<typeof getRecurrenceRuleWithParticipants>>
+  >,
+  subtitle: string,
+): AssistantResultCard {
+  const dayName = new Intl.DateTimeFormat("en-US", {
+    weekday: "long",
+    timeZone: "UTC",
+  }).format(new Date(Date.UTC(2026, 6, 26 + rule.dayOfWeek)));
+  const participant = rule.enrollment
+    ? `${rule.enrollment.student.firstName} ${rule.enrollment.student.lastName} · ${rule.enrollment.subject.name}`
+    : rule.group
+      ? `${rule.group.name} · ${rule.group.subject.name}`
+      : "Recurring schedule";
+  return {
+    kind: "SESSION",
+    entityKey: `recurrence:${rule.id}`,
+    title: participant,
+    subtitle,
+    badges: [{ label: "Recurring", tone: "WARNING" }],
+    fields: [
+      { label: "Day", value: dayName, icon: "CALENDAR" },
+      { label: "Start time", value: rule.startTime, icon: "CLOCK" },
+      {
+        label: "Duration",
+        value: `${rule.durationMinutes} minutes`,
+        icon: "CLOCK",
+      },
+      {
+        label: "Starts",
+        value: formatCalendarDate(rule.startsOn),
+        icon: "CALENDAR",
+      },
+    ],
+    href: "/schedule",
+    actionLabel: "View schedule",
+    suggestedActions: [],
+  };
+}
+
+function emailResultCard(input: {
+  entityKey: string;
+  title: string;
+  subtitle: string;
+  subject?: string;
+  recipientSummary?: string;
+}): AssistantResultCard {
+  return {
+    kind: "EMAIL",
+    entityKey: input.entityKey,
+    title: input.title,
+    subtitle: input.subtitle,
+    badges: [{ label: "Outbound email", tone: "WARNING" }],
+    fields: [
+      ...(input.recipientSummary
+        ? [
+            {
+              label: "Recipients",
+              value: input.recipientSummary,
+              icon: "USER" as const,
+            },
+          ]
+        : []),
+      ...(input.subject
+        ? [{ label: "Subject", value: input.subject, icon: "MAIL" as const }]
+        : []),
+    ],
+    href: "/emails",
+    actionLabel: "View email center",
+    suggestedActions: [],
+  };
+}
+
+function teamResultCard(input: {
+  entityKey: string;
+  title: string;
+  subtitle: string;
+  email: string;
+  role?: string;
+}): AssistantResultCard {
+  return {
+    kind: "TEAM",
+    entityKey: input.entityKey,
+    title: input.title,
+    subtitle: input.subtitle,
+    badges: [
+      {
+        label: input.role ? titleCase(input.role) : "Invitation",
+        tone: "WARNING",
+      },
+    ],
+    fields: [{ label: "Email", value: input.email, icon: "MAIL" }],
+    href: "/team",
+    actionLabel: "View team access",
+    suggestedActions: [],
+  };
+}
+
+function groupResultCard(
+  group: Awaited<ReturnType<typeof listGroups>>[number],
+  subtitle: string,
+): AssistantResultCard {
+  return {
+    kind: "GROUP",
+    entityKey: `group:${group.id}`,
+    title: group.name,
+    subtitle,
+    badges: [
+      {
+        label: `${group.enrollments.length} ${
+          group.enrollments.length === 1 ? "student" : "students"
+        }`,
+        tone: "NEUTRAL",
+      },
+    ],
+    fields: [
+      { label: "Subject", value: group.subject.name, icon: "BOOK" },
+      {
+        label: "Tutor",
+        value: `${group.tutor.firstName} ${group.tutor.lastName}`,
+        icon: "USER",
+      },
+    ],
+    href: "/enrollments",
+    actionLabel: "View groups",
+    suggestedActions: [],
+  };
+}
+
 export async function getAssistantConfirmationCard(input: {
   namespace: string;
   name: string;
@@ -629,10 +896,18 @@ export async function getAssistantConfirmationCard(input: {
 
   if (namespace === "guardians") {
     const studentId = value("studentId");
-    if (!studentId) return undefined;
+    const guardianId = value("guardianId");
+    if (!studentId || !guardianId) return undefined;
     const student = await getStudentData(studentId);
-    return student
-      ? studentResultCard(student, "Guardian relationship affected")
+    const guardian = student?.guardians.find(
+      (link) => link.guardianId === guardianId,
+    )?.guardian;
+    return guardian
+      ? guardianResultCard(
+          guardian,
+          studentId,
+          "Guardian relationship selected for removal",
+        )
       : undefined;
   }
 
@@ -645,16 +920,33 @@ export async function getAssistantConfirmationCard(input: {
       : undefined;
   }
 
-  if (namespace === "catalog" && name === "set_package_active") {
-    const packageId = value("id");
-    if (!packageId) return undefined;
-    const pkg = await getPackage(packageId);
+  if (namespace === "catalog") {
+    const id = value("id");
+    if (!id) return undefined;
+    if (name === "delete_subject") {
+      const subject = await getSubject(id);
+      return subject
+        ? subjectResultCard(subject, "Subject selected for permanent deletion")
+        : undefined;
+    }
+    const pkg = await getPackage(id);
     return pkg
-      ? packageResultCard(pkg, "Package affected by this change")
+      ? packageResultCard(pkg, "Package selected for deactivation")
       : undefined;
   }
 
   if (namespace === "enrollments") {
+    if (name === "remove_discount") {
+      const discountId = value("discountId");
+      if (!discountId) return undefined;
+      const discount = await getDiscountWithEnrollment(discountId);
+      return discount?.enrollment
+        ? enrollmentResultCard(
+            discount.enrollment,
+            `${titleCase(discount.kind)} discount selected for removal`,
+          )
+        : undefined;
+    }
     const enrollmentId = value("id") ?? value("enrollmentId");
     if (!enrollmentId) return undefined;
     const enrollment = await getEnrollment(enrollmentId);
@@ -665,14 +957,65 @@ export async function getAssistantConfirmationCard(input: {
 
   if (namespace === "schedule") {
     const sessionId = value("sessionId");
-    if (!sessionId) return undefined;
-    const session = await getSessionData(sessionId);
-    return session
-      ? sessionResultCard(session, "Session affected by this change")
-      : undefined;
+    if (sessionId) {
+      const session = await getSessionData(sessionId);
+      return session
+        ? sessionResultCard(session, "Session affected by this change")
+        : undefined;
+    }
+    const enrollmentId = value("enrollmentId");
+    if (enrollmentId) {
+      const enrollment = await getEnrollment(enrollmentId);
+      return enrollment
+        ? enrollmentResultCard(enrollment, "New session from attached schedule")
+        : undefined;
+    }
+    const groupId = value("groupId");
+    if (groupId) {
+      const group = (await listGroups()).find((item) => item.id === groupId);
+      return group
+        ? groupResultCard(group, "New group session from attached schedule")
+        : undefined;
+    }
+    const studentIds = Array.isArray(argumentsValue.studentIds)
+      ? argumentsValue.studentIds.filter(
+          (item): item is string => typeof item === "string",
+        )
+      : [];
+    if (studentIds.length === 1) {
+      const student = await getStudentData(studentIds[0]);
+      return student
+        ? studentResultCard(student, "New session from attached schedule")
+        : undefined;
+    }
+    return sessionDraftResultCard(argumentsValue);
   }
 
   if (namespace === "billing") {
+    if (name === "delete_payment") {
+      const paymentId = value("paymentId");
+      if (!paymentId) return undefined;
+      const payment = await getPaymentForAssistantConfirmation(paymentId);
+      return payment
+        ? paymentResultCard(
+            payment,
+            payment.student,
+            "Payment selected for permanent deletion",
+            true,
+          )
+        : undefined;
+    }
+    if (name === "send_payment_reminder") {
+      const enrollmentId = value("enrollmentId");
+      if (!enrollmentId) return undefined;
+      const enrollment = await getEnrollment(enrollmentId);
+      return enrollment
+        ? enrollmentResultCard(
+            enrollment,
+            `Payment reminder for ${value("month") ?? "billing period"}`,
+          )
+        : undefined;
+    }
     const studentId = value("studentId");
     if (!studentId) return undefined;
     const student = await getStudentData(studentId);
@@ -682,25 +1025,111 @@ export async function getAssistantConfirmationCard(input: {
   }
 
   if (namespace === "recurrence") {
+    const ruleId = value("ruleId");
+    if (ruleId) {
+      const rule = await getRecurrenceRuleWithParticipants(ruleId);
+      return rule
+        ? recurrenceResultCard(rule, "Recurring schedule affected")
+        : undefined;
+    }
     const enrollmentId = value("enrollmentId");
-    if (!enrollmentId) return undefined;
-    const enrollment = await getEnrollment(enrollmentId);
-    return enrollment
-      ? enrollmentResultCard(enrollment, "Recurring schedule affected")
-      : undefined;
+    if (enrollmentId) {
+      const enrollment = await getEnrollment(enrollmentId);
+      return enrollment
+        ? enrollmentResultCard(enrollment, "Recurring schedule affected")
+        : undefined;
+    }
+    const groupId = value("groupId");
+    if (groupId) {
+      const group = (await listGroups()).find((item) => item.id === groupId);
+      return group
+        ? groupResultCard(group, "Recurring schedule affected")
+        : undefined;
+    }
+    return undefined;
   }
 
   if (namespace === "communications") {
+    if (name === "delete_email_template") {
+      const templateId = value("id");
+      if (!templateId) return undefined;
+      const template = await getEmailTemplate(templateId);
+      return template
+        ? emailResultCard({
+            entityKey: `email-template:${template.id}`,
+            title: template.name,
+            subtitle: "Template selected for permanent deletion",
+            subject: template.subject,
+          })
+        : undefined;
+    }
     const studentIds = Array.isArray(argumentsValue.studentIds)
       ? argumentsValue.studentIds.filter(
           (item): item is string => typeof item === "string",
         )
       : [];
-    if (studentIds.length !== 1) return undefined;
-    const student = await getStudentData(studentIds[0]);
-    return student
-      ? studentResultCard(student, "Email recipient")
-      : undefined;
+    if (studentIds.length === 0) return undefined;
+    const students = await getStudentsForEmail(studentIds);
+    if (students.length !== studentIds.length) return undefined;
+    const names = students.map(
+      (student) => `${student.firstName} ${student.lastName}`,
+    );
+    return emailResultCard({
+      entityKey: `email-send:${studentIds.slice().sort().join(":")}`,
+      title:
+        names.length === 1
+          ? `Email ${names[0]}`
+          : `Email ${names.length} students`,
+      subtitle: "Outbound message awaiting approval",
+      subject: value("subject"),
+      recipientSummary:
+        names.length <= 3
+          ? names.join(", ")
+          : `${names.slice(0, 3).join(", ")} and ${names.length - 3} more`,
+    });
+  }
+
+  if (namespace === "team") {
+    if (name === "invite_team_member") {
+      const email = value("email");
+      return email
+        ? teamResultCard({
+            entityKey: `team-invite:${email}`,
+            title: email,
+            subtitle: "New team invitation",
+            email,
+            role: "STAFF",
+          })
+        : undefined;
+    }
+    const team = await getTeamPageData();
+    if (name === "revoke_team_invitation") {
+      const invitationId = value("invitationId");
+      const invitation = team.pendingInvitations.find(
+        (item) => item.id === invitationId,
+      );
+      return invitation
+        ? teamResultCard({
+            entityKey: `team-invitation:${invitation.id}`,
+            title: invitation.emailAddress,
+            subtitle: "Pending invitation selected for revocation",
+            email: invitation.emailAddress,
+          })
+        : undefined;
+    }
+    const adminId = value("adminId");
+    const admin = team.admins.find((item) => item.id === adminId);
+    if (!admin) return undefined;
+    return teamResultCard({
+      entityKey: `team-admin:${admin.id}`,
+      title: admin.name,
+      subtitle:
+        name === "remove_team_member"
+          ? "Team member selected for removal"
+          : `Change role to ${titleCase(value("role") ?? "")}`,
+      email: admin.email,
+      role: admin.role,
+    });
   }
 
   return undefined;
@@ -1109,10 +1538,11 @@ async function executeEnrollments(name: string, args: ToolArguments) {
   switch (name) {
     case "search_enrollments":
       return toolResult(
-        await listEnrollments({
+        await searchEnrollmentsForAssistant({
           studentId: args.studentId as string | undefined,
           tutorId: args.tutorId as string | undefined,
           status: args.status as never,
+          limit: Number(args.limit ?? 20),
         }),
         "/enrollments",
       );
@@ -1306,12 +1736,12 @@ async function executeRecurrence(name: string, args: ToolArguments) {
 async function executeBilling(
   name: string,
   args: ToolArguments,
-  adminId: string,
+  context: AssistantToolExecutionContext,
 ) {
   switch (name) {
     case "list_payments":
       return toolResult(
-        await listPayments({
+        await listPaymentsForAssistant({
           studentId: args.studentId as string | undefined,
           enrollmentId: args.enrollmentId as string | undefined,
           method: args.method as string | undefined,
@@ -1326,7 +1756,7 @@ async function executeBilling(
     case "get_payment_stats":
       return toolResult(await getPaymentStats(), "/payments");
     case "record_payment": {
-      const payment = await recordPayment(args as never, adminId);
+      const payment = await recordPayment(args as never, context.admin.id);
       const student = await getStudentData(stringValue(args, "studentId"));
       if (!student) throw new Error("Student not found");
       return toolResult(
@@ -1336,7 +1766,7 @@ async function executeBilling(
       );
     }
     case "mark_due_paid": {
-      const payment = await recordPaymentForDue(args, adminId);
+      const payment = await recordPaymentForDue(args, context.admin.id);
       const student = await getStudentData(stringValue(args, "studentId"));
       if (!student) throw new Error("Student not found");
       return toolResult(
@@ -1354,6 +1784,7 @@ async function executeBilling(
       await sendPaymentReminderEmail(
         stringValue(args, "enrollmentId"),
         stringValue(args, "month"),
+        context.idempotencyKey,
       );
       return toolResult({ sent: true }, "/payments");
     default:
@@ -1361,7 +1792,11 @@ async function executeBilling(
   }
 }
 
-async function executeCommunications(name: string, args: ToolArguments) {
+async function executeCommunications(
+  name: string,
+  args: ToolArguments,
+  context: AssistantToolExecutionContext,
+) {
   switch (name) {
     case "list_email_templates":
       return toolResult(await listEmailTemplates(), "/emails");
@@ -1382,7 +1817,17 @@ async function executeCommunications(name: string, args: ToolArguments) {
       return toolResult({ id, deleted: true }, "/emails");
     }
     case "send_email":
-      return toolResult(await sendEmailToStudents(args as never), "/emails");
+      return toolResult(
+        await sendEmailToStudents({
+          ...(args as {
+            studentIds: string[];
+            subject: string;
+            body: string;
+          }),
+          idempotencyKey: context.idempotencyKey,
+        }),
+        "/emails",
+      );
     default:
       throw new Error(`Unknown communications tool: ${name}`);
   }
@@ -1470,9 +1915,9 @@ export async function executeAssistantTool(input: {
     case "recurrence":
       return executeRecurrence(input.name, args);
     case "billing":
-      return executeBilling(input.name, args, input.context.admin.id);
+      return executeBilling(input.name, args, input.context);
     case "communications":
-      return executeCommunications(input.name, args);
+      return executeCommunications(input.name, args, input.context);
     case "team":
       return executeTeam(input.name, args, input.context);
     case "reporting":

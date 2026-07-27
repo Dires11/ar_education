@@ -101,6 +101,15 @@ type PendingAttachment = Omit<AssistantAttachmentMetadata, "kind"> & {
   dataBase64: string;
 };
 
+type FailedTurn = {
+  clientTurnId: string;
+  optimisticId: string;
+  content: string;
+  attachments: PendingAttachment[];
+  error: string;
+  outcomeUnknown: boolean;
+};
+
 type SelectedThread = {
   id: string;
   title: string;
@@ -477,10 +486,7 @@ function confirmationContent(tool: ToolItem) {
         : "This action will change CRM data after approval.",
     card,
     details: Object.entries(argumentsValue)
-      .filter(
-        ([key]) =>
-          !card || !/(?:^id$|Id$|Ids$)/.test(key),
-      )
+      .filter(([key]) => !/(?:^id$|Id$|Ids$)/.test(key))
       .map(([key, value]) => ({
         label: humanizeKey(key),
         value: formatPreviewValue(value),
@@ -515,13 +521,18 @@ function toolStatusLabel(status: ToolStatus) {
 function ConfirmationCard({
   tool,
   busy,
+  now,
   onDecision,
 }: {
   tool: ToolItem;
   busy: boolean;
+  now: number;
   onDecision: (toolRunId: string, decision: "APPROVE" | "REJECT") => void;
 }) {
   const content = confirmationContent(tool);
+  const expired = Boolean(
+    tool.expiresAt && new Date(tool.expiresAt).getTime() <= now,
+  );
 
   return (
     <div className="overflow-hidden rounded-xl border-2 border-primary/20 bg-primary/[0.045]">
@@ -566,35 +577,49 @@ function ConfirmationCard({
 
         <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-between">
           <p className="text-[11px] text-muted-foreground">
-            {tool.expiresAt
-              ? `Approval expires ${new Date(tool.expiresAt).toLocaleString()}`
-              : "Review the details before continuing."}
+            {expired
+              ? "This approval has expired. Ask the assistant to prepare it again."
+              : tool.expiresAt
+                ? `Approval expires ${new Date(tool.expiresAt).toLocaleString()}`
+                : "Review the details before continuing."}
           </p>
-          <div className="flex justify-end gap-2">
-            <Button
-              type="button"
+          {expired ? (
+            <Badge
               variant="outline"
-              size="sm"
-              disabled={busy}
-              onClick={() => onDecision(tool.id, "REJECT")}
+              className="border-destructive/20 text-destructive"
             >
-              Discard action
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              disabled={busy}
-              onClick={() => onDecision(tool.id, "APPROVE")}
-            >
-              {busy ? (
-                <Loader2 className="animate-spin" />
-              ) : (
-                <Check className="h-4 w-4" />
-              )}
-              Approve & execute
-            </Button>
-          </div>
+              Expired
+            </Badge>
+          ) : (
+            <div className="flex justify-end gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={busy}
+                onClick={() => onDecision(tool.id, "REJECT")}
+              >
+                Discard action
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                disabled={busy}
+                onClick={() => onDecision(tool.id, "APPROVE")}
+              >
+                {busy ? (
+                  <Loader2 className="animate-spin" />
+                ) : (
+                  <Check className="h-4 w-4" />
+                )}
+                Approve & execute
+              </Button>
+            </div>
+          )}
         </div>
+        {tool.error ? (
+          <p className="text-xs text-destructive">{tool.error}</p>
+        ) : null}
       </div>
     </div>
   );
@@ -603,10 +628,12 @@ function ConfirmationCard({
 function ToolActivity({
   tools,
   busyToolId,
+  now,
   onDecision,
 }: {
   tools: ToolItem[];
   busyToolId: string | null;
+  now: number;
   onDecision: (toolRunId: string, decision: "APPROVE" | "REJECT") => void;
 }) {
   const confirmations = tools.filter(
@@ -705,6 +732,7 @@ function ToolActivity({
           key={tool.id}
           tool={tool}
           busy={busyToolId === tool.id}
+          now={now}
           onDecision={onDecision}
         />
       ))}
@@ -765,14 +793,22 @@ export function AssistantShell({
   const [streamingText, setStreamingText] = useState("");
   const [busy, setBusy] = useState(false);
   const [decisionToolId, setDecisionToolId] = useState<string | null>(null);
+  const [failedTurn, setFailedTurn] = useState<FailedTurn | null>(null);
+  const [threadSheetOpen, setThreadSheetOpen] = useState(false);
+  const [confirmationNow, setConfirmationNow] = useState(() => Date.now());
+  const [announcement, setAnnouncement] = useState("");
   const [isArchiving, startArchiving] = useTransition();
   const endRef = useRef<HTMLDivElement>(null);
+  const scrollAreaRef = useRef<HTMLDivElement>(null);
+  const stickToBottomRef = useRef(true);
 
   useEffect(() => {
     setThreadId(initialThread?.id ?? null);
     setMessages(initialThread?.messages ?? []);
     setAttachments([]);
     setStreamingText("");
+    setFailedTurn(null);
+    stickToBottomRef.current = true;
   }, [initialThread]);
 
   useEffect(() => {
@@ -780,17 +816,44 @@ export function AssistantShell({
   }, [initialThreads]);
 
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    const now = Date.now();
+    const nextExpiry = messages
+      .flatMap((message) => message.tools)
+      .filter(
+        (tool) =>
+          tool.status === "PENDING_CONFIRMATION" &&
+          tool.expiresAt &&
+          new Date(tool.expiresAt).getTime() > now,
+      )
+      .map((tool) => new Date(tool.expiresAt!).getTime())
+      .sort((left, right) => left - right)[0];
+    if (!nextExpiry) return;
+    const timeout = window.setTimeout(
+      () => setConfirmationNow(Date.now()),
+      nextExpiry - now + 50,
+    );
+    return () => window.clearTimeout(timeout);
+  }, [confirmationNow, messages]);
+
+  useEffect(() => {
+    if (!stickToBottomRef.current) return;
+    endRef.current?.scrollIntoView({
+      behavior: streamingText ? "auto" : "smooth",
+      block: "end",
+    });
   }, [messages, streamingText]);
 
   const pendingConfirmation = useMemo(
     () =>
       messages.some((message) =>
         message.tools.some(
-          (tool) => tool.status === "PENDING_CONFIRMATION",
+          (tool) =>
+            tool.status === "PENDING_CONFIRMATION" &&
+            (!tool.expiresAt ||
+              new Date(tool.expiresAt).getTime() > confirmationNow),
         ),
       ),
-    [messages],
+    [confirmationNow, messages],
   );
   const conversationTurns = useMemo(
     () => buildConversationTurns(messages),
@@ -802,16 +865,20 @@ export function AssistantShell({
 
   function selectThread(id: string) {
     if (busy) return;
+    setThreadSheetOpen(false);
     router.push(`/assistant?thread=${encodeURIComponent(id)}`);
   }
 
   function newConversation() {
     if (busy) return;
+    setThreadSheetOpen(false);
     setThreadId(null);
     setMessages([]);
     setStreamingText("");
     setInput("");
     setAttachments([]);
+    setFailedTurn(null);
+    stickToBottomRef.current = true;
     router.push("/assistant?new=1");
   }
 
@@ -962,6 +1029,8 @@ export function AssistantShell({
           requiresConfirmation: true,
           expiresAt: event.expiresAt,
         });
+        setConfirmationNow(Date.now());
+        setAnnouncement("An action is ready for your approval.");
         break;
       case "assistant_completed":
         setMessages((current) => [
@@ -976,15 +1045,18 @@ export function AssistantShell({
           },
         ]);
         setStreamingText("");
+        setFailedTurn(null);
+        setAnnouncement("Assistant response complete.");
         break;
       case "error":
         throw new Error(event.message);
     }
   }
 
-  async function sendMessage(message: string) {
+  async function sendMessage(message: string, retry?: FailedTurn) {
+    const outgoingAttachments = retry?.attachments ?? attachments;
     if (
-      (!message.trim() && attachments.length === 0) ||
+      (!message.trim() && outgoingAttachments.length === 0) ||
       busy ||
       preparingAttachments ||
       pendingConfirmation ||
@@ -992,8 +1064,7 @@ export function AssistantShell({
     ) {
       return;
     }
-    const content = message.trim();
-    const outgoingAttachments = attachments;
+    const content = retry?.content ?? message.trim();
     const attachmentMetadata: AssistantAttachmentMetadata[] =
       outgoingAttachments.map((attachment) => ({
         name: attachment.name,
@@ -1003,21 +1074,27 @@ export function AssistantShell({
           ? "IMAGE"
           : "DOCUMENT",
       }));
-    const optimisticId = `local-${crypto.randomUUID()}`;
-    setMessages((current) => [
-      ...current,
-      {
-        id: optimisticId,
-        role: "USER",
-        content,
-        createdAt: new Date().toISOString(),
-        attachments: attachmentMetadata,
-        tools: [],
-      },
-    ]);
+    const optimisticId = retry?.optimisticId ?? `local-${crypto.randomUUID()}`;
+    const clientTurnId = retry?.clientTurnId ?? crypto.randomUUID();
+    if (!retry) {
+      setMessages((current) => [
+        ...current,
+        {
+          id: optimisticId,
+          role: "USER",
+          content,
+          createdAt: new Date().toISOString(),
+          attachments: attachmentMetadata,
+          tools: [],
+        },
+      ]);
+    }
     setInput("");
     setAttachments([]);
     setStreamingText("");
+    setFailedTurn(null);
+    setAnnouncement("Assistant is responding.");
+    stickToBottomRef.current = true;
     setBusy(true);
     try {
       const response = await fetch("/api/assistant/turn", {
@@ -1025,7 +1102,7 @@ export function AssistantShell({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           threadId: threadId ?? undefined,
-          clientTurnId: crypto.randomUUID(),
+          clientTurnId,
           message: content,
           attachments: outgoingAttachments,
         }),
@@ -1034,13 +1111,23 @@ export function AssistantShell({
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Assistant request failed";
+      const outcomeUnknown =
+        message.includes("may have completed") ||
+        message.includes("avoid a duplicate");
       toast.error(message);
       setStreamingText("");
-      setMessages((current) =>
-        current.filter((item) => item.id !== optimisticId),
-      );
-      setAttachments((current) =>
-        current.length === 0 ? outgoingAttachments : current,
+      setFailedTurn({
+        clientTurnId,
+        optimisticId,
+        content,
+        attachments: outgoingAttachments,
+        error: message,
+        outcomeUnknown,
+      });
+      setAnnouncement(
+        outcomeUnknown
+          ? "Assistant request stopped with an uncertain outcome. Reload its status before continuing."
+          : "Assistant request failed. A safe retry is available.",
       );
     } finally {
       setBusy(false);
@@ -1060,6 +1147,11 @@ export function AssistantShell({
     setDecisionToolId(toolRunId);
     setBusy(true);
     setStreamingText("");
+    setAnnouncement(
+      decision === "APPROVE"
+        ? "Executing the approved action."
+        : "Discarding the pending action.",
+    );
     updateTool(toolRunId, {
       status: decision === "APPROVE" ? "RUNNING" : "REJECTED",
     });
@@ -1077,10 +1169,22 @@ export function AssistantShell({
       const message =
         error instanceof Error ? error.message : "Unable to apply decision";
       toast.error(message);
+      const tool = messages
+        .flatMap((item) => item.tools)
+        .find((item) => item.id === toolRunId);
+      const expired = Boolean(
+        tool?.expiresAt &&
+          new Date(tool.expiresAt).getTime() <= Date.now(),
+      );
       updateTool(toolRunId, {
-        status: "FAILED",
+        status: expired ? "EXPIRED" : "PENDING_CONFIRMATION",
         error: message,
       });
+      setAnnouncement(
+        expired
+          ? "The approval expired."
+          : "The decision was not confirmed. The approval controls remain available.",
+      );
     } finally {
       setBusy(false);
       setDecisionToolId(null);
@@ -1132,8 +1236,11 @@ export function AssistantShell({
       </aside>
 
       <section className="relative flex min-h-0 min-w-0 flex-col bg-background">
+        <span className="sr-only" role="status" aria-live="polite">
+          {announcement}
+        </span>
         <header className="flex h-14 shrink-0 items-center gap-3 border-b bg-background/95 px-4 backdrop-blur sm:px-6">
-          <Sheet>
+          <Sheet open={threadSheetOpen} onOpenChange={setThreadSheetOpen}>
             <SheetTrigger asChild>
               <Button variant="ghost" size="icon-sm" className="lg:hidden">
                 <PanelLeft />
@@ -1216,7 +1323,17 @@ export function AssistantShell({
           </div>
         ) : null}
 
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        <div
+          ref={scrollAreaRef}
+          className="min-h-0 flex-1 overflow-y-auto"
+          onScroll={() => {
+            const element = scrollAreaRef.current;
+            if (!element) return;
+            stickToBottomRef.current =
+              element.scrollHeight - element.scrollTop - element.clientHeight <
+              120;
+          }}
+        >
           {messages.length === 0 && !streamingText ? (
             <div className="mx-auto flex min-h-full max-w-[48rem] flex-col items-center justify-center px-4 py-10 text-center sm:px-6">
               <span className="mb-5 flex h-14 w-14 items-center justify-center rounded-2xl border border-primary/10 bg-primary/8 text-primary">
@@ -1275,6 +1392,68 @@ export function AssistantShell({
                       </div>
                     ) : null}
 
+                    {turn.user &&
+                    failedTurn?.optimisticId === turn.user.id ? (
+                      <div
+                        className="ml-auto max-w-[88%] rounded-xl border border-destructive/20 bg-destructive/5 p-3 sm:max-w-[82%]"
+                        role="alert"
+                      >
+                        <p className="text-xs leading-5 text-destructive">
+                          {failedTurn.error}
+                        </p>
+                        <div className="mt-2 flex flex-wrap justify-end gap-2">
+                          {failedTurn.outcomeUnknown ? (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              disabled={busy}
+                              onClick={() => router.refresh()}
+                            >
+                              Reload status
+                            </Button>
+                          ) : (
+                            <>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                disabled={busy}
+                                onClick={() =>
+                                  void sendMessage(
+                                    failedTurn.content,
+                                    failedTurn,
+                                  )
+                                }
+                              >
+                                Retry safely
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                disabled={busy}
+                                onClick={() => {
+                                  setInput(failedTurn.content);
+                                  setAttachments(failedTurn.attachments);
+                                  setMessages((current) =>
+                                    current.filter(
+                                      (message) =>
+                                        message.id !==
+                                        failedTurn.optimisticId,
+                                    ),
+                                  );
+                                  setFailedTurn(null);
+                                }}
+                              >
+                                Edit request
+                              </Button>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    ) : null}
+
                     {showAssistant ? (
                       <div className="flex items-start gap-3 sm:gap-4">
                         <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground shadow-sm">
@@ -1284,6 +1463,7 @@ export function AssistantShell({
                           <ToolActivity
                             tools={turn.tools}
                             busyToolId={decisionToolId}
+                            now={confirmationNow}
                             onDecision={decide}
                           />
 
@@ -1294,7 +1474,7 @@ export function AssistantShell({
                           ) : null}
 
                           {isLast && streamingText ? (
-                            <div aria-live="polite">
+                            <div>
                               <AssistantMarkdown>
                                 {streamingText}
                               </AssistantMarkdown>
@@ -1319,7 +1499,7 @@ export function AssistantShell({
                           !turn.assistant ? (
                             <div
                               className="flex items-center gap-2 text-sm text-muted-foreground"
-                              aria-live="polite"
+                              aria-hidden="true"
                             >
                               <Loader2 className="h-4 w-4 animate-spin text-primary" />
                               {turn.tools.length > 0

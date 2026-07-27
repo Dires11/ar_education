@@ -13,6 +13,7 @@ const dataMocks = vi.hoisted(() => ({
   completeAssistantToolRun: vi.fn(async () => undefined),
   createAssistantTurn: vi.fn(),
   createOrGetAssistantToolRun: vi.fn(),
+  expireAssistantRuns: vi.fn(async () => undefined),
   failAssistantRun: vi.fn(async () => undefined),
   failAssistantToolRun: vi.fn(async () => undefined),
   getAssistantContext: vi.fn(),
@@ -20,9 +21,14 @@ const dataMocks = vi.hoisted(() => ({
   getAssistantThread: vi.fn(),
   getAssistantToolRunForDecision: vi.fn(),
   pauseAssistantRun: vi.fn(),
+  recordAssistantModelStep: vi.fn(async () => ({
+    toolCallAllowed: true,
+    toolCallCount: 1,
+  })),
   claimAssistantToolRun: vi.fn(),
   rejectAssistantToolRun: vi.fn(),
   setAssistantThreadSummary: vi.fn(),
+  touchAssistantRun: vi.fn(async () => undefined),
 }));
 
 const executeMock = vi.hoisted(() => vi.fn());
@@ -940,6 +946,63 @@ describe("assistant orchestration", () => {
     );
     expect(dataMocks.completeAssistantRun).toHaveBeenCalledWith(
       expect.objectContaining({ content: "That subject already exists." }),
+    );
+  });
+
+  it("does not mark a successful side effect retryable when audit finalization fails", async () => {
+    responses.queue.push({
+      events: [],
+      final: {
+        output_text: "",
+        output: [
+          {
+            type: "function_call",
+            namespace: "catalog",
+            name: "create_subject",
+            call_id: "call-subject",
+            arguments: JSON.stringify({
+              name: "Algebra",
+              description: "Math",
+            }),
+          },
+        ],
+        usage,
+      },
+    });
+    dataMocks.createOrGetAssistantToolRun.mockResolvedValue({
+      id: "tool-subject",
+      runId: "run-1",
+      callId: "call-subject",
+      namespace: "catalog",
+      toolName: "create_subject",
+      arguments: { name: "Algebra", description: "Math" },
+      status: "RUNNING",
+      requiresConfirmation: false,
+    });
+    executeMock.mockResolvedValue({
+      ok: true,
+      data: { id: "subject-1", name: "Algebra" },
+    });
+    dataMocks.completeAssistantToolRun.mockRejectedValueOnce(
+      new Error("database unavailable"),
+    );
+
+    await expect(
+      processAssistantTurn(
+        { id: "admin-1", role: "STAFF" },
+        {
+          clientTurnId: "c7bcb6f9-41e7-4c17-bf0d-3e1b04c8e0d4",
+          message: "Create Algebra",
+        },
+        () => undefined,
+      ),
+    ).rejects.toThrow("may have completed");
+
+    expect(executeMock).toHaveBeenCalledTimes(1);
+    expect(dataMocks.failAssistantToolRun).not.toHaveBeenCalled();
+    expect(dataMocks.failAssistantRun).toHaveBeenCalledWith(
+      "run-1",
+      expect.stringContaining("may have completed"),
     );
   });
 

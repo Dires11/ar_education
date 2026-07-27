@@ -3,7 +3,7 @@ import { requireAdmin } from "@/lib/utils/auth";
 import { assistantTurnSchema } from "@/lib/validators/assistant";
 import { streamAssistantTurn } from "@/lib/services/assistant/stream";
 
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 export async function POST(request: Request) {
   try {
