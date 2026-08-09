@@ -196,6 +196,42 @@ describe("assistant tool registry", () => {
     expect(directoryQuery.description).toContain("youngest");
     expect(assistantToolRequiresConfirmation(directoryQuery, {})).toBe(false);
   });
+
+  it("exposes bounded balance and recurrence lookups before mutations", () => {
+    const balance = getAssistantToolSpec(
+      "billing",
+      "get_student_balance",
+      "STAFF",
+    )!;
+    expect(balance.schema.parse({ studentId: "student-1" })).toEqual({
+      studentId: "student-1",
+    });
+
+    const recurrenceList = getAssistantToolSpec(
+      "recurrence",
+      "list_recurring_schedules",
+      "STAFF",
+    )!;
+    expect(
+      recurrenceList.schema.parse({ enrollmentId: "enrollment-1" }),
+    ).toEqual({
+      enrollmentId: "enrollment-1",
+      includeEnded: false,
+      limit: 20,
+    });
+    expect(() => recurrenceList.schema.parse({})).toThrow();
+    expect(() =>
+      recurrenceList.schema.parse({
+        enrollmentId: "enrollment-1",
+        groupId: "group-1",
+      }),
+    ).toThrow();
+
+    const counts = getAssistantNamespaceCounts("OWNER");
+    expect(counts.recurrence).toBe(9);
+    expect(counts.billing).toBe(8);
+    expect(counts.schedule).toBe(9);
+  });
 });
 
 describe("assistant request validation", () => {

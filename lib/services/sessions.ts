@@ -1,10 +1,6 @@
 import "server-only";
 
-import {
-  addDays,
-  format,
-  isBefore,
-} from "date-fns";
+import { addDays, format, isBefore } from "date-fns";
 import { getEnrollmentPaidMonths } from "@/lib/services/payments";
 import {
   createSessionWithAttendances,
@@ -26,6 +22,7 @@ import {
   getSession,
   getActiveRecurrenceRulesForEnrollment as getActiveRecurrenceRulesForEnrollmentData,
   getActiveRecurrenceRulesForGroup as getActiveRecurrenceRulesForGroupData,
+  listRecurrenceRulesForAssistant as listRecurrenceRulesForAssistantData,
 } from "@/lib/data/sessions";
 import { getGroupWithMembers } from "@/lib/data/groups";
 import {
@@ -106,15 +103,24 @@ export type EnrollmentSessionSummary = {
 // ─── Enrollment color palette ─────────────────────────────────────────────────
 
 const ENROLLMENT_PALETTE = [
-  "#ef4444","#f97316","#f59e0b","#84cc16","#10b981",
-  "#14b8a6","#06b6d4","#0ea5e9","#6366f1","#8b5cf6",
-  "#a855f7","#ec4899",
+  "#ef4444",
+  "#f97316",
+  "#f59e0b",
+  "#84cc16",
+  "#10b981",
+  "#14b8a6",
+  "#06b6d4",
+  "#0ea5e9",
+  "#6366f1",
+  "#8b5cf6",
+  "#a855f7",
+  "#ec4899",
 ];
 
 function hashEnrollmentColor(enrollmentId: string): string {
   let h = 0;
   for (let i = 0; i < enrollmentId.length; i++) {
-    h = ((h << 5) - h) + enrollmentId.charCodeAt(i);
+    h = (h << 5) - h + enrollmentId.charCodeAt(i);
     h = h & h;
   }
   return ENROLLMENT_PALETTE[Math.abs(h) % ENROLLMENT_PALETTE.length];
@@ -128,7 +134,8 @@ export async function createAdHocSession(input: CreateAdHocSessionInput) {
   const duration = Number(parsed.durationMinutes);
 
   // Resolve group members if groupId is provided
-  let sessionEnrollmentId: string | undefined = parsed.enrollmentId || undefined;
+  let sessionEnrollmentId: string | undefined =
+    parsed.enrollmentId || undefined;
   let group: Awaited<ReturnType<typeof getGroupWithMembers>> | null = null;
   let enrollment: Awaited<ReturnType<typeof getEnrollmentForSession>> | null =
     null;
@@ -167,10 +174,7 @@ export async function createAdHocSession(input: CreateAdHocSessionInput) {
     tutorId = enrollment.tutorId;
     subjectId = enrollment.subjectId;
     studentIds = [enrollment.studentId];
-    await assertEnrollmentHasMonthlyCapacity(
-      sessionEnrollmentId,
-      scheduledFor
-    );
+    await assertEnrollmentHasMonthlyCapacity(sessionEnrollmentId, scheduledFor);
   }
 
   await assertNoScheduleConflict({
@@ -195,10 +199,12 @@ export async function createAdHocSession(input: CreateAdHocSessionInput) {
           enrollmentId: groupEnrollment.id,
         }))
     : enrollment
-      ? [{
-          studentId: enrollment.studentId,
-          enrollmentId: enrollment.id,
-        }]
+      ? [
+          {
+            studentId: enrollment.studentId,
+            enrollmentId: enrollment.id,
+          },
+        ]
       : studentIds.map((studentId) => ({ studentId }));
 
   return createSessionWithAttendances(
@@ -223,9 +229,7 @@ export async function createRecurringSchedule(input: CreateRecurrenceInput) {
   const duration = Number(parsed.durationMinutes);
   const intervalWeeks = parsed.intervalWeeks ? Number(parsed.intervalWeeks) : 1;
   const startsOn = new Date(parsed.startsOn);
-  const requestedEndsOn = parsed.endsOn
-    ? new Date(parsed.endsOn)
-    : undefined;
+  const requestedEndsOn = parsed.endsOn ? new Date(parsed.endsOn) : undefined;
   let effectiveEndsOn = requestedEndsOn;
   const timeZone = getConfiguredCenterTimeZone();
 
@@ -242,7 +246,9 @@ export async function createRecurringSchedule(input: CreateRecurrenceInput) {
     if (!group) throw new Error("Group not found");
     scheduleTutorId = group.tutorId;
     scheduleSubjectId = group.subjectId;
-    scheduleStudents = group.enrollments.map((enrollment) => enrollment.student);
+    scheduleStudents = group.enrollments.map(
+      (enrollment) => enrollment.student,
+    );
     ruleColor = ruleColor ?? hashEnrollmentColor(parsed.groupId);
   } else {
     ruleEnrollmentId = parsed.enrollmentId;
@@ -259,16 +265,17 @@ export async function createRecurringSchedule(input: CreateRecurrenceInput) {
     ruleColor = ruleColor ?? hashEnrollmentColor(parsed.enrollmentId!);
   }
 
-  const previewInput = effectiveEndsOn && !parsed.endsOn
-    ? {
-        ...parsed,
-        endsOn: effectiveEndsOn.toISOString().slice(0, 10),
-      }
-    : parsed;
+  const previewInput =
+    effectiveEndsOn && !parsed.endsOn
+      ? {
+          ...parsed,
+          endsOn: effectiveEndsOn.toISOString().slice(0, 10),
+        }
+      : parsed;
   const preview = await getRecurringSchedulePreview(previewInput);
   if (!parsed.groupId && preview.firstExceededDate && !effectiveEndsOn) {
     throw new Error(
-      "This recurrence exceeds the package limit. Add an end date or adjust the pattern before creating it."
+      "This recurrence exceeds the package limit. Add an end date or adjust the pattern before creating it.",
     );
   }
 
@@ -286,29 +293,31 @@ export async function createRecurringSchedule(input: CreateRecurrenceInput) {
     timeZone,
   });
 
-  const rules = await createRecurrenceRules(daysOfWeek.map((dayOfWeek) => {
-    const dayKey = String(dayOfWeek) as
-      | "0"
-      | "1"
-      | "2"
-      | "3"
-      | "4"
-      | "5"
-      | "6";
-    return {
-      enrollmentId: ruleEnrollmentId,
-      groupId: ruleGroupId,
-      dayOfWeek,
-      startTime: parsed.startTimes?.[dayKey] ?? parsed.startTime,
-      timeZone,
-      durationMinutes: duration,
-      intervalWeeks,
-      room: parsed.room || undefined,
-      color: ruleColor,
-      startsOn,
-      endsOn: effectiveEndsOn,
-    };
-  }));
+  const rules = await createRecurrenceRules(
+    daysOfWeek.map((dayOfWeek) => {
+      const dayKey = String(dayOfWeek) as
+        | "0"
+        | "1"
+        | "2"
+        | "3"
+        | "4"
+        | "5"
+        | "6";
+      return {
+        enrollmentId: ruleEnrollmentId,
+        groupId: ruleGroupId,
+        dayOfWeek,
+        startTime: parsed.startTimes?.[dayKey] ?? parsed.startTime,
+        timeZone,
+        durationMinutes: duration,
+        intervalWeeks,
+        room: parsed.room || undefined,
+        color: ruleColor,
+        startsOn,
+        endsOn: effectiveEndsOn,
+      };
+    }),
+  );
 
   const now = new Date();
   if (isBefore(startsOn, now)) {
@@ -319,9 +328,13 @@ export async function createRecurringSchedule(input: CreateRecurrenceInput) {
       recurrenceRuleIds: rules.map((r) => r.id),
     });
   }
-  const materializedSessions = await materializeSessions(now, addDays(now, 30), {
-    recurrenceRuleIds: rules.map((rule) => rule.id),
-  });
+  const materializedSessions = await materializeSessions(
+    now,
+    addDays(now, 30),
+    {
+      recurrenceRuleIds: rules.map((rule) => rule.id),
+    },
+  );
   await materializeGroupSessions(now, addDays(now, 30), {
     recurrenceRuleIds: rules.map((rule) => rule.id),
   });
@@ -344,7 +357,7 @@ type MonthRules = Awaited<ReturnType<typeof getRecurrenceRulesForMonth>>;
 export async function getVirtualSessionsForMonth(
   monthStart: Date,
   realSessions: RealSessionSlim[],
-  prefetchedRules?: MonthRules
+  prefetchedRules?: MonthRules,
 ): Promise<VirtualSession[]> {
   const calendarMonthStart = new Date(
     Date.UTC(monthStart.getUTCFullYear(), monthStart.getUTCMonth(), 1),
@@ -356,10 +369,7 @@ export async function getVirtualSessionsForMonth(
   const centerTimeZone = getConfiguredCenterTimeZone();
   const rules =
     prefetchedRules ??
-    (await getRecurrenceRulesForMonth(
-      calendarMonthStart,
-      calendarMonthEnd,
-    ));
+    (await getRecurrenceRulesForMonth(calendarMonthStart, calendarMonthEnd));
 
   const plannedPerEnrollmentWeek = new Map<string, number>();
   for (const s of realSessions) {
@@ -376,12 +386,11 @@ export async function getVirtualSessionsForMonth(
       getCalendarDateKey(d, centerTimeZone) <=
         calendarMonthEnd.toISOString().slice(0, 10)
     ) {
-      const key = getEnrollmentWeekKey(
-        s.enrollmentId,
-        d,
-        centerTimeZone,
+      const key = getEnrollmentWeekKey(s.enrollmentId, d, centerTimeZone);
+      plannedPerEnrollmentWeek.set(
+        key,
+        (plannedPerEnrollmentWeek.get(key) ?? 0) + 1,
       );
-      plannedPerEnrollmentWeek.set(key, (plannedPerEnrollmentWeek.get(key) ?? 0) + 1);
     }
   }
 
@@ -392,10 +401,7 @@ export async function getVirtualSessionsForMonth(
     if (!enrollment || !rule.enrollmentId) continue;
     const sessionsPerWeek = enrollment.package.sessionsPerWeek ?? null;
 
-    let current = getFirstMatchingDate(
-      new Date(rule.startsOn),
-      rule.dayOfWeek,
-    );
+    let current = getFirstMatchingDate(new Date(rule.startsOn), rule.dayOfWeek);
 
     // Advance to the month window
     while (current < calendarMonthStart) {
@@ -423,7 +429,7 @@ export async function getVirtualSessionsForMonth(
         (s) =>
           s.recurrenceRuleId === rule.id &&
           new Date(s.recurrenceOccurrenceFor ?? s.scheduledFor).getTime() ===
-            scheduledFor.getTime()
+            scheduledFor.getTime(),
       );
 
       if (!hasReal) {
@@ -490,10 +496,7 @@ export async function getVirtualSessionsForMonth(
   for (const rule of groupRules) {
     if (!rule.group) continue;
 
-    let current = getFirstMatchingDate(
-      new Date(rule.startsOn),
-      rule.dayOfWeek,
-    );
+    let current = getFirstMatchingDate(new Date(rule.startsOn), rule.dayOfWeek);
     while (current < calendarMonthStart) {
       current = addCalendarDays(current, rule.intervalWeeks * 7);
     }
@@ -506,13 +509,8 @@ export async function getVirtualSessionsForMonth(
         rule.startTime,
         rule.timeZone,
       );
-      const eligibleEnrollments = rule.group.enrollments.filter(
-        (enrollment) =>
-          isEnrollmentEligibleForSession(
-            enrollment,
-            scheduledFor,
-            rule.timeZone,
-          ),
+      const eligibleEnrollments = rule.group.enrollments.filter((enrollment) =>
+        isEnrollmentEligibleForSession(enrollment, scheduledFor, rule.timeZone),
       );
       if (eligibleEnrollments.length === 0) {
         current = addCalendarDays(current, rule.intervalWeeks * 7);
@@ -568,14 +566,11 @@ export async function getVirtualSessionsForMonth(
 export async function getEnrollmentSessionSummaries(
   monthStart: Date,
   realSessions: RealSessionSlim[],
-  prefetchedRules?: MonthRules
+  prefetchedRules?: MonthRules,
 ): Promise<EnrollmentSessionSummary[]> {
   const centerTimeZone = getConfiguredCenterTimeZone();
   const daysSinceMonday = (monthStart.getUTCDay() + 6) % 7;
-  const calendarWeekStart = addCalendarDays(
-    monthStart,
-    -daysSinceMonday,
-  );
+  const calendarWeekStart = addCalendarDays(monthStart, -daysSinceMonday);
   const weekStart = combineDateAndTime(
     calendarWeekStart,
     "00:00",
@@ -606,7 +601,7 @@ export async function getEnrollmentSessionSummaries(
         s.enrollmentId === rule.enrollmentId &&
         (s.status === "COMPLETED" || s.status === "NO_SHOW") &&
         new Date(s.scheduledFor) >= weekStart &&
-        new Date(s.scheduledFor) < weekEndExclusive
+        new Date(s.scheduledFor) < weekEndExclusive,
     ).length;
 
     const remaining =
@@ -632,7 +627,7 @@ export async function getEnrollmentSessionSummaries(
 
 export async function markSessionAttendance(
   sessionId: string,
-  input: MarkAttendanceInput
+  input: MarkAttendanceInput,
 ) {
   const parsed = markAttendanceSchema.parse(input);
 
@@ -640,9 +635,11 @@ export async function markSessionAttendance(
   const hasCompleted = allStatuses.some((s) => s === "COMPLETED");
   const allScheduled = allStatuses.every((s) => s === "SCHEDULED");
   const allNoShow = allStatuses.every((s) => s === "NO_SHOW");
-  const allCancelledTutor = allStatuses.every((s) => s === "CANCELLED_BY_TUTOR");
+  const allCancelledTutor = allStatuses.every(
+    (s) => s === "CANCELLED_BY_TUTOR",
+  );
   const allCancelledStudent = allStatuses.every(
-    (s) => s === "CANCELLED_BY_STUDENT"
+    (s) => s === "CANCELLED_BY_STUDENT",
   );
 
   let sessionStatus:
@@ -690,10 +687,7 @@ export async function updateScheduledSession(
       getConfiguredCenterTimeZone(),
     );
     if (session.enrollment) {
-      assertSessionDateWithinEnrollmentBounds(
-        session.enrollment,
-        calendarDate,
-      );
+      assertSessionDateWithinEnrollmentBounds(session.enrollment, calendarDate);
     }
     for (const attendance of session.attendance) {
       if (attendance.enrollment) {
@@ -734,7 +728,7 @@ export async function updateScheduledSession(
 
 export async function cancelSessionById(
   id: string,
-  cancelledBy: "TUTOR" | "STUDENT"
+  cancelledBy: "TUTOR" | "STUDENT",
 ) {
   return cancelSession(id, cancelledBy);
 }
@@ -754,7 +748,7 @@ export async function splitRecurrenceRule(
     room?: string | null;
     intervalWeeks?: number;
     dayOfWeek?: number;
-  }
+  },
 ) {
   const rule = await getRecurrenceRuleWithParticipants(ruleId);
   if (!rule) throw new Error("Recurrence rule not found");
@@ -798,8 +792,7 @@ export async function splitRecurrenceRule(
     students: target.students,
     daysOfWeek: [newParams.dayOfWeek ?? rule.dayOfWeek],
     startTime: newParams.startTime ?? rule.startTime,
-    durationMinutes:
-      newParams.durationMinutes ?? rule.durationMinutes,
+    durationMinutes: newParams.durationMinutes ?? rule.durationMinutes,
     intervalWeeks: newParams.intervalWeeks ?? rule.intervalWeeks,
     startsOn: splitDay,
     endsOn: effectiveEndsOn ? new Date(effectiveEndsOn) : undefined,
@@ -822,8 +815,7 @@ export async function splitRecurrenceRule(
     timeZone: rule.timeZone,
     durationMinutes: update.durationMinutes,
     intervalWeeks: update.intervalWeeks,
-    room:
-      update.room === null ? undefined : update.room,
+    room: update.room === null ? undefined : update.room,
     color: rule.color ?? undefined,
     startsOn: splitDay,
     endsOn: effectiveEndsOn ? new Date(effectiveEndsOn) : undefined,
@@ -876,10 +868,16 @@ export async function getMonthSchedule(monthKey: string) {
     getRecurrenceRulesForMonth(range.calendarStart, range.calendarEnd),
   ]);
 
-  const enrollmentIds = [...new Set([
-    ...rules.map((r) => r.enrollmentId).filter((id): id is string => id !== null),
-    ...realSessions.filter((s) => s.enrollmentId != null).map((s) => s.enrollmentId as string),
-  ])];
+  const enrollmentIds = [
+    ...new Set([
+      ...rules
+        .map((r) => r.enrollmentId)
+        .filter((id): id is string => id !== null),
+      ...realSessions
+        .filter((s) => s.enrollmentId != null)
+        .map((s) => s.enrollmentId as string),
+    ]),
+  ];
   const subscriptionEnrollmentIds = new Set([
     ...rules
       .filter((rule) => rule.enrollment?.package.type === "MONTHLY")
@@ -892,18 +890,12 @@ export async function getMonthSchedule(monthKey: string) {
   ]);
   // Cover the calendar grid which may show days from adjacent months
   const months = [-1, 0, 1].map((offset) =>
-    addCalendarMonths(range.calendarStart, offset)
-      .toISOString()
-      .slice(0, 7),
+    addCalendarMonths(range.calendarStart, offset).toISOString().slice(0, 7),
   );
 
   const [virtualSessions, summaries, paidMonthRecords] = await Promise.all([
     getVirtualSessionsForMonth(range.calendarStart, realSessions, rules),
-    getEnrollmentSessionSummaries(
-      range.calendarStart,
-      realSessions,
-      rules,
-    ),
+    getEnrollmentSessionSummaries(range.calendarStart, realSessions, rules),
     getEnrollmentPaidMonths(enrollmentIds, months),
   ]);
 
@@ -911,7 +903,7 @@ export async function getMonthSchedule(monthKey: string) {
   const paidMonths = new Set(
     paidMonthRecords
       .filter((p) => p.enrollmentId && p.coversMonth)
-      .map((p) => `${p.enrollmentId}:${p.coversMonth}`)
+      .map((p) => `${p.enrollmentId}:${p.coversMonth}`),
   );
 
   return {
@@ -925,22 +917,17 @@ export async function getMonthSchedule(monthKey: string) {
 
 export async function updateEnrollmentRecurrenceColor(
   enrollmentId: string,
-  color: string
+  color: string,
 ) {
   await updateRecurrenceRulesColorForEnrollment(enrollmentId, color);
 }
 
-export function getActiveRecurrenceRulesForEnrollment(
-  enrollmentId: string,
-) {
+export function getActiveRecurrenceRulesForEnrollment(enrollmentId: string) {
   const calendarDate = getCalendarDateInTimeZone(
     new Date(),
     getConfiguredCenterTimeZone(),
   );
-  return getActiveRecurrenceRulesForEnrollmentData(
-    enrollmentId,
-    calendarDate,
-  );
+  return getActiveRecurrenceRulesForEnrollmentData(enrollmentId, calendarDate);
 }
 
 export function getActiveRecurrenceRulesForGroup(groupId: string) {
@@ -951,8 +938,27 @@ export function getActiveRecurrenceRulesForGroup(groupId: string) {
   return getActiveRecurrenceRulesForGroupData(groupId, calendarDate);
 }
 
-export { combineDateAndTime, getFirstMatchingDate } from "@/lib/services/session-dates";
-export { materializeGroupSessions, materializeSessions } from "@/lib/services/session-materialization";
+export function listRecurrenceRulesForAssistant(input: {
+  enrollmentId?: string;
+  groupId?: string;
+  includeEnded: boolean;
+  limit: number;
+}) {
+  const calendarDate = getCalendarDateInTimeZone(
+    new Date(),
+    getConfiguredCenterTimeZone(),
+  );
+  return listRecurrenceRulesForAssistantData({ ...input, calendarDate });
+}
+
+export {
+  combineDateAndTime,
+  getFirstMatchingDate,
+} from "@/lib/services/session-dates";
+export {
+  materializeGroupSessions,
+  materializeSessions,
+} from "@/lib/services/session-materialization";
 export {
   cancelVirtualOccurrence,
   rescheduleVirtualOccurrence,

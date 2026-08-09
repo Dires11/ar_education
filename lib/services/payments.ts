@@ -30,10 +30,7 @@ import {
 } from "@/lib/services/pricing-calculator";
 import { sendEmail } from "@/lib/utils/email";
 import { substitutePlaceholders } from "@/lib/services/emails";
-import {
-  createEmailTemplate,
-  getLatestEmailTemplate,
-} from "@/lib/data/emails";
+import { createEmailTemplate, getLatestEmailTemplate } from "@/lib/data/emails";
 import {
   addCalendarMonths,
   getCalendarDateStart,
@@ -73,13 +70,12 @@ function formatBillingMonthLabel(date: Date, short = false) {
 
 export async function recordPayment(
   input: CreatePaymentInput,
-  recordedById: string
+  recordedById: string,
+  idempotencyKey?: string,
 ) {
   const parsed = createPaymentSchema.parse(input);
   if (parsed.enrollmentId) {
-    const enrollment = await getEnrollmentPaymentDue(
-      parsed.enrollmentId,
-    );
+    const enrollment = await getEnrollmentPaymentDue(parsed.enrollmentId);
     if (!enrollment || enrollment.studentId !== parsed.studentId) {
       throw new Error("Payment enrollment does not belong to this student");
     }
@@ -101,12 +97,14 @@ export async function recordPayment(
     enrollmentId: parsed.enrollmentId || undefined,
     coversMonth: parsed.coversMonth || undefined,
     notes: parsed.notes || undefined,
+    idempotencyKey,
   });
 }
 
 export async function recordPaymentForDue(
   input: unknown,
   recordedById: string,
+  idempotencyKey?: string,
 ) {
   const parsed = markPaymentPaidSchema.parse(input);
   const enrollment = await getEnrollmentPaymentDue(parsed.enrollmentId);
@@ -115,10 +113,7 @@ export async function recordPaymentForDue(
   }
 
   const timeZone = getConfiguredCenterTimeZone();
-  const {
-    periodDate,
-    billingPeriodIndex,
-  } = getValidatedBillingPeriod(
+  const { periodDate, billingPeriodIndex } = getValidatedBillingPeriod(
     enrollment,
     parsed.month,
     timeZone,
@@ -141,6 +136,7 @@ export async function recordPaymentForDue(
     enrollmentId: parsed.enrollmentId,
     coversMonth: parsed.month,
     amountDue,
+    idempotencyKey,
   });
 }
 
@@ -178,7 +174,10 @@ export async function getUpcomingPaymentDues(): Promise<PaymentDue[]> {
       // Skip months before enrollment started
       if (enrollmentStart > monthDate) continue;
       if (finalBillingMonth && monthDate > finalBillingMonth) continue;
-      if (billingMonthDifference(monthDate, enrollmentStart) % periodMonths !== 0) {
+      if (
+        billingMonthDifference(monthDate, enrollmentStart) % periodMonths !==
+        0
+      ) {
         continue;
       }
 
@@ -266,10 +265,7 @@ export async function getPaymentStats() {
   const timeZone = getConfiguredCenterTimeZone();
   const currentMonthKey = getCalendarMonthKey(new Date(), timeZone);
   const currentRange = getCalendarMonthRange(currentMonthKey, timeZone);
-  const previousMonthKey = addCalendarMonths(
-    currentRange.calendarStart,
-    -1,
-  )
+  const previousMonthKey = addCalendarMonths(currentRange.calendarStart, -1)
     .toISOString()
     .slice(0, 7);
   const previousRange = getCalendarMonthRange(previousMonthKey, timeZone);
@@ -295,17 +291,13 @@ export async function sendPaymentReminderEmail(
   if (!enrollment) throw new Error("Enrollment not found");
 
   const { student } = enrollment;
-  const recipientEmail =
-    student.guardians[0]?.guardian.email ?? student.email;
+  const recipientEmail = student.guardians[0]?.guardian.email ?? student.email;
 
   if (!recipientEmail)
     throw new Error("No email address found for this student");
 
   const timeZone = getConfiguredCenterTimeZone();
-  const {
-    periodDate,
-    billingPeriodIndex,
-  } = getValidatedBillingPeriod(
+  const { periodDate, billingPeriodIndex } = getValidatedBillingPeriod(
     enrollment,
     month,
     timeZone,
@@ -344,10 +336,10 @@ export async function sendPaymentReminderEmail(
   const activeTemplate =
     template ??
     (await createEmailTemplate({
-        name: "Payment Reminder",
-        type: "PAYMENT_REMINDER",
-        subject: "Payment reminder — @subject (@month)",
-        body: `Hello @guardian,\n\nThis is a friendly reminder that the payment for @name's @subject lessons is due for @month.\n\nAmount due: @amount\n\nPlease contact us to arrange payment or if you have any questions.\n\nThank you,\n@center`,
+      name: "Payment Reminder",
+      type: "PAYMENT_REMINDER",
+      subject: "Payment reminder — @subject (@month)",
+      body: `Hello @guardian,\n\nThis is a friendly reminder that the payment for @name's @subject lessons is due for @month.\n\nAmount due: @amount\n\nPlease contact us to arrange payment or if you have any questions.\n\nThank you,\n@center`,
     }));
 
   const emailSubject = substitutePlaceholders(activeTemplate.subject, ctx);

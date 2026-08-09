@@ -6,6 +6,7 @@ const responses = vi.hoisted(() => ({
     final: Record<string, unknown>;
   }>,
   requests: [] as Array<Record<string, unknown>>,
+  options: [] as Array<{ signal?: AbortSignal } | undefined>,
 }));
 
 const dataMocks = vi.hoisted(() => ({
@@ -37,8 +38,12 @@ const confirmationCardMock = vi.hoisted(() => vi.fn());
 vi.mock("openai", () => ({
   default: class FakeOpenAI {
     responses = {
-      stream: (request: Record<string, unknown>) => {
+      stream: (
+        request: Record<string, unknown>,
+        options?: { signal?: AbortSignal },
+      ) => {
         responses.requests.push(request);
+        responses.options.push(options);
         const item = responses.queue.shift();
         if (!item) throw new Error("No fake response queued");
         return {
@@ -90,6 +95,7 @@ describe("assistant orchestration", () => {
     vi.clearAllMocks();
     responses.queue.length = 0;
     responses.requests.length = 0;
+    responses.options.length = 0;
     process.env.OPENAI_API_KEY = "test-key";
     confirmationCardMock.mockResolvedValue(undefined);
     dataMocks.createAssistantTurn.mockResolvedValue({
@@ -167,6 +173,30 @@ describe("assistant orchestration", () => {
     expect(responses.requests[0].instructions).toEqual(
       expect.stringContaining("structured card"),
     );
+  });
+
+  it("passes the route abort signal to the OpenAI stream", async () => {
+    responses.queue.push({
+      events: [],
+      final: {
+        output_text: "Done.",
+        output: [],
+        usage,
+      },
+    });
+    const request = new AbortController();
+
+    await processAssistantTurn(
+      { id: "admin-1", role: "STAFF" },
+      {
+        clientTurnId: "c7bcb6f9-41e7-4c17-bf0d-3e1b04c8e0d4",
+        message: "Help me",
+      },
+      () => undefined,
+      request.signal,
+    );
+
+    expect(responses.options[0]?.signal).toBe(request.signal);
   });
 
   it("constructs model context from the local summary and recent messages", async () => {
@@ -270,6 +300,53 @@ describe("assistant orchestration", () => {
     expect(events.at(-1)?.type).toBe("assistant_completed");
     expect(JSON.stringify(responses.requests[1].input)).not.toContain(
       "parsed_arguments",
+    );
+  });
+
+  it("blocks a blind retry when the response stops after a recorded tool", async () => {
+    responses.queue.push({
+      events: [],
+      final: {
+        output_text: "",
+        output: [
+          {
+            type: "function_call",
+            namespace: "catalog",
+            name: "list_subjects",
+            call_id: "call-1",
+            arguments: "{}",
+          },
+        ],
+        usage,
+      },
+    });
+    dataMocks.createOrGetAssistantToolRun.mockResolvedValue({
+      id: "tool-1",
+      runId: "run-1",
+      callId: "call-1",
+      namespace: "catalog",
+      toolName: "list_subjects",
+      arguments: {},
+      status: "RUNNING",
+      requiresConfirmation: false,
+    });
+    executeMock.mockResolvedValue({ ok: true, data: [] });
+
+    await expect(
+      processAssistantTurn(
+        { id: "admin-1", role: "STAFF" },
+        {
+          clientTurnId: "c7bcb6f9-41e7-4c17-bf0d-3e1b04c8e0d4",
+          message: "List subjects",
+        },
+        () => undefined,
+      ),
+    ).rejects.toThrow("may have completed");
+
+    expect(dataMocks.completeAssistantToolRun).toHaveBeenCalledTimes(1);
+    expect(dataMocks.failAssistantRun).toHaveBeenCalledWith(
+      "run-1",
+      expect.stringContaining("may have completed"),
     );
   });
 
@@ -743,7 +820,9 @@ describe("assistant orchestration", () => {
     dataMocks.claimAssistantToolRun.mockResolvedValue(toolRun);
     executeMock.mockResolvedValue({ ok: true, data: { id: "payment-1" } });
     responses.queue.push({
-      events: [{ type: "response.output_text.delta", delta: "Payment recorded." }],
+      events: [
+        { type: "response.output_text.delta", delta: "Payment recorded." },
+      ],
       final: {
         output_text: "Payment recorded.",
         output: [],
@@ -805,6 +884,36 @@ describe("assistant orchestration", () => {
     expect(dataMocks.completeAssistantRun).toHaveBeenCalledWith(
       expect.objectContaining({ content: "The payment was not recorded." }),
     );
+  });
+
+  it("does not claim an approval if the request disconnects during lookup", async () => {
+    const request = new AbortController();
+    dataMocks.getAssistantToolRunForDecision.mockImplementationOnce(
+      async () => {
+        request.abort();
+        return {
+          id: "tool-payment",
+          status: "PENDING_CONFIRMATION",
+          run: {
+            status: "WAITING_CONFIRMATION",
+            resumeInput: [],
+          },
+        };
+      },
+    );
+
+    await expect(
+      processAssistantDecision(
+        { id: "admin-1", role: "STAFF" },
+        "tool-payment",
+        "APPROVE",
+        () => undefined,
+        request.signal,
+      ),
+    ).rejects.toThrow();
+
+    expect(dataMocks.claimAssistantToolRun).not.toHaveBeenCalled();
+    expect(executeMock).not.toHaveBeenCalled();
   });
 
   it("returns malformed tool arguments to the model without executing", async () => {

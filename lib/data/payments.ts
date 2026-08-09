@@ -25,7 +25,9 @@ export async function listPayments({
   const where = {
     ...(studentId && { studentId }),
     ...(enrollmentId && { enrollmentId }),
-    ...(method && { method: method as "CASH" | "BANK_TRANSFER" | "CARD" | "OTHER" }),
+    ...(method && {
+      method: method as "CASH" | "BANK_TRANSFER" | "CARD" | "OTHER",
+    }),
     ...(from || to
       ? {
           paidAt: {
@@ -134,7 +136,15 @@ export async function createPayment(data: {
   enrollmentId?: string;
   coversMonth?: string;
   notes?: string;
+  idempotencyKey?: string;
 }) {
+  if (data.idempotencyKey) {
+    return prisma.payment.upsert({
+      where: { idempotencyKey: data.idempotencyKey },
+      update: {},
+      create: data,
+    });
+  }
   return prisma.payment.create({ data });
 }
 
@@ -146,6 +156,7 @@ export function createOutstandingPaymentForPeriod(input: {
   enrollmentId: string;
   coversMonth: string;
   amountDue: Prisma.Decimal;
+  idempotencyKey?: string;
 }) {
   return prisma.$transaction(
     async (tx) => {
@@ -155,6 +166,12 @@ export function createOutstandingPaymentForPeriod(input: {
         WHERE "id" = ${input.enrollmentId}
         FOR UPDATE
       `;
+      if (input.idempotencyKey) {
+        const existing = await tx.payment.findUnique({
+          where: { idempotencyKey: input.idempotencyKey },
+        });
+        if (existing) return existing;
+      }
       const paid = await tx.payment.aggregate({
         where: {
           enrollmentId: input.enrollmentId,
@@ -178,6 +195,7 @@ export function createOutstandingPaymentForPeriod(input: {
           recordedById: input.recordedById,
           enrollmentId: input.enrollmentId,
           coversMonth: input.coversMonth,
+          idempotencyKey: input.idempotencyKey,
         },
       });
     },
@@ -191,21 +209,19 @@ export async function deletePayment(id: string) {
 
 export async function getEnrollmentPaymentCoverage(
   enrollmentIds: string[],
-  months: string[] // ["yyyy-MM", ...]
-){
+  months: string[], // ["yyyy-MM", ...]
+) {
   if (enrollmentIds.length === 0) return [];
   if (months.length === 0) return [];
 
   const earliestMonth = months.reduce((min, month) =>
-    month < min ? month : min
+    month < min ? month : min,
   );
   const [earliestYear, earliestMonthNumber] = earliestMonth
     .split("-")
     .map(Number);
   const coverageStarts = Array.from({ length: 12 }, (_, index) =>
-    new Date(
-      Date.UTC(earliestYear, earliestMonthNumber - 1 - index, 1),
-    )
+    new Date(Date.UTC(earliestYear, earliestMonthNumber - 1 - index, 1))
       .toISOString()
       .slice(0, 7),
   );

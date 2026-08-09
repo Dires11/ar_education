@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const prismaMock = vi.hoisted(() => ({
+  assistantThread: {
+    updateMany: vi.fn(),
+    findFirst: vi.fn(),
+  },
   assistantToolRun: {
     upsert: vi.fn(),
   },
@@ -10,6 +14,7 @@ const prismaMock = vi.hoisted(() => ({
 vi.mock("@/lib/prisma", () => ({ prisma: prismaMock }));
 
 import {
+  archiveAssistantThread,
   claimAssistantToolRun,
   createAssistantTurn,
   createOrGetAssistantToolRun,
@@ -80,10 +85,9 @@ describe("assistant persistence guarantees", () => {
       }),
     ).rejects.toThrow("already has an active request");
 
-    expect(prismaMock.$transaction).toHaveBeenCalledWith(
-      expect.any(Function),
-      { isolationLevel: "Serializable" },
-    );
+    expect(prismaMock.$transaction).toHaveBeenCalledWith(expect.any(Function), {
+      isolationLevel: "Serializable",
+    });
   });
 
   it("restarts a failed client turn only when it never reached a tool", async () => {
@@ -198,9 +202,7 @@ describe("assistant persistence guarantees", () => {
           .fn()
           .mockResolvedValueOnce({ count: 0 })
           .mockResolvedValueOnce({ count: 1 }),
-        findFirst: vi
-          .fn()
-          .mockResolvedValue({ id: "tool-1", runId: "run-1" }),
+        findFirst: vi.fn().mockResolvedValue({ id: "tool-1", runId: "run-1" }),
         findUniqueOrThrow: vi.fn(),
       },
       assistantRun: {
@@ -267,7 +269,12 @@ describe("assistant persistence guarantees", () => {
         updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       },
       assistantRun: {
-        findMany: vi.fn().mockResolvedValue([{ id: "stale-run" }]),
+        findMany: vi.fn().mockResolvedValue([
+          {
+            id: "stale-run",
+            toolRuns: [{ id: "tool-1", status: "RUNNING" }],
+          },
+        ]),
         updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       },
     };
@@ -289,7 +296,41 @@ describe("assistant persistence guarantees", () => {
     expect(tx.assistantRun.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { id: { in: ["stale-run"] }, status: "RUNNING" },
-        data: expect.objectContaining({ status: "FAILED" }),
+        data: expect.objectContaining({
+          status: "FAILED",
+          error: expect.stringContaining("may have completed"),
+        }),
+      }),
+    );
+    expect(tx.assistantToolRun.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: { in: ["tool-1"] }, status: "RUNNING" },
+        data: expect.objectContaining({ status: "UNKNOWN" }),
+      }),
+    );
+  });
+
+  it("refuses to archive a thread with an active run or pending approval", async () => {
+    prismaMock.assistantThread.updateMany.mockResolvedValue({ count: 0 });
+    prismaMock.assistantThread.findFirst.mockResolvedValue({
+      id: "thread-1",
+      archivedAt: null,
+      runs: [{ id: "run-1" }],
+    });
+
+    await expect(
+      archiveAssistantThread("admin-1", "thread-1", true),
+    ).rejects.toThrow("active request or pending approval");
+
+    expect(prismaMock.assistantThread.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: "thread-1",
+          adminId: "admin-1",
+          runs: {
+            none: { status: { in: ["RUNNING", "WAITING_CONFIRMATION"] } },
+          },
+        }),
       }),
     );
   });

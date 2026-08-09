@@ -9,7 +9,7 @@ export async function POST(request: Request) {
   try {
     const admin = await requireAdmin();
     const input = assistantTurnSchema.parse(await request.json());
-    return streamAssistantTurn(admin, input);
+    return streamAssistantTurn(admin, input, request.signal);
   } catch (error) {
     if (error instanceof z.ZodError) {
       return Response.json(

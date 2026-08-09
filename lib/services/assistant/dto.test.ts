@@ -70,6 +70,16 @@ describe("assistant DTO minimization", () => {
             remaining: 1,
           },
         ],
+        preview: {
+          hasLimit: true,
+          isOverLimit: false,
+          totalPlanned: 2,
+          proposedSessions: 8,
+          materializableSessions: 6,
+          existingPlannedInWeek: 2,
+          firstExceededDate: "2026-08-31T00:00:00.000Z",
+          suggestedEndsOn: "2026-08-30",
+        },
         monthlyRevenue: [{ month: "Jul", revenue: 1200 }],
       }),
     ).toEqual({
@@ -87,6 +97,16 @@ describe("assistant DTO minimization", () => {
           remaining: 1,
         },
       ],
+      preview: {
+        hasLimit: true,
+        isOverLimit: false,
+        totalPlanned: 2,
+        proposedSessions: 8,
+        materializableSessions: 6,
+        existingPlannedInWeek: 2,
+        firstExceededDate: "2026-08-31T00:00:00.000Z",
+        suggestedEndsOn: "2026-08-30",
+      },
       monthlyRevenue: [{ month: "Jul", revenue: 1200 }],
     });
   });

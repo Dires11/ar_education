@@ -41,7 +41,9 @@ async function expireAssistantRunsInTransaction(
   });
   if (expiredConfirmations.length > 0) {
     const toolRunIds = expiredConfirmations.map((toolRun) => toolRun.id);
-    const runIds = [...new Set(expiredConfirmations.map((toolRun) => toolRun.runId))];
+    const runIds = [
+      ...new Set(expiredConfirmations.map((toolRun) => toolRun.runId)),
+    ];
     await tx.assistantToolRun.updateMany({
       where: { id: { in: toolRunIds }, status: "PENDING_CONFIRMATION" },
       data: {
@@ -70,27 +72,70 @@ async function expireAssistantRunsInTransaction(
       updatedAt: { lte: staleBefore },
       thread: threadWhere,
     },
-    select: { id: true },
+    select: {
+      id: true,
+      toolRuns: { select: { id: true, status: true } },
+    },
   });
   if (staleRuns.length > 0) {
     const runIds = staleRuns.map((run) => run.id);
-    await tx.assistantToolRun.updateMany({
-      where: { runId: { in: runIds }, status: "RUNNING" },
-      data: {
-        status: "FAILED",
-        error: "Assistant request was interrupted",
-        completedAt: input.now,
-      },
-    });
-    await tx.assistantRun.updateMany({
-      where: { id: { in: runIds }, status: "RUNNING" },
-      data: {
-        status: "FAILED",
-        error: "Assistant request was interrupted. It is safe to retry.",
-        resumeInput: Prisma.JsonNull,
-        completedAt: input.now,
-      },
-    });
+    const unknownToolRunIds = staleRuns.flatMap((run) =>
+      run.toolRuns
+        .filter((toolRun) => toolRun.status === "RUNNING")
+        .map((toolRun) => toolRun.id),
+    );
+    if (unknownToolRunIds.length > 0) {
+      await tx.assistantToolRun.updateMany({
+        where: { id: { in: unknownToolRunIds }, status: "RUNNING" },
+        data: {
+          status: "UNKNOWN",
+          error:
+            "Execution was interrupted before the result was recorded. Verify the CRM state before repeating this action.",
+          completedAt: input.now,
+        },
+      });
+    }
+
+    const uncertainRunIds = staleRuns
+      .filter((run) =>
+        run.toolRuns.some((toolRun) => toolRun.status === "RUNNING"),
+      )
+      .map((run) => run.id);
+    const completedRunIds = staleRuns
+      .filter(
+        (run) =>
+          !uncertainRunIds.includes(run.id) &&
+          run.toolRuns.some((toolRun) => toolRun.status === "COMPLETED"),
+      )
+      .map((run) => run.id);
+    const interruptedBeforeWriteIds = runIds.filter(
+      (id) => !uncertainRunIds.includes(id) && !completedRunIds.includes(id),
+    );
+
+    const finishRuns = (ids: string[], error: string) =>
+      ids.length === 0
+        ? Promise.resolve()
+        : tx.assistantRun.updateMany({
+            where: { id: { in: ids }, status: "RUNNING" },
+            data: {
+              status: "FAILED",
+              error,
+              resumeInput: Prisma.JsonNull,
+              completedAt: input.now,
+            },
+          });
+    await finishRuns(
+      uncertainRunIds,
+      "A CRM operation may have completed before the assistant was interrupted. Verify the affected records before repeating it.",
+    );
+    await finishRuns(
+      completedRunIds,
+      "CRM operations completed, but the assistant response was interrupted. Review the recorded results before continuing.",
+    );
+    await finishRuns(
+      interruptedBeforeWriteIds,
+      "Assistant response was interrupted before any CRM operation completed. It is safe to retry.",
+    );
   }
 }
 
@@ -270,7 +315,10 @@ export async function createAssistantTurn(input: {
               toolRuns: true,
             },
           });
-          if (refreshed.status === "FAILED" && refreshed.toolRuns.length === 0) {
+          if (
+            refreshed.status === "FAILED" &&
+            refreshed.toolRuns.length === 0
+          ) {
             const restarted = await tx.assistantRun.update({
               where: { id: refreshed.id },
               data: {
@@ -397,9 +445,7 @@ export async function createOrGetAssistantToolRun(input: {
       namespace: input.namespace,
       toolName: input.toolName,
       arguments: input.arguments,
-      status: input.requiresConfirmation
-        ? "PENDING_CONFIRMATION"
-        : "RUNNING",
+      status: input.requiresConfirmation ? "PENDING_CONFIRMATION" : "RUNNING",
       requiresConfirmation: input.requiresConfirmation,
       preview: input.preview,
       expiresAt: input.expiresAt,
@@ -705,11 +751,46 @@ export async function archiveAssistantThread(
   threadId: string,
   archived: boolean,
 ) {
+  if (!archived) {
+    const restored = await prisma.assistantThread.updateMany({
+      where: { id: threadId, adminId },
+      data: { archivedAt: null },
+    });
+    if (restored.count !== 1) throw new Error("Assistant thread not found");
+    return;
+  }
+
   const result = await prisma.assistantThread.updateMany({
-    where: { id: threadId, adminId },
-    data: { archivedAt: archived ? new Date() : null },
+    where: {
+      id: threadId,
+      adminId,
+      archivedAt: null,
+      runs: {
+        none: { status: { in: ACTIVE_RUN_STATUSES } },
+      },
+    },
+    data: { archivedAt: new Date() },
   });
-  if (result.count !== 1) throw new Error("Assistant thread not found");
+  if (result.count === 1) return;
+
+  const thread = await prisma.assistantThread.findFirst({
+    where: { id: threadId, adminId },
+    select: {
+      id: true,
+      archivedAt: true,
+      runs: {
+        where: { status: { in: ACTIVE_RUN_STATUSES } },
+        select: { id: true },
+        take: 1,
+      },
+    },
+  });
+  if (!thread) throw new Error("Assistant thread not found");
+  if (thread.runs.length > 0) {
+    throw new Error(
+      "This conversation has an active request or pending approval and cannot be archived yet",
+    );
+  }
 }
 
 export async function getAssistantRun(adminId: string, runId: string) {
@@ -720,9 +801,11 @@ export async function getAssistantRun(adminId: string, runId: string) {
 }
 
 export function assistantMessageRoleToApi(role: AssistantMessageRole) {
-  return role === "USER" ? "user" as const : "assistant" as const;
+  return role === "USER" ? ("user" as const) : ("assistant" as const);
 }
 
 export function isTerminalToolRunStatus(status: AssistantToolRunStatus) {
-  return ["COMPLETED", "FAILED", "REJECTED", "EXPIRED"].includes(status);
+  return ["COMPLETED", "FAILED", "UNKNOWN", "REJECTED", "EXPIRED"].includes(
+    status,
+  );
 }

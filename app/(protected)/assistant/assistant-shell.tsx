@@ -73,6 +73,7 @@ type ToolStatus =
   | "RUNNING"
   | "COMPLETED"
   | "FAILED"
+  | "UNKNOWN"
   | "REJECTED"
   | "EXPIRED";
 
@@ -379,11 +380,15 @@ function ThreadList({
   selectedId,
   onSelect,
   onArchive,
+  archiveDisabledId,
+  archiving,
 }: {
   threads: ThreadListItem[];
   selectedId: string | null;
   onSelect: (threadId: string) => void;
   onArchive: (threadId: string) => void;
+  archiveDisabledId: string | null;
+  archiving: boolean;
 }) {
   return (
     <div className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">
@@ -429,6 +434,7 @@ function ThreadList({
               size="icon-sm"
               className="mr-1 opacity-60 lg:opacity-0 lg:group-hover:opacity-100 lg:focus:opacity-100"
               aria-label={`Archive ${thread.title}`}
+              disabled={archiving || archiveDisabledId === thread.id}
               onClick={() => onArchive(thread.id)}
             >
               <Archive />
@@ -503,6 +509,7 @@ function ToolStatusIcon({ status }: { status: ToolStatus }) {
   }
   if (
     status === "FAILED" ||
+    status === "UNKNOWN" ||
     status === "REJECTED" ||
     status === "EXPIRED"
   ) {
@@ -515,6 +522,7 @@ function toolStatusLabel(status: ToolStatus) {
   if (status === "RUNNING") return "In progress";
   if (status === "COMPLETED") return "Completed";
   if (status === "PENDING_CONFIRMATION") return "Waiting for approval";
+  if (status === "UNKNOWN") return "Outcome unknown";
   return humanizeKey(status.toLowerCase());
 }
 
@@ -646,6 +654,7 @@ function ToolActivity({
   const hasProblem = activity.some(
     (tool) =>
       tool.status === "FAILED" ||
+      tool.status === "UNKNOWN" ||
       tool.status === "REJECTED" ||
       tool.status === "EXPIRED",
   );
@@ -860,7 +869,7 @@ export function AssistantShell({
     [messages],
   );
   const currentTitle = threadId
-    ? threads.find((thread) => thread.id === threadId)?.title ?? "Assistant"
+    ? (threads.find((thread) => thread.id === threadId)?.title ?? "Assistant")
     : "AI Assistant";
 
   function selectThread(id: string) {
@@ -972,7 +981,9 @@ export function AssistantShell({
       case "thread_created": {
         setThreadId(event.threadId);
         setThreads((current) => {
-          const existing = current.find((thread) => thread.id === event.threadId);
+          const existing = current.find(
+            (thread) => thread.id === event.threadId,
+          );
           if (existing) {
             return [
               { ...existing, updatedAt: new Date().toISOString() },
@@ -1070,9 +1081,7 @@ export function AssistantShell({
         name: attachment.name,
         mimeType: attachment.mimeType,
         sizeBytes: attachment.sizeBytes,
-        kind: attachment.mimeType.startsWith("image/")
-          ? "IMAGE"
-          : "DOCUMENT",
+        kind: attachment.mimeType.startsWith("image/") ? "IMAGE" : "DOCUMENT",
       }));
     const optimisticId = retry?.optimisticId ?? `local-${crypto.randomUUID()}`;
     const clientTurnId = retry?.clientTurnId ?? crypto.randomUUID();
@@ -1113,6 +1122,8 @@ export function AssistantShell({
         error instanceof Error ? error.message : "Assistant request failed";
       const outcomeUnknown =
         message.includes("may have completed") ||
+        message.includes("outcome is unknown") ||
+        message.includes("CRM operations completed") ||
         message.includes("avoid a duplicate");
       toast.error(message);
       setStreamingText("");
@@ -1139,10 +1150,7 @@ export function AssistantShell({
     void sendMessage(input);
   }
 
-  async function decide(
-    toolRunId: string,
-    decision: "APPROVE" | "REJECT",
-  ) {
+  async function decide(toolRunId: string, decision: "APPROVE" | "REJECT") {
     if (busy || decisionToolId) return;
     setDecisionToolId(toolRunId);
     setBusy(true);
@@ -1173,8 +1181,7 @@ export function AssistantShell({
         .flatMap((item) => item.tools)
         .find((item) => item.id === toolRunId);
       const expired = Boolean(
-        tool?.expiresAt &&
-          new Date(tool.expiresAt).getTime() <= Date.now(),
+        tool?.expiresAt && new Date(tool.expiresAt).getTime() <= Date.now(),
       );
       updateTool(toolRunId, {
         status: expired ? "EXPIRED" : "PENDING_CONFIRMATION",
@@ -1192,7 +1199,9 @@ export function AssistantShell({
   }
 
   function archiveThread(id: string) {
-    if (busy || isArchiving) return;
+    if (isArchiving || (threadId === id && (busy || pendingConfirmation))) {
+      return;
+    }
     startArchiving(async () => {
       try {
         await archiveAssistantThreadAction(id);
@@ -1221,6 +1230,10 @@ export function AssistantShell({
       selectedId={threadId}
       onSelect={selectThread}
       onArchive={archiveThread}
+      archiveDisabledId={
+        threadId && (busy || pendingConfirmation) ? threadId : null
+      }
+      archiving={isArchiving}
     />
   );
 
@@ -1247,7 +1260,10 @@ export function AssistantShell({
                 <span className="sr-only">Open conversations</span>
               </Button>
             </SheetTrigger>
-            <SheetContent side="left" className="flex w-[min(20rem,90vw)] flex-col p-0">
+            <SheetContent
+              side="left"
+              className="flex w-[min(20rem,90vw)] flex-col p-0"
+            >
               <SheetHeader className="border-b p-4 text-left">
                 <SheetTitle>Assistant threads</SheetTitle>
                 <SheetDescription>
@@ -1277,11 +1293,15 @@ export function AssistantShell({
                 type="button"
                 variant="ghost"
                 size="icon-sm"
-                disabled={busy || isArchiving}
+                disabled={busy || pendingConfirmation || isArchiving}
                 onClick={() => archiveThread(threadId)}
                 title="Archive current thread"
               >
-                {isArchiving ? <Loader2 className="animate-spin" /> : <Archive />}
+                {isArchiving ? (
+                  <Loader2 className="animate-spin" />
+                ) : (
+                  <Archive />
+                )}
                 <span className="sr-only">Archive current thread</span>
               </Button>
             ) : null}
@@ -1392,8 +1412,7 @@ export function AssistantShell({
                       </div>
                     ) : null}
 
-                    {turn.user &&
-                    failedTurn?.optimisticId === turn.user.id ? (
+                    {turn.user && failedTurn?.optimisticId === turn.user.id ? (
                       <div
                         className="ml-auto max-w-[88%] rounded-xl border border-destructive/20 bg-destructive/5 p-3 sm:max-w-[82%]"
                         role="alert"
@@ -1439,8 +1458,7 @@ export function AssistantShell({
                                   setMessages((current) =>
                                     current.filter(
                                       (message) =>
-                                        message.id !==
-                                        failedTurn.optimisticId,
+                                        message.id !== failedTurn.optimisticId,
                                     ),
                                   );
                                   setFailedTurn(null);

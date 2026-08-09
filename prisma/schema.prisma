@@ -108,6 +108,7 @@ enum AssistantToolRunStatus {
   RUNNING
   COMPLETED
   FAILED
+  UNKNOWN
   REJECTED
   EXPIRED
 }
@@ -379,17 +380,18 @@ model SessionAttendance {
 // ─── Billing ──────────────────────────────────────────────────────────────────
 
 model Payment {
-  id           String        @id @default(cuid())
-  studentId    String
-  amount       Decimal       @db.Decimal(10, 2)
-  method       PaymentMethod
-  paidAt       DateTime
-  recordedById String
-  notes        String?
-  coversMonth  String?
-  enrollmentId String?
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
+  id             String        @id @default(cuid())
+  studentId      String
+  amount         Decimal       @db.Decimal(10, 2)
+  method         PaymentMethod
+  paidAt         DateTime
+  recordedById   String
+  notes          String?
+  coversMonth    String?
+  enrollmentId   String?
+  idempotencyKey String?       @unique
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
 
   student    Student     @relation(fields: [studentId], references: [id])
   recordedBy Admin       @relation(fields: [recordedById], references: [id])

@@ -77,6 +77,9 @@ import {
   rescheduleVirtualOccurrence,
   deleteRecurringSchedule,
   updateEnrollmentRecurrenceColor,
+  listRecurrenceRulesForAssistant,
+  getEnrollmentMonthSummary,
+  getRecurringSchedulePreview,
 } from "@/lib/services/sessions";
 import {
   recordPayment,
@@ -85,6 +88,7 @@ import {
   getUpcomingPaymentDues,
   getPaymentStats,
   sendPaymentReminderEmail,
+  getStudentBalance,
 } from "@/lib/services/payments";
 import {
   createTemplate,
@@ -122,11 +126,7 @@ function safeJson<T>(value: T) {
   return JSON.parse(JSON.stringify(value)) as unknown;
 }
 
-function toolResult(
-  data: unknown,
-  href?: string,
-  card?: AssistantResultCard,
-) {
+function toolResult(data: unknown, href?: string, card?: AssistantResultCard) {
   return safeJson({
     ok: true,
     data: minimizeAssistantDto(safeJson(data)),
@@ -425,7 +425,11 @@ function packageResultCard(
       { label: titleCase(pkg.lessonType), tone: "NEUTRAL" },
     ],
     fields: [
-      { label: "Price", value: formatMoney(pkg.basePrice.toString()), icon: "MONEY" },
+      {
+        label: "Price",
+        value: formatMoney(pkg.basePrice.toString()),
+        icon: "MONEY",
+      },
       {
         label: "Duration",
         value: `${pkg.durationMinutes} minutes`,
@@ -525,7 +529,12 @@ function enrollmentResultCard(
 }
 
 function sessionResultCard(
-  session: { id: string; scheduledFor: Date; durationMinutes: number; room?: string | null },
+  session: {
+    id: string;
+    scheduledFor: Date;
+    durationMinutes: number;
+    room?: string | null;
+  },
   subtitle: string,
 ): AssistantResultCard {
   return {
@@ -1191,9 +1200,7 @@ async function executeStudents(name: string, args: ToolArguments) {
             name: `${student.firstName} ${student.lastName}`,
             status: student.status,
             dateOfBirth: student.dob?.toISOString().slice(0, 10) ?? null,
-            ageYears: student.dob
-              ? ageInYears(student.dob, todayKey)
-              : null,
+            ageYears: student.dob ? ageInYears(student.dob, todayKey) : null,
             school: student.school,
             gradeLevel: student.gradeLevel,
             createdAt: student.createdAt,
@@ -1234,7 +1241,8 @@ async function executeStudents(name: string, args: ToolArguments) {
       const updated = await updateStudentProfile(id, {
         firstName: (args.firstName as string | undefined) ?? current.firstName,
         lastName: (args.lastName as string | undefined) ?? current.lastName,
-        avatarUrl: (args.avatarUrl as string | undefined) ?? current.avatarUrl ?? "",
+        avatarUrl:
+          (args.avatarUrl as string | undefined) ?? current.avatarUrl ?? "",
         avatarPublicId:
           (args.avatarPublicId as string | undefined) ??
           current.avatarPublicId ??
@@ -1273,7 +1281,10 @@ async function executeStudents(name: string, args: ToolArguments) {
     }
     case "archive_student": {
       const updated = await archiveStudentById(stringValue(args, "id"));
-      return toolResult({ id: updated.id, status: updated.status }, "/students");
+      return toolResult(
+        { id: updated.id, status: updated.status },
+        "/students",
+      );
     }
     case "delete_student": {
       const deleted = await deleteStudentById(stringValue(args, "id"));
@@ -1320,7 +1331,10 @@ async function executeGuardians(name: string, args: ToolArguments) {
     case "remove_guardian": {
       const guardianId = stringValue(args, "guardianId");
       await removeGuardianFromStudent(studentId, guardianId);
-      return toolResult({ guardianId, studentId, removed: true }, `/students?student=${studentId}`);
+      return toolResult(
+        { guardianId, studentId, removed: true },
+        `/students?student=${studentId}`,
+      );
     }
     default:
       throw new Error(`Unknown guardians tool: ${name}`);
@@ -1380,7 +1394,8 @@ async function executeTutors(name: string, args: ToolArguments) {
       const updated = await updateTutorProfile(id, {
         firstName: (args.firstName as string | undefined) ?? current.firstName,
         lastName: (args.lastName as string | undefined) ?? current.lastName,
-        avatarUrl: (args.avatarUrl as string | undefined) ?? current.avatarUrl ?? "",
+        avatarUrl:
+          (args.avatarUrl as string | undefined) ?? current.avatarUrl ?? "",
         avatarPublicId:
           (args.avatarPublicId as string | undefined) ??
           current.avatarPublicId ??
@@ -1388,7 +1403,8 @@ async function executeTutors(name: string, args: ToolArguments) {
         email: (args.email as string | undefined) ?? current.email,
         phone: (args.phone as string | undefined) ?? current.phone,
         hourlyRate:
-          (args.hourlyRate as string | undefined) ?? current.hourlyRate.toString(),
+          (args.hourlyRate as string | undefined) ??
+          current.hourlyRate.toString(),
         notes: (args.notes as string | undefined) ?? current.notes ?? "",
       });
       const tutor = await getTutorData(updated.id);
@@ -1401,7 +1417,10 @@ async function executeTutors(name: string, args: ToolArguments) {
     }
     case "set_tutor_subjects": {
       const id = stringValue(args, "id");
-      await updateTutorSubjectsList(id, z.array(z.string()).parse(args.subjectIds));
+      await updateTutorSubjectsList(
+        id,
+        z.array(z.string()).parse(args.subjectIds),
+      );
       const tutor = await getTutorData(id);
       if (!tutor) throw new Error("Tutor not found");
       return toolResult(
@@ -1412,7 +1431,10 @@ async function executeTutors(name: string, args: ToolArguments) {
     }
     case "archive_tutor": {
       const tutor = await archiveTutorById(stringValue(args, "id"));
-      return toolResult({ id: tutor.id, status: tutor.status }, `/tutors/${tutor.id}`);
+      return toolResult(
+        { id: tutor.id, status: tutor.status },
+        `/tutors/${tutor.id}`,
+      );
     }
     case "get_tutor_payroll": {
       const id = stringValue(args, "id");
@@ -1453,7 +1475,10 @@ async function executeCatalog(name: string, args: ToolArguments) {
       return toolResult({ id: deleted.id, deleted: true }, "/subjects");
     }
     case "list_packages":
-      return toolResult(await listPackages(Boolean(args.activeOnly)), "/packages");
+      return toolResult(
+        await listPackages(Boolean(args.activeOnly)),
+        "/packages",
+      );
     case "get_package": {
       const id = stringValue(args, "id");
       const pkg = await getPackage(id);
@@ -1493,13 +1518,14 @@ async function executeCatalog(name: string, args: ToolArguments) {
           current.lessonType,
         subjectId:
           args.subjectId === undefined
-            ? current.subjectId ?? ""
+            ? (current.subjectId ?? "")
             : (args.subjectId as string),
         basePrice:
-          (args.basePrice as string | undefined) ?? current.basePrice.toString(),
+          (args.basePrice as string | undefined) ??
+          current.basePrice.toString(),
         sessionsPerWeek:
           args.sessionsPerWeek === undefined
-            ? current.sessionsPerWeek?.toString() ?? ""
+            ? (current.sessionsPerWeek?.toString() ?? "")
             : (args.sessionsPerWeek as string),
         durationMinutes:
           (args.durationMinutes as string | undefined) ??
@@ -1559,7 +1585,8 @@ async function executeEnrollments(name: string, args: ToolArguments) {
     case "create_enrollment": {
       const created = await createEnrollmentForStudent(args as never);
       const enrollment = await getEnrollment(created.id);
-      if (!enrollment) throw new Error("Created enrollment could not be loaded");
+      if (!enrollment)
+        throw new Error("Created enrollment could not be loaded");
       return toolResult(
         enrollment,
         `/enrollments?enrollment=${enrollment.id}`,
@@ -1574,7 +1601,8 @@ async function executeEnrollments(name: string, args: ToolArguments) {
         customPriceOverride: args.customPriceOverride as string | undefined,
       });
       const enrollment = await getEnrollment(updated.id);
-      if (!enrollment) throw new Error("Updated enrollment could not be loaded");
+      if (!enrollment)
+        throw new Error("Updated enrollment could not be loaded");
       return toolResult(
         enrollment,
         `/enrollments?enrollment=${id}`,
@@ -1627,7 +1655,23 @@ async function executeEnrollments(name: string, args: ToolArguments) {
 async function executeSchedule(name: string, args: ToolArguments) {
   switch (name) {
     case "get_schedule":
-      return toolResult(await getMonthSchedule(stringValue(args, "month")), "/schedule");
+      return toolResult(
+        await getMonthSchedule(stringValue(args, "month")),
+        "/schedule",
+      );
+    case "get_enrollment_capacity":
+      return toolResult(
+        await getEnrollmentMonthSummary(
+          stringValue(args, "enrollmentId"),
+          dateValue(args.date),
+        ),
+        "/schedule",
+      );
+    case "preview_recurring_schedule":
+      return toolResult(
+        await getRecurringSchedulePreview(args as never),
+        "/schedule",
+      );
     case "create_one_time_session": {
       const session = await createAdHocSession(args as never);
       return toolResult(
@@ -1685,8 +1729,33 @@ async function executeSchedule(name: string, args: ToolArguments) {
 
 async function executeRecurrence(name: string, args: ToolArguments) {
   switch (name) {
+    case "list_recurring_schedules": {
+      const enrollmentId = args.enrollmentId as string | undefined;
+      const groupId = args.groupId as string | undefined;
+      const rules = await listRecurrenceRulesForAssistant({
+        enrollmentId,
+        groupId,
+        includeEnded: Boolean(args.includeEnded),
+        limit: Number(args.limit),
+      });
+      return toolResult(rules, "/schedule");
+    }
+    case "get_recurring_schedule": {
+      const rule = await getRecurrenceRuleWithParticipants(
+        stringValue(args, "ruleId"),
+      );
+      if (!rule) throw new Error("Recurring schedule not found");
+      return toolResult(
+        rule,
+        "/schedule",
+        recurrenceResultCard(rule, "Recurring schedule details"),
+      );
+    }
     case "create_recurring_schedule":
-      return toolResult(await createRecurringSchedule(args as never), "/schedule");
+      return toolResult(
+        await createRecurringSchedule(args as never),
+        "/schedule",
+      );
     case "split_recurring_schedule": {
       const params = args.params as Record<string, unknown>;
       await splitRecurrenceRule(
@@ -1739,6 +1808,24 @@ async function executeBilling(
   context: AssistantToolExecutionContext,
 ) {
   switch (name) {
+    case "get_student_balance": {
+      const studentId = stringValue(args, "studentId");
+      const student = await getStudentData(studentId);
+      if (!student) throw new Error("Student not found");
+      const balance = await getStudentBalance(studentId);
+      return toolResult(
+        {
+          studentId,
+          studentName: `${student.firstName} ${student.lastName}`,
+          balance: balance.toFixed(2),
+        },
+        `/students?student=${studentId}`,
+        studentResultCard(
+          student,
+          `Outstanding balance: ${formatMoney(balance)}`,
+        ),
+      );
+    }
     case "list_payments":
       return toolResult(
         await listPaymentsForAssistant({
@@ -1756,7 +1843,11 @@ async function executeBilling(
     case "get_payment_stats":
       return toolResult(await getPaymentStats(), "/payments");
     case "record_payment": {
-      const payment = await recordPayment(args as never, context.admin.id);
+      const payment = await recordPayment(
+        args as never,
+        context.admin.id,
+        context.idempotencyKey,
+      );
       const student = await getStudentData(stringValue(args, "studentId"));
       if (!student) throw new Error("Student not found");
       return toolResult(
@@ -1766,7 +1857,11 @@ async function executeBilling(
       );
     }
     case "mark_due_paid": {
-      const payment = await recordPaymentForDue(args, context.admin.id);
+      const payment = await recordPaymentForDue(
+        args,
+        context.admin.id,
+        context.idempotencyKey,
+      );
       const student = await getStudentData(stringValue(args, "studentId"));
       if (!student) throw new Error("Student not found");
       return toolResult(
@@ -1875,10 +1970,7 @@ async function executeTeam(
       );
       return toolResult({ updated: true }, "/team");
     case "remove_team_member":
-      await removeTeamMember(
-        context.admin.id,
-        stringValue(args, "adminId"),
-      );
+      await removeTeamMember(context.admin.id, stringValue(args, "adminId"));
       return toolResult({ removed: true }, "/team");
     default:
       throw new Error(`Unknown team tool: ${name}`);

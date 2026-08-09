@@ -1,8 +1,10 @@
-import "server-only";
-
 import type OpenAI from "openai";
 import { z } from "zod";
-import { idSchema, isoDateTimeSchema, monthSchema } from "@/lib/validators/common";
+import {
+  idSchema,
+  isoDateTimeSchema,
+  monthSchema,
+} from "@/lib/validators/common";
 import {
   createStudentSchema,
   guardianPatchSchema,
@@ -10,10 +12,7 @@ import {
   studentDirectoryQuerySchema,
   updateStudentSchema,
 } from "@/lib/validators/students";
-import {
-  createTutorSchema,
-  updateTutorSchema,
-} from "@/lib/validators/tutors";
+import { createTutorSchema, updateTutorSchema } from "@/lib/validators/tutors";
 import { createPackageSchema } from "@/lib/validators/packages";
 import { createSubjectSchema } from "@/lib/validators/subjects";
 import {
@@ -33,10 +32,7 @@ import {
   createPaymentSchema,
   markPaymentPaidSchema,
 } from "@/lib/validators/payments";
-import {
-  emailTemplateSchema,
-  sendEmailSchema,
-} from "@/lib/validators/emails";
+import { emailTemplateSchema, sendEmailSchema } from "@/lib/validators/emails";
 import { updateGroupSchema } from "@/lib/validators/groups";
 
 export type AssistantToolSpec = {
@@ -50,13 +46,17 @@ export type AssistantToolSpec = {
     | ((argumentsValue: Record<string, unknown>) => boolean);
 };
 
-const studentPatchSchema = updateStudentSchema.partial().extend({ id: idSchema });
+const studentPatchSchema = updateStudentSchema
+  .partial()
+  .extend({ id: idSchema });
 const tutorPatchSchema = updateTutorSchema.partial().extend({ id: idSchema });
 const packagePatchSchema = z
   .object(createPackageSchema.shape)
   .partial()
   .extend({ id: idSchema });
-const subjectPatchSchema = createSubjectSchema.partial().extend({ id: idSchema });
+const subjectPatchSchema = createSubjectSchema
+  .partial()
+  .extend({ id: idSchema });
 
 const searchSchema = z.object({
   query: z.string().trim().max(200).optional(),
@@ -64,11 +64,26 @@ const searchSchema = z.object({
   limit: z.number().int().min(1).max(20).default(10),
 });
 
+const recurringScheduleLookupSchema = z
+  .object({
+    enrollmentId: idSchema.optional(),
+    groupId: idSchema.optional(),
+    includeEnded: z.boolean().default(false),
+    limit: z.number().int().min(1).max(20).default(20),
+  })
+  .refine(
+    (value) =>
+      Number(Boolean(value.enrollmentId)) + Number(Boolean(value.groupId)) ===
+      1,
+    { message: "Provide exactly one enrollmentId or groupId" },
+  );
+
 const toolSpecs: AssistantToolSpec[] = [
   {
     namespace: "students",
     name: "search_students",
-    description: "Search students and guardians by name, contact information, or school. Returns compact profile fields and IDs for resolving a person before a mutation. Do not use this tool for directory-wide rankings or superlatives.",
+    description:
+      "Search students and guardians by name, contact information, or school. Returns compact profile fields and IDs for resolving a person before a mutation. Do not use this tool for directory-wide rankings or superlatives.",
     schema: searchSchema,
     requiresConfirmation: false,
   },
@@ -83,7 +98,8 @@ const toolSpecs: AssistantToolSpec[] = [
   {
     namespace: "students",
     name: "get_student",
-    description: "Get a student profile, guardians, and recent enrollments by student ID.",
+    description:
+      "Get a student profile, guardians, and recent enrollments by student ID.",
     schema: z.object({ id: idSchema }),
     requiresConfirmation: false,
   },
@@ -98,7 +114,8 @@ const toolSpecs: AssistantToolSpec[] = [
   {
     namespace: "students",
     name: "update_student",
-    description: "Update selected student profile fields. Omitted fields remain unchanged.",
+    description:
+      "Update selected student profile fields. Omitted fields remain unchanged.",
     schema: studentPatchSchema,
     requiresConfirmation: false,
   },
@@ -153,7 +170,8 @@ const toolSpecs: AssistantToolSpec[] = [
   {
     namespace: "tutors",
     name: "search_tutors",
-    description: "Search tutors by name or email, optionally by status or subject ID.",
+    description:
+      "Search tutors by name or email, optionally by status or subject ID.",
     schema: searchSchema.extend({ subjectId: idSchema.optional() }),
     requiresConfirmation: false,
   },
@@ -174,7 +192,8 @@ const toolSpecs: AssistantToolSpec[] = [
   {
     namespace: "tutors",
     name: "update_tutor",
-    description: "Update selected tutor profile fields. Omitted fields remain unchanged.",
+    description:
+      "Update selected tutor profile fields. Omitted fields remain unchanged.",
     schema: tutorPatchSchema,
     requiresConfirmation: false,
   },
@@ -198,7 +217,8 @@ const toolSpecs: AssistantToolSpec[] = [
   {
     namespace: "tutors",
     name: "get_tutor_payroll",
-    description: "Calculate completed-session hours and earnings for a tutor over an ISO date range.",
+    description:
+      "Calculate completed-session hours and earnings for a tutor over an ISO date range.",
     schema: z.object({
       id: idSchema,
       from: z.iso.datetime(),
@@ -258,7 +278,8 @@ const toolSpecs: AssistantToolSpec[] = [
   {
     namespace: "catalog",
     name: "update_package",
-    description: "Update selected package fields. Omitted fields remain unchanged.",
+    description:
+      "Update selected package fields. Omitted fields remain unchanged.",
     schema: packagePatchSchema,
     requiresConfirmation: false,
   },
@@ -284,14 +305,16 @@ const toolSpecs: AssistantToolSpec[] = [
   {
     namespace: "enrollments",
     name: "get_enrollment",
-    description: "Get an enrollment with student, tutor, package, discounts, recent sessions, and payments.",
+    description:
+      "Get an enrollment with student, tutor, package, discounts, recent sessions, and payments.",
     schema: z.object({ id: idSchema }),
     requiresConfirmation: false,
   },
   {
     namespace: "enrollments",
     name: "create_enrollment",
-    description: "Enroll a known student with known package, tutor, and subject IDs.",
+    description:
+      "Enroll a known student with known package, tutor, and subject IDs.",
     schema: createEnrollmentSchema,
     requiresConfirmation: false,
   },
@@ -339,14 +362,32 @@ const toolSpecs: AssistantToolSpec[] = [
   {
     namespace: "schedule",
     name: "get_schedule",
-    description: "Get real and virtual schedule entries for one yyyy-MM calendar month.",
+    description:
+      "Get real and virtual schedule entries for one yyyy-MM calendar month.",
     schema: z.object({ month: monthSchema }),
     requiresConfirmation: false,
   },
   {
     namespace: "schedule",
+    name: "get_enrollment_capacity",
+    description:
+      "Get one enrollment's planned sessions, remaining package capacity, and limit status for the center-local week containing an ISO date-time.",
+    schema: z.object({ enrollmentId: idSchema, date: isoDateTimeSchema }),
+    requiresConfirmation: false,
+  },
+  {
+    namespace: "schedule",
+    name: "preview_recurring_schedule",
+    description:
+      "Preview a complete recurring schedule proposal without writing it. Returns package limits, proposed and materializable sessions, and a suggested end date when applicable.",
+    schema: createRecurrenceSchema,
+    requiresConfirmation: false,
+  },
+  {
+    namespace: "schedule",
     name: "create_one_time_session",
-    description: "Create a one-time session for known enrollment/group, tutor, subject, and student IDs.",
+    description:
+      "Create a one-time session for known enrollment/group, tutor, subject, and student IDs.",
     schema: createAdHocSessionSchema,
     requiresConfirmation: false,
   },
@@ -410,6 +451,22 @@ const toolSpecs: AssistantToolSpec[] = [
   },
   {
     namespace: "recurrence",
+    name: "list_recurring_schedules",
+    description:
+      "List current and future recurring schedule rules for exactly one known enrollment or group. Optionally include ended rules. Returns rule IDs required for occurrence, series, and deletion changes.",
+    schema: recurringScheduleLookupSchema,
+    requiresConfirmation: false,
+  },
+  {
+    namespace: "recurrence",
+    name: "get_recurring_schedule",
+    description:
+      "Inspect one recurring schedule rule and its student or group participants by rule ID.",
+    schema: z.object({ ruleId: idSchema }),
+    requiresConfirmation: false,
+  },
+  {
+    namespace: "recurrence",
     name: "create_recurring_schedule",
     description: "Create a recurring schedule for one enrollment or group.",
     schema: createRecurrenceSchema,
@@ -439,21 +496,24 @@ const toolSpecs: AssistantToolSpec[] = [
   {
     namespace: "recurrence",
     name: "reschedule_occurrence",
-    description: "Move one recurring occurrence, optionally changing duration or room.",
+    description:
+      "Move one recurring occurrence, optionally changing duration or room.",
     schema: rescheduleOccurrenceSchema,
     requiresConfirmation: false,
   },
   {
     namespace: "recurrence",
     name: "delete_recurring_schedule",
-    description: "Delete an entire recurring schedule while preserving past materialized sessions.",
+    description:
+      "Delete an entire recurring schedule while preserving past materialized sessions.",
     schema: z.object({ ruleId: idSchema }),
     requiresConfirmation: true,
   },
   {
     namespace: "recurrence",
     name: "set_schedule_color",
-    description: "Set the hex display color for all active recurrence rules on an enrollment.",
+    description:
+      "Set the hex display color for all active recurrence rules on an enrollment.",
     schema: z.object({
       enrollmentId: idSchema,
       color: z.string().regex(/^#[0-9a-fA-F]{6}$/),
@@ -462,8 +522,17 @@ const toolSpecs: AssistantToolSpec[] = [
   },
   {
     namespace: "billing",
+    name: "get_student_balance",
+    description:
+      "Get the current outstanding balance for one known student ID.",
+    schema: z.object({ studentId: idSchema }),
+    requiresConfirmation: false,
+  },
+  {
+    namespace: "billing",
     name: "list_payments",
-    description: "List payments with optional student, enrollment, payment method, or ISO date filters.",
+    description:
+      "List payment history when the administrator asks to view, search, or audit existing payments. Never use this as a prerequisite for an explicit record_payment request that already has its required fields.",
     schema: z.object({
       studentId: idSchema.optional(),
       enrollmentId: idSchema.optional(),
@@ -477,28 +546,32 @@ const toolSpecs: AssistantToolSpec[] = [
   {
     namespace: "billing",
     name: "get_upcoming_dues",
-    description: "List overdue, current, future, and recently paid package dues.",
+    description:
+      "List overdue, current, future, and recently paid package dues.",
     schema: z.object({}),
     requiresConfirmation: false,
   },
   {
     namespace: "billing",
     name: "get_payment_stats",
-    description: "Get this-month, last-month, and all-time payment counts and totals.",
+    description:
+      "Get this-month, last-month, and all-time payment counts and totals.",
     schema: z.object({}),
     requiresConfirmation: false,
   },
   {
     namespace: "billing",
     name: "record_payment",
-    description: "Record a payment. All payment writes require user confirmation.",
+    description:
+      "Record a new payment when the administrator explicitly asks to enter one and provides student ID, amount, method, and paid date. Call directly when those fields are known; the application will request confirmation.",
     schema: createPaymentSchema,
     requiresConfirmation: true,
   },
   {
     namespace: "billing",
     name: "mark_due_paid",
-    description: "Record the outstanding amount for an enrollment billing month as paid.",
+    description:
+      "Record the outstanding amount for a known enrollment billing month as paid. Call directly when enrollment ID, student ID, amount, method, and month are known; the application will request confirmation.",
     schema: markPaymentPaidSchema,
     requiresConfirmation: true,
   },
@@ -512,7 +585,8 @@ const toolSpecs: AssistantToolSpec[] = [
   {
     namespace: "billing",
     name: "send_payment_reminder",
-    description: "Send a payment reminder email for one enrollment billing month.",
+    description:
+      "Send a payment reminder email for one known enrollment billing month. Call directly when enrollment ID and month are known; the application will request confirmation.",
     schema: z.object({ enrollmentId: idSchema, month: monthSchema }),
     requiresConfirmation: true,
   },
@@ -597,7 +671,8 @@ const toolSpecs: AssistantToolSpec[] = [
   {
     namespace: "reporting",
     name: "get_dashboard_summary",
-    description: "Get current dashboard totals, today's sessions, unpaid students, package endings, and tutor workload.",
+    description:
+      "Get current dashboard totals, today's sessions, unpaid students, package endings, and tutor workload.",
     schema: z.object({}),
     requiresConfirmation: false,
   },
@@ -650,21 +725,21 @@ export function getAssistantOpenAITools(
     reporting: "Dashboard and operational reporting.",
   };
 
-  const namespaces: OpenAI.Responses.NamespaceTool[] = [...grouped.entries()].map(
-    ([name, namespaceSpecs]) => ({
-      type: "namespace",
-      name,
-      description: descriptions[name] ?? `${name} tools`,
-      tools: namespaceSpecs.map((spec) => ({
-        type: "function",
-        name: spec.name,
-        description: spec.description,
-        parameters: toJsonSchema(spec.schema),
-        strict: false,
-        defer_loading: true,
-      })),
-    }),
-  );
+  const namespaces: OpenAI.Responses.NamespaceTool[] = [
+    ...grouped.entries(),
+  ].map(([name, namespaceSpecs]) => ({
+    type: "namespace",
+    name,
+    description: descriptions[name] ?? `${name} tools`,
+    tools: namespaceSpecs.map((spec) => ({
+      type: "function",
+      name: spec.name,
+      description: spec.description,
+      parameters: toJsonSchema(spec.schema),
+      strict: false,
+      defer_loading: true,
+    })),
+  }));
 
   return [...namespaces, { type: "tool_search" }];
 }
@@ -687,7 +762,8 @@ export function getAssistantToolPreview(
     namespace: spec.namespace,
     toolName: spec.name,
     arguments: argumentsValue,
-    warning: "This action changes CRM data and will run immediately after approval.",
+    warning:
+      "This action changes CRM data and will run immediately after approval.",
   };
 }
 

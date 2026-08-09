@@ -13,7 +13,7 @@ export async function POST(
     const admin = await requireAdmin();
     const { id } = await context.params;
     const input = assistantDecisionSchema.parse(await request.json());
-    return streamAssistantDecision(admin, id, input.decision);
+    return streamAssistantDecision(admin, id, input.decision, request.signal);
   } catch (error) {
     if (error instanceof z.ZodError) {
       return Response.json(
