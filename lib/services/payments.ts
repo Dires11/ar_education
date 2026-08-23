@@ -1,5 +1,6 @@
 import "server-only";
 
+import { createHash } from "node:crypto";
 import {
   createPayment,
   listPayments,
@@ -55,6 +56,13 @@ export type PaymentDue = {
   isPaid: boolean;
   isOverdue: boolean;
   isDueThisMonth: boolean;
+};
+
+const DEFAULT_PAYMENT_REMINDER_TEMPLATE = {
+  name: "Payment Reminder",
+  type: "PAYMENT_REMINDER" as const,
+  subject: "Payment reminder — @subject (@month)",
+  body: `Hello @guardian,\n\nThis is a friendly reminder that the payment for @name's @subject lessons is due for @month.\n\nAmount due: @amount\n\nPlease contact us to arrange payment or if you have any questions.\n\nThank you,\n@center`,
 };
 
 function formatBillingMonth(date: Date) {
@@ -317,10 +325,9 @@ export async function getPaymentStats() {
   });
 }
 
-export async function sendPaymentReminderEmail(
+async function preparePaymentReminderDelivery(
   enrollmentId: string,
   month: string,
-  idempotencyKey?: string,
 ) {
   const [enrollment, template] = await Promise.all([
     getEnrollmentForPaymentReminder(enrollmentId, month),
@@ -371,15 +378,7 @@ export async function sendPaymentReminderEmail(
     month: monthLabel,
   };
 
-  // Auto-create the default template if it was deleted
-  const activeTemplate =
-    template ??
-    (await createEmailTemplate({
-      name: "Payment Reminder",
-      type: "PAYMENT_REMINDER",
-      subject: "Payment reminder — @subject (@month)",
-      body: `Hello @guardian,\n\nThis is a friendly reminder that the payment for @name's @subject lessons is due for @month.\n\nAmount due: @amount\n\nPlease contact us to arrange payment or if you have any questions.\n\nThank you,\n@center`,
-    }));
+  const activeTemplate = template ?? DEFAULT_PAYMENT_REMINDER_TEMPLATE;
 
   const emailSubject = substitutePlaceholders(activeTemplate.subject, ctx);
   const emailHtml = substitutePlaceholders(activeTemplate.body, ctx)
@@ -387,10 +386,72 @@ export async function sendPaymentReminderEmail(
     .map((line) => `<p>${line}</p>`)
     .join("");
 
-  await sendEmail({
-    to: recipientEmail,
+  const digest = createHash("sha256")
+    .update(
+      JSON.stringify({
+        enrollmentId,
+        month,
+        recipientEmail,
+        amount,
+        subject: emailSubject,
+        html: emailHtml,
+      }),
+    )
+    .digest("hex");
+
+  return {
+    digest,
+    recipientEmail,
+    recipientName: `${student.firstName} ${student.lastName}`,
+    amount,
+    monthLabel,
     subject: emailSubject,
     html: emailHtml,
+    usedDefaultTemplate: !template,
+  };
+}
+
+export async function getPaymentReminderConfirmation(
+  enrollmentId: string,
+  month: string,
+) {
+  const prepared = await preparePaymentReminderDelivery(enrollmentId, month);
+  return {
+    digest: prepared.digest,
+    recipientEmail: prepared.recipientEmail,
+    recipientName: prepared.recipientName,
+    amount: prepared.amount,
+    monthLabel: prepared.monthLabel,
+    subject: prepared.subject,
+  };
+}
+
+export async function sendPaymentReminderEmail(
+  enrollmentId: string,
+  month: string,
+  idempotencyKey?: string,
+  expectedConfirmationDigest?: string,
+) {
+  const prepared = await preparePaymentReminderDelivery(enrollmentId, month);
+  if (
+    expectedConfirmationDigest &&
+    prepared.digest !== expectedConfirmationDigest
+  ) {
+    throw new Error(
+      "The reminder recipient, amount, or message changed after approval was requested. Review and approve a new reminder action.",
+    );
+  }
+
+  // Preserve the manual workflow's default-template behavior without using a
+  // mutable template value for the approved delivery itself.
+  if (prepared.usedDefaultTemplate) {
+    await createEmailTemplate(DEFAULT_PAYMENT_REMINDER_TEMPLATE);
+  }
+
+  await sendEmail({
+    to: prepared.recipientEmail,
+    subject: prepared.subject,
+    html: prepared.html,
     idempotencyKey,
   });
 }

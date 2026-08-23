@@ -38,6 +38,11 @@ import { toast } from "sonner";
 import { archiveAssistantThreadAction } from "@/app/actions/assistant";
 import { AssistantMarkdown } from "./assistant-markdown";
 import {
+  consumeAssistantEventStream,
+  getToolCompletionStatus,
+  type AssistantClientToolStatus,
+} from "./assistant-stream-client";
+import {
   AssistantEntityCard,
   AssistantResultCards,
   parseAssistantResultCardValue,
@@ -788,38 +793,6 @@ function ToolActivity({
   );
 }
 
-async function consumeEventStream(
-  response: Response,
-  onEvent: (event: StreamEvent) => void,
-) {
-  if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as {
-      error?: string;
-    } | null;
-    throw new Error(body?.error ?? "Assistant request failed");
-  }
-  if (!response.body) throw new Error("Assistant stream was unavailable");
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  while (true) {
-    const { done, value } = await reader.read();
-    buffer += decoder.decode(value, { stream: !done });
-    const frames = buffer.split("\n\n");
-    buffer = frames.pop() ?? "";
-    for (const frame of frames) {
-      const line = frame
-        .split("\n")
-        .find((candidate) => candidate.startsWith("data: "));
-      if (!line) continue;
-      onEvent(JSON.parse(line.slice(6)) as StreamEvent);
-    }
-    if (done) break;
-  }
-}
-
 export function AssistantShell({
   configured,
   initialThreads,
@@ -1067,13 +1040,7 @@ export function AssistantShell({
         updateTool(event.toolRunId, {
           namespace: event.namespace,
           toolName: event.toolName,
-          status:
-            event.result &&
-            typeof event.result === "object" &&
-            "ok" in event.result &&
-            event.result.ok === false
-              ? "FAILED"
-              : "COMPLETED",
+          status: getToolCompletionStatus(event.result),
           result: event.result,
         });
         break;
@@ -1179,7 +1146,7 @@ export function AssistantShell({
           attachments: outgoingAttachments,
         }),
       });
-      await consumeEventStream(response, handleStreamEvent);
+      await consumeAssistantEventStream(response, handleStreamEvent);
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Assistant request failed";
@@ -1236,6 +1203,7 @@ export function AssistantShell({
     updateTool(toolRunId, {
       status: decision === "APPROVE" ? "RUNNING" : "REJECTED",
     });
+    let resolvedStatus: AssistantClientToolStatus | null = null;
     try {
       const response = await fetch(
         `/api/assistant/tool-runs/${encodeURIComponent(toolRunId)}/decision`,
@@ -1245,26 +1213,42 @@ export function AssistantShell({
           body: JSON.stringify({ decision }),
         },
       );
-      await consumeEventStream(response, handleStreamEvent);
+      await consumeAssistantEventStream(response, (event: StreamEvent) => {
+        if (event.type === "tool_completed" && event.toolRunId === toolRunId) {
+          resolvedStatus = getToolCompletionStatus(event.result);
+        }
+        handleStreamEvent(event);
+      });
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Unable to apply decision";
       toast.error(message);
-      const tool = messages
-        .flatMap((item) => item.tools)
-        .find((item) => item.id === toolRunId);
-      const expired = Boolean(
-        tool?.expiresAt && new Date(tool.expiresAt).getTime() <= Date.now(),
-      );
-      updateTool(toolRunId, {
-        status: expired ? "EXPIRED" : "PENDING_CONFIRMATION",
-        error: message,
-      });
-      setAnnouncement(
-        expired
-          ? "The approval expired."
-          : "The decision was not confirmed. The approval controls remain available.",
-      );
+      if (resolvedStatus) {
+        updateTool(toolRunId, { status: resolvedStatus, error: message });
+        setAnnouncement(
+          resolvedStatus === "COMPLETED"
+            ? "The action completed, but the assistant response stopped. Reload to review the recorded result before continuing."
+            : resolvedStatus === "REJECTED"
+              ? "The action was discarded, but the assistant response stopped."
+              : "The action failed before the assistant response completed.",
+        );
+      } else {
+        const tool = messages
+          .flatMap((item) => item.tools)
+          .find((item) => item.id === toolRunId);
+        const expired = Boolean(
+          tool?.expiresAt && new Date(tool.expiresAt).getTime() <= Date.now(),
+        );
+        updateTool(toolRunId, {
+          status: expired ? "EXPIRED" : "PENDING_CONFIRMATION",
+          error: message,
+        });
+        setAnnouncement(
+          expired
+            ? "The approval expired."
+            : "The decision was not confirmed. The approval controls remain available.",
+        );
+      }
     } finally {
       setBusy(false);
       setDecisionToolId(null);

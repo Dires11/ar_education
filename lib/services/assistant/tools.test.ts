@@ -4,6 +4,7 @@ import {
   assistantTurnSchema,
 } from "@/lib/validators/assistant";
 import {
+  assistantToolMutatesData,
   assistantToolRequiresConfirmation,
   getAssistantNamespaceCounts,
   getAssistantOpenAITools,
@@ -145,6 +146,24 @@ describe("assistant tool registry", () => {
         customPriceOverride: "150",
       }),
     ).toBe(false);
+  });
+
+  it("fails closed when classifying read tools versus mutations", () => {
+    expect(
+      assistantToolMutatesData({
+        namespace: "students",
+        name: "query_student_directory",
+      }),
+    ).toBe(false);
+    expect(
+      assistantToolMutatesData({
+        namespace: "students",
+        name: "create_student",
+      }),
+    ).toBe(true);
+    expect(
+      assistantToolMutatesData({ namespace: "future", name: "new_tool" }),
+    ).toBe(true);
   });
 
   it("keeps partial guardian edits partial and bounds enrollment searches", () => {

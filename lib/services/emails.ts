@@ -1,5 +1,6 @@
 import "server-only";
 
+import { createHash } from "node:crypto";
 import { format } from "date-fns";
 import { sendEmail } from "@/lib/utils/email";
 import { getStudentsForEmail } from "@/lib/data/emails";
@@ -39,27 +40,42 @@ function substitutePlaceholders(text: string, ctx: PlaceholderContext): string {
     .replace(/@center\b/g, "AR Educational Center");
 }
 
-// ─── Send to multiple students ────────────────────────────────────────────────
+type PreparedStudentEmail = {
+  studentId: string;
+  studentName: string;
+  email: string;
+  subject: string;
+  body: string;
+};
 
-export async function sendEmailToStudents({
-  studentIds,
-  subject,
-  body,
-  idempotencyKey,
-}: {
+function deliveryDigest(deliveries: PreparedStudentEmail[]) {
+  return createHash("sha256")
+    .update(JSON.stringify(deliveries))
+    .digest("hex");
+}
+
+async function prepareStudentEmails(input: {
   studentIds: string[];
   subject: string;
   body: string;
-  idempotencyKey?: string;
 }) {
-  const students = await getStudentsForEmail(studentIds);
+  const students = await getStudentsForEmail(input.studentIds);
+  const byId = new Map(students.map((student) => [student.id, student]));
+  const deliveries: PreparedStudentEmail[] = [];
+  const unavailableStudentIds: string[] = [];
 
-  const results: { studentId: string; email: string; success: boolean }[] = [];
-
-  for (const student of students) {
+  for (const studentId of [...input.studentIds].sort()) {
+    const student = byId.get(studentId);
+    if (!student) {
+      unavailableStudentIds.push(studentId);
+      continue;
+    }
     const recipientEmail =
       student.guardians[0]?.guardian.email ?? student.email;
-    if (!recipientEmail) continue;
+    if (!recipientEmail) {
+      unavailableStudentIds.push(studentId);
+      continue;
+    }
 
     const ctx: PlaceholderContext = {
       studentFirstName: student.firstName,
@@ -76,24 +92,94 @@ export async function sendEmailToStudents({
       month: format(new Date(), "MMMM yyyy"),
     };
 
-    const personalizedSubject = substitutePlaceholders(subject, ctx);
-    const personalizedBody = substitutePlaceholders(body, ctx);
+    deliveries.push({
+      studentId,
+      studentName: `${student.firstName} ${student.lastName}`,
+      email: recipientEmail,
+      subject: substitutePlaceholders(input.subject, ctx),
+      body: substitutePlaceholders(input.body, ctx),
+    });
+  }
 
+  return {
+    deliveries,
+    unavailableStudentIds,
+    digest: deliveryDigest(deliveries),
+  };
+}
+
+export async function getEmailDeliveryConfirmation(input: {
+  studentIds: string[];
+  subject: string;
+  body: string;
+}) {
+  const prepared = await prepareStudentEmails(input);
+  if (prepared.unavailableStudentIds.length > 0) {
+    throw new Error(
+      "Every selected student must exist and have a deliverable primary guardian or student email before approval.",
+    );
+  }
+  return {
+    digest: prepared.digest,
+    recipients: prepared.deliveries.map((delivery) => ({
+      studentId: delivery.studentId,
+      name: delivery.studentName,
+      email: delivery.email,
+    })),
+  };
+}
+
+// ─── Send to multiple students ────────────────────────────────────────────────
+
+export async function sendEmailToStudents({
+  studentIds,
+  subject,
+  body,
+  idempotencyKey,
+  expectedConfirmationDigest,
+}: {
+  studentIds: string[];
+  subject: string;
+  body: string;
+  idempotencyKey?: string;
+  expectedConfirmationDigest?: string;
+}) {
+  const prepared = await prepareStudentEmails({ studentIds, subject, body });
+  if (
+    expectedConfirmationDigest &&
+    prepared.digest !== expectedConfirmationDigest
+  ) {
+    throw new Error(
+      "The email recipients or personalized content changed after approval was requested. Review and approve a new email action.",
+    );
+  }
+
+  const results: { studentId: string; email: string; success: boolean }[] = [];
+
+  for (const delivery of prepared.deliveries) {
     try {
       await sendEmail({
-        to: recipientEmail,
-        subject: personalizedSubject,
-        html: personalizedBody
+        to: delivery.email,
+        subject: delivery.subject,
+        html: delivery.body
           .split("\n")
           .map((line) => `<p>${line}</p>`)
           .join(""),
         idempotencyKey: idempotencyKey
-          ? `${idempotencyKey}:${student.id}`
+          ? `${idempotencyKey}:${delivery.studentId}`
           : undefined,
       });
-      results.push({ studentId: student.id, email: recipientEmail, success: true });
+      results.push({
+        studentId: delivery.studentId,
+        email: delivery.email,
+        success: true,
+      });
     } catch {
-      results.push({ studentId: student.id, email: recipientEmail, success: false });
+      results.push({
+        studentId: delivery.studentId,
+        email: delivery.email,
+        success: false,
+      });
     }
   }
 

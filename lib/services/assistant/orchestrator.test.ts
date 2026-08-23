@@ -87,10 +87,10 @@ vi.mock("@/lib/services/assistant/tools", async () => {
 });
 
 import {
-  attachmentScheduleToolRequiresConfirmation,
   prepareResumeInputForStorage,
   processAssistantDecision,
   processAssistantTurn,
+  untrustedEvidenceToolRequiresConfirmation,
 } from "@/lib/services/assistant/orchestrator";
 
 const usage = {
@@ -104,6 +104,10 @@ const usage = {
 describe("assistant orchestration", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    dataMocks.createOrGetAssistantToolRun.mockReset();
+    executeMock.mockReset();
+    confirmationCardMock.mockReset();
+    confirmationArgumentsMock.mockReset();
     responses.queue.length = 0;
     responses.requests.length = 0;
     responses.options.length = 0;
@@ -363,6 +367,7 @@ describe("assistant orchestration", () => {
               call_id: "call-1",
               arguments: "{}",
               parsed_arguments: {},
+              created_by: "server-output-only",
             },
           ],
           usage,
@@ -405,6 +410,9 @@ describe("assistant orchestration", () => {
     expect(events.at(-1)?.type).toBe("assistant_completed");
     expect(JSON.stringify(responses.requests[1].input)).not.toContain(
       "parsed_arguments",
+    );
+    expect(JSON.stringify(responses.requests[1].input)).not.toContain(
+      "created_by",
     );
   });
 
@@ -599,6 +607,76 @@ describe("assistant orchestration", () => {
     expect(requestJson).toContain("data:application/pdf;base64,ZGVm");
   });
 
+  it("pauses an attachment-derived student mutation for confirmation", async () => {
+    const mutationArguments = {
+      id: "student-1",
+      school: "North High",
+    };
+    responses.queue.push({
+      events: [],
+      final: {
+        output_text: "",
+        output: [
+          {
+            type: "function_call",
+            namespace: "students",
+            name: "update_student",
+            call_id: "call-update-student",
+            arguments: JSON.stringify(mutationArguments),
+          },
+        ],
+        usage,
+      },
+    });
+    dataMocks.createOrGetAssistantToolRun.mockResolvedValue({
+      id: "tool-update-student",
+      runId: "run-1",
+      callId: "call-update-student",
+      namespace: "students",
+      toolName: "update_student",
+      arguments: mutationArguments,
+      status: "PENDING_CONFIRMATION",
+      requiresConfirmation: true,
+      expiresAt: new Date("2026-08-24T00:00:00.000Z"),
+    });
+    confirmationCardMock.mockResolvedValue({
+      kind: "STUDENT",
+      entityKey: "student:student-1",
+      title: "Maya Chen",
+      subtitle: "Student affected by this change",
+      badges: [],
+      fields: [],
+      href: "/students?student=student-1",
+      actionLabel: "View student",
+      suggestedActions: [],
+    });
+    const events: Array<Record<string, unknown>> = [];
+
+    await processAssistantTurn(
+      { id: "admin-1", role: "STAFF" },
+      {
+        clientTurnId: "c7bcb6f9-41e7-4c17-bf0d-3e1b04c8e0d4",
+        message: "Apply the school from this document",
+        attachments: [
+          {
+            name: "student.pdf",
+            mimeType: "application/pdf",
+            sizeBytes: 3,
+            dataBase64: "YWJj",
+          },
+        ],
+      },
+      (event) => events.push(event),
+    );
+
+    expect(executeMock).not.toHaveBeenCalled();
+    expect(dataMocks.pauseAssistantRun).toHaveBeenCalledTimes(1);
+    expect(events.at(-1)).toMatchObject({
+      type: "confirmation_required",
+      toolRunId: "tool-update-student",
+    });
+  });
+
   it("strips attachment bytes from paused continuation state", () => {
     const stored = prepareResumeInputForStorage([
       {
@@ -624,31 +702,34 @@ describe("assistant orchestration", () => {
     expect(storedJson).toContain("omitted");
   });
 
-  it("requires confirmation for attachment-derived schedule writes", () => {
+  it("requires confirmation for every mutation derived from untrusted evidence", () => {
     expect(
-      attachmentScheduleToolRequiresConfirmation(
+      untrustedEvidenceToolRequiresConfirmation(
         true,
-        "recurrence",
-        "create_recurring_schedule",
+        { namespace: "recurrence", name: "create_recurring_schedule" },
       ),
     ).toBe(true);
     expect(
-      attachmentScheduleToolRequiresConfirmation(
+      untrustedEvidenceToolRequiresConfirmation(
         true,
-        "schedule",
-        "get_schedule",
+        { namespace: "students", name: "update_student" },
+      ),
+    ).toBe(true);
+    expect(
+      untrustedEvidenceToolRequiresConfirmation(
+        true,
+        { namespace: "schedule", name: "get_schedule" },
       ),
     ).toBe(false);
     expect(
-      attachmentScheduleToolRequiresConfirmation(
+      untrustedEvidenceToolRequiresConfirmation(
         false,
-        "schedule",
-        "create_one_time_session",
+        { namespace: "schedule", name: "create_one_time_session" },
       ),
     ).toBe(false);
   });
 
-  it("executes a sequential multi-step workflow", async () => {
+  it("requires approval before a later write uses an earlier tool result", async () => {
     const createStudentArguments = {
       firstName: "Maya",
       lastName: "Thompson",
@@ -721,12 +802,26 @@ describe("assistant orchestration", () => {
         namespace: "enrollments",
         toolName: "create_enrollment",
         arguments: createEnrollmentArguments,
-        status: "RUNNING",
-        requiresConfirmation: false,
+        status: "PENDING_CONFIRMATION",
+        requiresConfirmation: true,
+        expiresAt: new Date("2026-08-24T00:00:00.000Z"),
       });
-    executeMock
-      .mockResolvedValueOnce({ ok: true, data: { id: "student-1" } })
-      .mockResolvedValueOnce({ ok: true, data: { id: "enrollment-1" } });
+    executeMock.mockResolvedValueOnce({
+      ok: true,
+      data: { id: "student-1" },
+    });
+    confirmationCardMock.mockResolvedValue({
+      kind: "ENROLLMENT",
+      entityKey: "enrollment:enrollment-1",
+      title: "Maya's enrollment",
+      subtitle: "Enrollment affected by this change",
+      badges: [],
+      fields: [],
+      href: "/enrollments",
+      actionLabel: "View enrollment",
+      suggestedActions: [],
+    });
+    const events: Array<Record<string, unknown>> = [];
 
     await processAssistantTurn(
       { id: "admin-1", role: "STAFF" },
@@ -734,19 +829,21 @@ describe("assistant orchestration", () => {
         clientTurnId: "c7bcb6f9-41e7-4c17-bf0d-3e1b04c8e0d4",
         message: "Create and enroll Maya",
       },
-      () => undefined,
+      (event) => events.push(event),
     );
 
-    expect(executeMock).toHaveBeenCalledTimes(2);
-    expect(executeMock.mock.calls[1][0]).toEqual(
+    expect(executeMock).toHaveBeenCalledTimes(1);
+    expect(dataMocks.createOrGetAssistantToolRun).toHaveBeenLastCalledWith(
       expect.objectContaining({
         namespace: "enrollments",
-        argumentsValue: expect.objectContaining({ studentId: "student-1" }),
+        toolName: "create_enrollment",
+        requiresConfirmation: true,
       }),
     );
-    expect(dataMocks.completeAssistantRun).toHaveBeenCalledWith(
-      expect.objectContaining({ content: "Maya was created and enrolled." }),
-    );
+    expect(events.at(-1)).toMatchObject({
+      type: "confirmation_required",
+      toolName: "create_enrollment",
+    });
   });
 
   it("returns ambiguous lookup candidates without guessing a mutation target", async () => {

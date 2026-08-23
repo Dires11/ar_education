@@ -19,11 +19,13 @@ const sessionServiceMocks = vi.hoisted(() => ({
 }));
 const paymentServiceMocks = vi.hoisted(() => ({
   getPaymentDueQuote: vi.fn(),
+  getPaymentReminderConfirmation: vi.fn(),
   getStudentBalance: vi.fn(),
   recordPayment: vi.fn(),
   recordPaymentForDue: vi.fn(),
 }));
 const emailServiceMocks = vi.hoisted(() => ({
+  getEmailDeliveryConfirmation: vi.fn(),
   sendEmailToStudents: vi.fn(),
 }));
 
@@ -70,6 +72,8 @@ vi.mock("@/lib/services/sessions", () => ({
 vi.mock("@/lib/services/payments", () => ({
   deletePaymentById: vi.fn(),
   getPaymentDueQuote: paymentServiceMocks.getPaymentDueQuote,
+  getPaymentReminderConfirmation:
+    paymentServiceMocks.getPaymentReminderConfirmation,
   getStudentBalance: paymentServiceMocks.getStudentBalance,
   getPaymentStats: vi.fn(),
   getUpcomingPaymentDues: vi.fn(),
@@ -82,6 +86,7 @@ vi.mock("@/lib/services/emails", () => ({
   createTemplate: vi.fn(),
   deleteTemplate: vi.fn(),
   listEmailTemplates: vi.fn(),
+  getEmailDeliveryConfirmation: emailServiceMocks.getEmailDeliveryConfirmation,
   sendEmailToStudents: emailServiceMocks.sendEmailToStudents,
   updateTemplate: vi.fn(),
 }));
@@ -89,6 +94,7 @@ vi.mock("@/lib/services/emails", () => ({
 import {
   executeAssistantTool,
   getAssistantConfirmationCard,
+  getAssistantMutationDraftCard,
   resolveAssistantConfirmationArguments,
 } from "@/lib/services/assistant/executor";
 
@@ -211,6 +217,29 @@ describe("assistant tool result cards", () => {
     });
   });
 
+  it("builds a readable draft card when an untrusted create has no record yet", () => {
+    const card = getAssistantMutationDraftCard(
+      {
+        namespace: "students",
+        name: "create_student",
+        description: "Create one student.",
+      },
+      {
+        firstName: "Maya",
+        lastName: "Chen",
+        dob: "2012-04-08",
+      },
+    );
+
+    expect(card).toMatchObject({
+      kind: "STUDENT",
+      title: "Maya Chen",
+      subtitle: "Proposed change derived from untrusted evidence",
+      href: "/students",
+    });
+    expect(JSON.stringify(card)).not.toContain("studentId");
+  });
+
   it("replaces a model-supplied due amount with the current outstanding amount", async () => {
     paymentServiceMocks.getPaymentDueQuote.mockResolvedValue({
       confirmationArguments: {
@@ -237,6 +266,52 @@ describe("assistant tool result cards", () => {
     ).resolves.toEqual(
       expect.objectContaining({ amount: "87.50", month: "2026-08" }),
     );
+  });
+
+  it("binds an outbound email approval to resolved recipient addresses", async () => {
+    emailServiceMocks.getEmailDeliveryConfirmation.mockResolvedValue({
+      digest: "a".repeat(64),
+      recipients: [
+        {
+          studentId: "student-1",
+          name: "Maya Chen",
+          email: "guardian@example.com",
+        },
+      ],
+    });
+
+    const resolved = await resolveAssistantConfirmationArguments({
+      namespace: "communications",
+      name: "send_email",
+      argumentsValue: {
+        studentIds: ["student-1"],
+        subject: "Schedule",
+        body: "Hello @guardian",
+      },
+    });
+
+    expect(resolved).toMatchObject({
+      __assistantConfirmation: {
+        digest: "a".repeat(64),
+        recipientSummary: "Maya Chen — guardian@example.com",
+        subject: "Schedule",
+      },
+    });
+    await expect(
+      getAssistantConfirmationCard({
+        namespace: "communications",
+        name: "send_email",
+        argumentsValue: resolved,
+      }),
+    ).resolves.toMatchObject({
+      kind: "EMAIL",
+      fields: expect.arrayContaining([
+        expect.objectContaining({
+          label: "Recipients",
+          value: "Maya Chen — guardian@example.com",
+        }),
+      ]),
+    });
   });
 
   it("shows the guardian, not a database ID, for relationship removal", async () => {
@@ -337,6 +412,11 @@ describe("assistant tool result cards", () => {
         studentIds: ["student-1"],
         subject: "Schedule",
         body: "Hello",
+        __assistantConfirmation: {
+          digest: "a".repeat(64),
+          recipientSummary: "Maya Chen — guardian@example.com",
+          subject: "Schedule",
+        },
       },
       context: {
         admin: { id: "admin-1", role: "STAFF" },
@@ -349,6 +429,7 @@ describe("assistant tool result cards", () => {
       subject: "Schedule",
       body: "Hello",
       idempotencyKey: "tool-run-1",
+      expectedConfirmationDigest: "a".repeat(64),
     });
   });
 

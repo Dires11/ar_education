@@ -23,7 +23,7 @@ import {
   getRecurrenceRuleWithParticipants,
   getSession as getSessionData,
 } from "@/lib/data/sessions";
-import { getEmailTemplate, getStudentsForEmail } from "@/lib/data/emails";
+import { getEmailTemplate } from "@/lib/data/emails";
 import {
   createStudentWithGuardian,
   updateStudentProfile,
@@ -90,6 +90,7 @@ import {
   sendPaymentReminderEmail,
   getStudentBalance,
   getPaymentDueQuote,
+  getPaymentReminderConfirmation,
 } from "@/lib/services/payments";
 import {
   createTemplate,
@@ -97,6 +98,7 @@ import {
   deleteTemplate,
   listEmailTemplates,
   sendEmailToStudents,
+  getEmailDeliveryConfirmation,
 } from "@/lib/services/emails";
 import {
   getTeamPageData,
@@ -118,6 +120,14 @@ import type { AssistantResultCard } from "@/lib/validators/assistant";
 
 type ToolArguments = Record<string, unknown>;
 
+const assistantConfirmationSnapshotSchema = z.object({
+  digest: z.string().regex(/^[0-9a-f]{64}$/),
+  recipientSummary: z.string().max(2_000),
+  subject: z.string().max(500),
+  amount: z.string().optional(),
+  monthLabel: z.string().optional(),
+});
+
 export type AssistantToolExecutionContext = {
   admin: Pick<Admin, "id" | "role">;
   idempotencyKey?: string;
@@ -131,6 +141,51 @@ export async function resolveAssistantConfirmationArguments(input: {
   if (input.namespace === "billing" && input.name === "mark_due_paid") {
     const quote = await getPaymentDueQuote(input.argumentsValue);
     return quote.confirmationArguments as Record<string, unknown>;
+  }
+  if (
+    input.namespace === "billing" &&
+    input.name === "send_payment_reminder"
+  ) {
+    const enrollmentId = z.string().parse(input.argumentsValue.enrollmentId);
+    const month = z.string().parse(input.argumentsValue.month);
+    const confirmation = await getPaymentReminderConfirmation(
+      enrollmentId,
+      month,
+    );
+    return {
+      ...input.argumentsValue,
+      __assistantConfirmation: {
+        digest: confirmation.digest,
+        recipientSummary: `${confirmation.recipientName} — ${confirmation.recipientEmail}`,
+        subject: confirmation.subject,
+        amount: confirmation.amount,
+        monthLabel: confirmation.monthLabel,
+      },
+    };
+  }
+  if (input.namespace === "communications" && input.name === "send_email") {
+    const parsed = z
+      .object({
+        studentIds: z.array(z.string()),
+        subject: z.string(),
+        body: z.string(),
+      })
+      .parse(input.argumentsValue);
+    const confirmation = await getEmailDeliveryConfirmation(parsed);
+    const recipients = confirmation.recipients.map(
+      (recipient) => `${recipient.name} — ${recipient.email}`,
+    );
+    return {
+      ...input.argumentsValue,
+      __assistantConfirmation: {
+        digest: confirmation.digest,
+        recipientSummary:
+          recipients.length <= 3
+            ? recipients.join(", ")
+            : `${recipients.slice(0, 3).join(", ")} and ${recipients.length - 3} more`,
+        subject: parsed.subject,
+      },
+    };
   }
   return input.argumentsValue;
 }
@@ -171,7 +226,20 @@ function requireRecord(value: unknown): ToolArguments {
 }
 
 function parsedArguments(spec: AssistantToolSpec, value: unknown) {
-  return requireRecord(spec.schema.parse(value));
+  const original = requireRecord(value);
+  const parsed = requireRecord(spec.schema.parse(value));
+  if (original.__assistantConfirmation) {
+    parsed.__assistantConfirmation = assistantConfirmationSnapshotSchema.parse(
+      original.__assistantConfirmation,
+    );
+  }
+  return parsed;
+}
+
+function confirmationSnapshot(args: ToolArguments) {
+  return assistantConfirmationSnapshotSchema.parse(
+    args.__assistantConfirmation,
+  );
 }
 
 function stringValue(args: ToolArguments, key: string) {
@@ -823,6 +891,8 @@ function emailResultCard(input: {
   subtitle: string;
   subject?: string;
   recipientSummary?: string;
+  href?: string;
+  actionLabel?: string;
 }): AssistantResultCard {
   return {
     kind: "EMAIL",
@@ -844,8 +914,8 @@ function emailResultCard(input: {
         ? [{ label: "Subject", value: input.subject, icon: "MAIL" as const }]
         : []),
     ],
-    href: "/emails",
-    actionLabel: "View email center",
+    href: input.href ?? "/emails",
+    actionLabel: input.actionLabel ?? "View email center",
     suggestedActions: [],
   };
 }
@@ -902,6 +972,79 @@ function groupResultCard(
     ],
     href: "/enrollments",
     actionLabel: "View groups",
+    suggestedActions: [],
+  };
+}
+
+export function getAssistantMutationDraftCard(
+  spec: Pick<AssistantToolSpec, "namespace" | "name" | "description">,
+  argumentsValue: Record<string, unknown>,
+): AssistantResultCard {
+  const text = (key: string) =>
+    typeof argumentsValue[key] === "string"
+      ? (argumentsValue[key] as string)
+      : undefined;
+  const fullName = [text("firstName"), text("lastName")]
+    .filter(Boolean)
+    .join(" ");
+  const kindAndPath: Record<
+    string,
+    { kind: AssistantResultCard["kind"]; href: string }
+  > = {
+    students: { kind: "STUDENT", href: "/students" },
+    guardians: { kind: "GUARDIAN", href: "/students" },
+    tutors: { kind: "TUTOR", href: "/tutors" },
+    catalog: {
+      kind: spec.name.includes("package") ? "PACKAGE" : "SUBJECT",
+      href: spec.name.includes("package") ? "/packages" : "/subjects",
+    },
+    enrollments: { kind: "ENROLLMENT", href: "/enrollments" },
+    schedule: { kind: "SESSION", href: "/schedule" },
+    recurrence: { kind: "SESSION", href: "/schedule" },
+    billing: { kind: "PAYMENT", href: "/payments" },
+    communications: { kind: "EMAIL", href: "/emails" },
+    team: { kind: "TEAM", href: "/team" },
+  };
+  const presentation = kindAndPath[spec.namespace] ?? {
+    kind: "ENROLLMENT" as const,
+    href: "/dashboard",
+  };
+  const candidateFields: Array<AssistantResultCard["fields"][number] | null> = [
+    text("name")
+      ? { label: "Name", value: text("name")!, icon: "STATUS" }
+      : null,
+    text("subject")
+      ? { label: "Subject", value: text("subject")!, icon: "MAIL" }
+      : null,
+    text("dob")
+      ? { label: "Date of birth", value: text("dob")!, icon: "CALENDAR" }
+      : null,
+    text("startDate")
+      ? { label: "Start date", value: text("startDate")!, icon: "CALENDAR" }
+      : null,
+    text("amount")
+      ? { label: "Amount", value: formatMoney(text("amount")), icon: "MONEY" }
+      : null,
+    text("status")
+      ? { label: "Status", value: titleCase(text("status")!), icon: "STATUS" }
+      : null,
+  ];
+
+  return {
+    kind: presentation.kind,
+    entityKey: `draft:${spec.namespace}:${spec.name}`,
+    title:
+      fullName ||
+      text("name") ||
+      spec.description.split(".")[0] ||
+      "Proposed CRM change",
+    subtitle: "Proposed change derived from untrusted evidence",
+    badges: [{ label: "Review required", tone: "WARNING" }],
+    fields: candidateFields.filter(
+      (field): field is AssistantResultCard["fields"][number] => Boolean(field),
+    ),
+    href: presentation.href,
+    actionLabel: "Open manual workspace",
     suggestedActions: [],
   };
 }
@@ -1045,13 +1188,21 @@ export async function getAssistantConfirmationCard(input: {
     if (name === "send_payment_reminder") {
       const enrollmentId = value("enrollmentId");
       if (!enrollmentId) return undefined;
-      const enrollment = await getEnrollment(enrollmentId);
-      return enrollment
-        ? enrollmentResultCard(
-            enrollment,
-            `Payment reminder for ${value("month") ?? "billing period"}`,
-          )
-        : undefined;
+      const confirmation = assistantConfirmationSnapshotSchema.safeParse(
+        argumentsValue.__assistantConfirmation,
+      );
+      if (!confirmation.success) return undefined;
+      return emailResultCard({
+        entityKey: `payment-reminder:${enrollmentId}:${value("month") ?? "period"}`,
+        title: `Payment reminder for ${confirmation.data.monthLabel ?? value("month") ?? "billing period"}`,
+        subtitle: confirmation.data.amount
+          ? `$${confirmation.data.amount} due — awaiting approval`
+          : "Outbound reminder awaiting approval",
+        recipientSummary: confirmation.data.recipientSummary,
+        subject: confirmation.data.subject,
+        href: "/payments",
+        actionLabel: "View payments",
+      });
     }
     const studentId = value("studentId");
     if (!studentId) return undefined;
@@ -1114,23 +1265,19 @@ export async function getAssistantConfirmationCard(input: {
         )
       : [];
     if (studentIds.length === 0) return undefined;
-    const students = await getStudentsForEmail(studentIds);
-    if (students.length !== studentIds.length) return undefined;
-    const names = students.map(
-      (student) => `${student.firstName} ${student.lastName}`,
+    const confirmation = assistantConfirmationSnapshotSchema.safeParse(
+      argumentsValue.__assistantConfirmation,
     );
+    if (!confirmation.success) return undefined;
     return emailResultCard({
       entityKey: `email-send:${studentIds.slice().sort().join(":")}`,
       title:
-        names.length === 1
-          ? `Email ${names[0]}`
-          : `Email ${names.length} students`,
+        studentIds.length === 1
+          ? "Email 1 student"
+          : `Email ${studentIds.length} students`,
       subtitle: "Outbound message awaiting approval",
-      subject: value("subject"),
-      recipientSummary:
-        names.length <= 3
-          ? names.join(", ")
-          : `${names.slice(0, 3).join(", ")} and ${names.length - 3} more`,
+      subject: confirmation.data.subject,
+      recipientSummary: confirmation.data.recipientSummary,
     });
   }
 
@@ -1967,13 +2114,16 @@ async function executeBilling(
       await deletePaymentById(paymentId);
       return toolResult({ paymentId, deleted: true }, "/payments");
     }
-    case "send_payment_reminder":
+    case "send_payment_reminder": {
+      const reminderConfirmation = confirmationSnapshot(args);
       await sendPaymentReminderEmail(
         stringValue(args, "enrollmentId"),
         stringValue(args, "month"),
         context.idempotencyKey,
+        reminderConfirmation.digest,
       );
       return toolResult({ sent: true }, "/payments");
+    }
     default:
       throw new Error(`Unknown billing tool: ${name}`);
   }
@@ -2003,18 +2153,20 @@ async function executeCommunications(
       await deleteTemplate(id);
       return toolResult({ id, deleted: true }, "/emails");
     }
-    case "send_email":
+    case "send_email": {
+      const emailConfirmation = confirmationSnapshot(args);
+      const studentIds = z.array(z.string()).parse(args.studentIds);
       return toolResult(
         await sendEmailToStudents({
-          ...(args as {
-            studentIds: string[];
-            subject: string;
-            body: string;
-          }),
+          studentIds,
+          subject: stringValue(args, "subject"),
+          body: stringValue(args, "body"),
           idempotencyKey: context.idempotencyKey,
+          expectedConfirmationDigest: emailConfirmation.digest,
         }),
         "/emails",
       );
+    }
     default:
       throw new Error(`Unknown communications tool: ${name}`);
   }

@@ -78,6 +78,37 @@ const recurringScheduleLookupSchema = z
     { message: "Provide exactly one enrollmentId or groupId" },
   );
 
+// Fail closed: every registered tool is treated as a mutation unless it is
+// explicitly listed here. This also makes newly added tools require approval
+// when their arguments are derived from attachments or prior CRM output until
+// they have been deliberately classified.
+const ASSISTANT_READ_ONLY_TOOL_KEYS = new Set([
+  "students.search_students",
+  "students.query_student_directory",
+  "students.get_student",
+  "tutors.search_tutors",
+  "tutors.get_tutor",
+  "tutors.get_tutor_payroll",
+  "catalog.list_subjects",
+  "catalog.list_packages",
+  "catalog.get_package",
+  "enrollments.search_enrollments",
+  "enrollments.get_enrollment",
+  "enrollments.list_groups",
+  "schedule.get_schedule",
+  "schedule.get_enrollment_capacity",
+  "schedule.preview_recurring_schedule",
+  "recurrence.list_recurring_schedules",
+  "recurrence.get_recurring_schedule",
+  "billing.get_student_balance",
+  "billing.list_payments",
+  "billing.get_upcoming_dues",
+  "billing.get_payment_stats",
+  "communications.list_email_templates",
+  "team.get_team",
+  "reporting.get_dashboard_summary",
+]);
+
 const toolSpecs: AssistantToolSpec[] = [
   {
     namespace: "students",
@@ -751,6 +782,12 @@ export function assistantToolRequiresConfirmation(
   return typeof spec.requiresConfirmation === "function"
     ? spec.requiresConfirmation(argumentsValue)
     : spec.requiresConfirmation;
+}
+
+export function assistantToolMutatesData(
+  tool: Pick<AssistantToolSpec, "namespace" | "name">,
+) {
+  return !ASSISTANT_READ_ONLY_TOOL_KEYS.has(`${tool.namespace}.${tool.name}`);
 }
 
 export function getAssistantToolPreview(

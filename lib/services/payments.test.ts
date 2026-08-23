@@ -3,15 +3,24 @@ import { Prisma } from "@/generated/prisma";
 
 const paymentData = vi.hoisted(() => ({
   createOutstandingPaymentForPeriod: vi.fn(),
+  getEnrollmentForPaymentReminder: vi.fn(),
   getEnrollmentPaymentDueQuote: vi.fn(),
 }));
+const emailData = vi.hoisted(() => ({
+  createEmailTemplate: vi.fn(),
+  getLatestEmailTemplate: vi.fn(),
+}));
+const emailUtility = vi.hoisted(() => ({ sendEmail: vi.fn() }));
 
 vi.mock("@/lib/data/payments", () => paymentData);
-vi.mock("@/lib/utils/email", () => ({ sendEmail: vi.fn() }));
+vi.mock("@/lib/data/emails", () => emailData);
+vi.mock("@/lib/utils/email", () => ({ sendEmail: emailUtility.sendEmail }));
 
 import {
   getPaymentDueQuote,
+  getPaymentReminderConfirmation,
   recordPaymentForDue,
+  sendPaymentReminderEmail,
 } from "@/lib/services/payments";
 
 function enrollmentWithPaidAmount(paid: number) {
@@ -84,5 +93,40 @@ describe("payment due confirmation integrity", () => {
     expect(
       call.calculateAmountDue(enrollmentWithPaidAmount(0)).toString(),
     ).toBe("100");
+  });
+
+  it("refuses a reminder when its recipient changes after approval", async () => {
+    const reminderEnrollment = (email: string) => ({
+      ...enrollmentWithPaidAmount(20),
+      student: {
+        firstName: "Maya",
+        lastName: "Chen",
+        email: null,
+        guardians: [{ guardian: { firstName: "Ana", email } }],
+      },
+      tutor: { firstName: "Taylor", lastName: "Lee" },
+      subject: { name: "Math" },
+    });
+    paymentData.getEnrollmentForPaymentReminder
+      .mockResolvedValueOnce(reminderEnrollment("approved@example.com"))
+      .mockResolvedValueOnce(reminderEnrollment("changed@example.com"));
+    emailData.getLatestEmailTemplate.mockResolvedValue({
+      subject: "Payment reminder — @subject (@month)",
+      body: "Hello @guardian. Amount: @amount",
+    });
+
+    const confirmation = await getPaymentReminderConfirmation(
+      "enrollment-1",
+      "2026-08",
+    );
+    await expect(
+      sendPaymentReminderEmail(
+        "enrollment-1",
+        "2026-08",
+        "tool-run-1",
+        confirmation.digest,
+      ),
+    ).rejects.toThrow("changed after approval was requested");
+    expect(emailUtility.sendEmail).not.toHaveBeenCalled();
   });
 });

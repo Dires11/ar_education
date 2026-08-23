@@ -2,11 +2,13 @@ import "server-only";
 
 import { createHash } from "node:crypto";
 import OpenAI from "openai";
+import { toResponseInputItems } from "openai/lib/responses/ResponseInputItems";
 import type { Admin, AssistantToolRun, Prisma } from "@/generated/prisma";
 import type {
   ResponseInput,
   ResponseInputContent,
   ResponseInputItem,
+  ResponseOutputItem,
 } from "openai/resources/responses/responses";
 import {
   completeAssistantRun,
@@ -36,6 +38,7 @@ import type {
 } from "@/lib/validators/assistant";
 import { getConfiguredCenterTimeZone } from "@/lib/services/session-dates";
 import {
+  assistantToolMutatesData,
   assistantToolRequiresConfirmation,
   getAssistantOpenAITools,
   getAssistantToolPreview,
@@ -44,27 +47,13 @@ import {
 import {
   executeAssistantTool,
   getAssistantConfirmationCard,
+  getAssistantMutationDraftCard,
   resolveAssistantConfirmationArguments,
 } from "@/lib/services/assistant/executor";
 import { ASSISTANT_MODEL } from "@/lib/services/assistant/config";
 
 const MAX_TOOL_CALLS = 12;
 const CONFIRMATION_TTL_MS = 24 * 60 * 60 * 1000;
-const ATTACHMENT_SCHEDULE_WRITES = new Set([
-  "create_one_time_session",
-  "update_session",
-  "mark_attendance",
-  "set_session_status",
-  "cancel_session",
-  "delete_session",
-  "create_recurring_schedule",
-  "split_recurring_schedule",
-  "end_recurring_schedule",
-  "cancel_occurrence",
-  "reschedule_occurrence",
-  "delete_recurring_schedule",
-  "set_schedule_color",
-]);
 
 export type AssistantStreamEvent =
   | {
@@ -328,7 +317,10 @@ function transformJson(
 }
 
 export function sanitizeResponseOutput(output: unknown[]): ResponseInputItem[] {
-  return transformJson(output, (item) => item) as ResponseInputItem[];
+  const replayableItems = toResponseInputItems(
+    output as ResponseOutputItem[],
+  );
+  return transformJson(replayableItems, (item) => item) as ResponseInputItem[];
 }
 
 export function prepareResumeInputForStorage(
@@ -353,16 +345,11 @@ export function prepareResumeInputForStorage(
   );
 }
 
-export function attachmentScheduleToolRequiresConfirmation(
-  hasAttachments: boolean,
-  namespace: string,
-  toolName: string,
+export function untrustedEvidenceToolRequiresConfirmation(
+  hasUntrustedEvidence: boolean,
+  tool: Parameters<typeof assistantToolMutatesData>[0],
 ) {
-  return (
-    hasAttachments &&
-    (namespace === "schedule" || namespace === "recurrence") &&
-    ATTACHMENT_SCHEDULE_WRITES.has(toolName)
-  );
+  return hasUntrustedEvidence && assistantToolMutatesData(tool);
 }
 
 function parseToolArguments(argumentsText: string) {
@@ -507,6 +494,8 @@ async function runModelLoop(input: {
   let responseInput = input.responseInput;
   let assistantContent = input.initialAssistantContent ?? "";
   let crmToolRan = Boolean(input.initialToolUsed);
+  let hasUntrustedEvidence =
+    input.hasAttachments || Boolean(input.initialToolUsed);
 
   try {
     while (true) {
@@ -652,13 +641,14 @@ async function runModelLoop(input: {
         continue;
       }
 
+      const policyRequiresConfirmation = assistantToolRequiresConfirmation(
+        spec,
+        argumentsValue,
+      );
+      const evidenceRequiresConfirmation =
+        untrustedEvidenceToolRequiresConfirmation(hasUntrustedEvidence, spec);
       const requiresConfirmation =
-        assistantToolRequiresConfirmation(spec, argumentsValue) ||
-        attachmentScheduleToolRequiresConfirmation(
-          input.hasAttachments,
-          namespace,
-          call.name,
-        );
+        policyRequiresConfirmation || evidenceRequiresConfirmation;
       let preview:
         | (ReturnType<typeof getAssistantToolPreview> & {
             card?: Awaited<ReturnType<typeof getAssistantConfirmationCard>>;
@@ -670,11 +660,14 @@ async function runModelLoop(input: {
           name: call.name,
           argumentsValue,
         });
-        const card = await getAssistantConfirmationCard({
+        let card = await getAssistantConfirmationCard({
           namespace,
           name: call.name,
           argumentsValue,
         }).catch(() => undefined);
+        if (!card && evidenceRequiresConfirmation && !policyRequiresConfirmation) {
+          card = getAssistantMutationDraftCard(spec, argumentsValue);
+        }
         if (!card) {
           responseInput.push(
             toolOutput(call.call_id, {
@@ -707,6 +700,7 @@ async function runModelLoop(input: {
 
       if (toolRun.status === "COMPLETED" && toolRun.result) {
         responseInput.push(toolOutput(call.call_id, toolRun.result));
+        hasUntrustedEvidence = true;
         continue;
       }
       if (toolRun.status === "UNKNOWN") {
@@ -752,6 +746,7 @@ async function runModelLoop(input: {
         emit: input.emit,
       });
       responseInput.push(toolOutput(call.call_id, result));
+      hasUntrustedEvidence = true;
     }
   } catch (error) {
     const message =
