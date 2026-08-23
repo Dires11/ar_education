@@ -46,6 +46,24 @@ describe("assistant tool registry", () => {
     expect(staffNames).not.toContain("team.get_team");
   });
 
+  it("does not expose internal avatar storage identifiers to the model", () => {
+    for (const [namespace, name] of [
+      ["students", "create_student"],
+      ["students", "update_student"],
+      ["guardians", "add_guardian"],
+      ["guardians", "update_guardian"],
+      ["tutors", "create_tutor"],
+      ["tutors", "update_tutor"],
+    ] as const) {
+      const spec = getAssistantToolSpec(namespace, name, "OWNER");
+      expect(spec).toBeDefined();
+      expect(
+        spec!.schema.safeParse({ avatarPublicId: "internal-id" }).success,
+        `${namespace}.${name}`,
+      ).toBe(false);
+    }
+  });
+
   it("classifies destructive, financial, outbound, and access writes", () => {
     const deleteStudent = getAssistantToolSpec(
       "students",

@@ -67,9 +67,10 @@ describe("assistant persistence guarantees", () => {
     });
   });
 
-  it("carries attachment and tool-output provenance into later turns", async () => {
+  it("carries attachment provenance into later turns", async () => {
     prismaMock.assistantThread.findFirst.mockResolvedValue({
       contextSummary: null,
+      _count: { runs: 1 },
       messages: [
         {
           role: "ASSISTANT",
@@ -106,6 +107,7 @@ describe("assistant persistence guarantees", () => {
   it("retains attachment provenance when only the assistant reply remains in the context window", async () => {
     prismaMock.assistantThread.findFirst.mockResolvedValue({
       contextSummary: null,
+      _count: { runs: 1 },
       messages: [
         {
           role: "ASSISTANT",
@@ -120,6 +122,26 @@ describe("assistant persistence guarantees", () => {
     await expect(
       getAssistantContext("admin-1", "thread-1", 1),
     ).resolves.toMatchObject({ hasUntrustedHistory: true });
+  });
+
+  it("does not classify ordinary CRM tool history as attachment-derived", async () => {
+    prismaMock.assistantThread.findFirst.mockResolvedValue({
+      contextSummary: "A student lookup was completed.",
+      _count: { runs: 0 },
+      messages: [
+        {
+          role: "ASSISTANT",
+          content: "I found the requested record.",
+          attachments: null,
+          createdAt: new Date(),
+          run: { hasAttachments: false, _count: { toolRuns: 1 } },
+        },
+      ],
+    });
+
+    await expect(
+      getAssistantContext("admin-1", "thread-1"),
+    ).resolves.toMatchObject({ hasUntrustedHistory: false });
   });
 
   it("checks active runs inside a serializable transaction", async () => {

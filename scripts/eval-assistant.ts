@@ -41,11 +41,15 @@ function simulatedLookupResult(
   namespace: string,
   name: string,
   args: Record<string, unknown>,
+  targetKey: string,
 ) {
   const studentId = stringArgument(args, "id", "student_123");
   const tutorId = stringArgument(args, "id", "tutor_123");
   const enrollmentId = stringArgument(args, "id", "enrollment_123");
   if (namespace === "students" && name === "search_students") {
+    if (targetKey === "students.create_student") {
+      return { ok: true, data: { total: 0, students: [] } };
+    }
     return {
       ok: true,
       data: {
@@ -98,7 +102,11 @@ function simulatedLookupResult(
   if (namespace === "catalog" && name === "list_subjects") {
     return {
       ok: true,
-      data: [{ id: "subject_123", name: "Mathematics" }],
+      data: {
+        total: 1,
+        hasMore: false,
+        subjects: [{ id: "subject_123", name: "Mathematics" }],
+      },
     };
   }
   if (namespace === "enrollments" && name === "get_enrollment") {
@@ -138,6 +146,10 @@ async function evaluateCase(
   item: (typeof ASSISTANT_ROUTING_EVAL_CASES)[number],
 ) {
   const targetKey = `${item.expectedNamespace}.${item.expectedTool}`;
+  const targetKeys = new Set([
+    targetKey,
+    ...(item.acceptableAlternativeTools ?? []),
+  ]);
   const transcript: Array<{
     step: number;
     tool: string;
@@ -163,7 +175,7 @@ async function evaluateCase(
       (output) => output.type === "function_call",
     );
     if (calls.length === 0) {
-      failure = `Model answered before calling ${targetKey}`;
+      failure = `Model answered before calling ${[...targetKeys].join(" or ")}`;
       break;
     }
 
@@ -184,7 +196,7 @@ async function evaluateCase(
         failure = `Model called unavailable tool ${key}`;
         break;
       }
-      if (key === targetKey) {
+      if (targetKeys.has(key)) {
         const calledTools = new Set(
           transcript.slice(0, -1).map((entry) => entry.tool),
         );
@@ -214,7 +226,7 @@ async function evaluateCase(
         type: "function_call_output",
         call_id: call.call_id,
         output: JSON.stringify(
-          simulatedLookupResult(namespace, call.name, args),
+          simulatedLookupResult(namespace, call.name, args, targetKey),
         ),
       });
     }

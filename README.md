@@ -57,8 +57,8 @@ not enable the assistant for regulated or highly sensitive student data until
 the organization's privacy, security, retention, and residency requirements
 have been reviewed. Sensitive actions such as payments, outbound email,
 deletions, cancellations, and team changes pause for explicit in-app
-confirmation. Mutations derived from attachments or previous CRM output also
-require confirmation.
+confirmation. Mutations derived from attachments—including extracted details
+carried into later conversation turns—also require confirmation.
 
 Run the optional live tool-routing evaluation with:
 

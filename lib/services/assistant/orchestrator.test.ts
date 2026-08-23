@@ -859,7 +859,7 @@ describe("assistant orchestration", () => {
     ).toBe(false);
   });
 
-  it("requires approval before a later write uses an earlier tool result", async () => {
+  it("runs a routine lookup-backed write without unnecessary approval", async () => {
     const createStudentArguments = {
       firstName: "Maya",
       lastName: "Thompson",
@@ -933,6 +933,14 @@ describe("assistant orchestration", () => {
           usage,
         },
       },
+      {
+        events: [],
+        final: {
+          output_text: "Student created and enrolled.",
+          output: [],
+          usage,
+        },
+      },
     );
     dataMocks.createOrGetAssistantToolRun
       .mockResolvedValueOnce({
@@ -972,9 +980,8 @@ describe("assistant orchestration", () => {
         namespace: "enrollments",
         toolName: "create_enrollment",
         arguments: createEnrollmentArguments,
-        status: "PENDING_CONFIRMATION",
-        requiresConfirmation: true,
-        expiresAt: new Date("2026-08-24T00:00:00.000Z"),
+        status: "RUNNING",
+        requiresConfirmation: false,
       });
     executeMock
       .mockResolvedValueOnce({ ok: true, data: { id: "student-1" } })
@@ -982,18 +989,11 @@ describe("assistant orchestration", () => {
         ok: true,
         data: { id: "package-1", subjectId: "subject-1" },
       })
-      .mockResolvedValueOnce({ ok: true, data: { id: "tutor-1" } });
-    confirmationCardMock.mockResolvedValue({
-      kind: "ENROLLMENT",
-      entityKey: "enrollment:enrollment-1",
-      title: "Maya's enrollment",
-      subtitle: "Enrollment affected by this change",
-      badges: [],
-      fields: [],
-      href: "/enrollments",
-      actionLabel: "View enrollment",
-      suggestedActions: [],
-    });
+      .mockResolvedValueOnce({ ok: true, data: { id: "tutor-1" } })
+      .mockResolvedValueOnce({
+        ok: true,
+        data: { id: "enrollment-1" },
+      });
     const events: Array<Record<string, unknown>> = [];
 
     await processAssistantTurn(
@@ -1005,18 +1005,16 @@ describe("assistant orchestration", () => {
       (event) => events.push(event),
     );
 
-    expect(executeMock).toHaveBeenCalledTimes(3);
+    expect(executeMock).toHaveBeenCalledTimes(4);
     expect(dataMocks.createOrGetAssistantToolRun).toHaveBeenLastCalledWith(
       expect.objectContaining({
         namespace: "enrollments",
         toolName: "create_enrollment",
-        requiresConfirmation: true,
+        requiresConfirmation: false,
       }),
     );
-    expect(events.at(-1)).toMatchObject({
-      type: "confirmation_required",
-      toolName: "create_enrollment",
-    });
+    expect(dataMocks.pauseAssistantRun).not.toHaveBeenCalled();
+    expect(events.at(-1)).toMatchObject({ type: "assistant_completed" });
   });
 
   it("returns ambiguous lookup candidates without guessing a mutation target", async () => {
@@ -1125,6 +1123,77 @@ describe("assistant orchestration", () => {
 
     expect(dataMocks.createOrGetAssistantToolRun).not.toHaveBeenCalled();
     expect(executeMock).not.toHaveBeenCalled();
+  });
+
+  it("does not treat a paginated payment row as an exact lookup", async () => {
+    responses.queue.push(
+      {
+        events: [],
+        final: {
+          output_text: "",
+          output: [{
+            type: "function_call",
+            namespace: "billing",
+            name: "list_payments",
+            call_id: "call-payment-list",
+            arguments: JSON.stringify({ limit: 1 }),
+          }],
+          usage,
+        },
+      },
+      {
+        events: [],
+        final: {
+          output_text: "",
+          output: [{
+            type: "function_call",
+            namespace: "billing",
+            name: "delete_payment",
+            call_id: "call-delete-listed-payment",
+            arguments: JSON.stringify({ paymentId: "payment-1" }),
+          }],
+          usage,
+        },
+      },
+      {
+        events: [],
+        final: {
+          output_text: "I need to verify the exact payment first.",
+          output: [],
+          usage,
+        },
+      },
+    );
+    dataMocks.createOrGetAssistantToolRun.mockResolvedValue({
+      id: "tool-payment-list",
+      runId: "run-1",
+      callId: "call-payment-list",
+      namespace: "billing",
+      toolName: "list_payments",
+      arguments: { limit: 1 },
+      status: "RUNNING",
+      requiresConfirmation: false,
+    });
+    executeMock.mockResolvedValue({
+      ok: true,
+      data: {
+        payments: [{ id: "payment-1", amount: "120" }],
+        total: 2,
+      },
+    });
+
+    await processAssistantTurn(
+      { id: "admin-1", role: "STAFF" },
+      {
+        clientTurnId: "c7bcb6f9-41e7-4c17-bf0d-3e1b04c8e0d4",
+        message: "Delete the payment",
+      },
+      () => undefined,
+    );
+
+    expect(executeMock).toHaveBeenCalledTimes(1);
+    expect(dataMocks.createOrGetAssistantToolRun).toHaveBeenCalledTimes(1);
+    expect(dataMocks.pauseAssistantRun).not.toHaveBeenCalled();
   });
 
   it("keeps ambiguous candidates blocked even if the model inspects one", async () => {
@@ -1534,24 +1603,33 @@ describe("assistant orchestration", () => {
       namespace: "enrollments",
       toolName: "create_enrollment",
       arguments: enrollmentArguments,
-      status: "PENDING_CONFIRMATION",
-      requiresConfirmation: true,
-      expiresAt: new Date("2026-08-24T00:00:00.000Z"),
+      status: "RUNNING",
+      requiresConfirmation: false,
     });
-    responses.queue.push({
-      events: [],
-      final: {
-        output_text: "",
-        output: [{
-          type: "function_call",
-          namespace: "enrollments",
-          name: "create_enrollment",
-          call_id: "call-enrollment",
-          arguments: JSON.stringify(enrollmentArguments),
-        }],
-        usage,
+    responses.queue.push(
+      {
+        events: [],
+        final: {
+          output_text: "",
+          output: [{
+            type: "function_call",
+            namespace: "enrollments",
+            name: "create_enrollment",
+            call_id: "call-enrollment",
+            arguments: JSON.stringify(enrollmentArguments),
+          }],
+          usage,
+        },
       },
-    });
+      {
+        events: [],
+        final: {
+          output_text: "Payment recorded and enrollment created.",
+          output: [],
+          usage,
+        },
+      },
+    );
 
     await processAssistantDecision(
       { id: "admin-1", role: "STAFF" },
@@ -1566,7 +1644,7 @@ describe("assistant orchestration", () => {
         toolName: "create_enrollment",
       }),
     );
-    expect(dataMocks.pauseAssistantRun).toHaveBeenCalledTimes(1);
+    expect(dataMocks.pauseAssistantRun).not.toHaveBeenCalled();
   });
 
   it("fails a claimed approval run when its tool audit cannot be finalized", async () => {

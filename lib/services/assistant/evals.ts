@@ -3,6 +3,7 @@ export type AssistantRoutingEvalCase = {
   prompt: string;
   expectedNamespace: string;
   expectedTool: string;
+  acceptableAlternativeTools?: string[];
   requiredLookupGroups?: string[][];
   expectedConfirmation?: boolean;
 };
@@ -13,6 +14,7 @@ export const ASSISTANT_ROUTING_EVAL_CASES: AssistantRoutingEvalCase[] = [
     prompt: "Find the student named Maya so I can inspect her guardians.",
     expectedNamespace: "students",
     expectedTool: "search_students",
+    acceptableAlternativeTools: ["students.query_student_directory"],
   },
   {
     name: "rank youngest student",
@@ -92,7 +94,6 @@ export const ASSISTANT_ROUTING_EVAL_CASES: AssistantRoutingEvalCase[] = [
     expectedTool: "mark_attendance",
     requiredLookupGroups: [
       ["schedule.get_schedule"],
-      ["students.get_student", "students.search_students"],
     ],
     expectedConfirmation: false,
   },

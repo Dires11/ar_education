@@ -7,6 +7,24 @@ export async function listEmailTemplates() {
   return prisma.emailTemplate.findMany({ orderBy: { createdAt: "desc" } });
 }
 
+export async function listEmailTemplatesForAssistant(limit: number) {
+  const [total, templates] = await prisma.$transaction([
+    prisma.emailTemplate.count(),
+    prisma.emailTemplate.findMany({
+      select: {
+        id: true,
+        name: true,
+        type: true,
+        subject: true,
+        updatedAt: true,
+      },
+      orderBy: { createdAt: "desc" },
+      take: limit,
+    }),
+  ]);
+  return { total, hasMore: total > templates.length, templates };
+}
+
 export async function getEmailTemplate(id: string) {
   return prisma.emailTemplate.findUnique({ where: { id } });
 }

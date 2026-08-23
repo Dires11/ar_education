@@ -478,7 +478,6 @@ async function runModelLoop(input: {
   hasAttachments: boolean;
   hasHistoricalUntrustedContext?: boolean;
   initialAssistantContent?: string;
-  initialToolUsed?: boolean;
   initialMutationUsed?: boolean;
   initialAuthorizedIds?: string[];
   initialToolHistory?: Array<{
@@ -494,9 +493,8 @@ async function runModelLoop(input: {
   let responseInput = input.responseInput;
   let assistantContent = input.initialAssistantContent ?? "";
   let crmMutationRan = Boolean(input.initialMutationUsed);
-  let hasUntrustedEvidence =
+  const hasUntrustedEvidence =
     input.hasAttachments ||
-    Boolean(input.initialToolUsed) ||
     Boolean(input.hasHistoricalUntrustedContext);
   const authorizedMutationIds = new Set(input.initialAuthorizedIds ?? []);
   const ambiguousCandidateIds = new Set<string>();
@@ -504,6 +502,7 @@ async function runModelLoop(input: {
   const candidateResultForTool = (
     namespace: string,
     name: string,
+    argumentsValue: Record<string, unknown>,
     result: unknown,
   ) => {
     if (!result || typeof result !== "object" || Array.isArray(result)) {
@@ -532,6 +531,11 @@ async function runModelLoop(input: {
           ? (data as Record<string, unknown>).payments
           : undefined;
       }
+      if (key === "billing.get_upcoming_dues") {
+        return data && typeof data === "object" && !Array.isArray(data)
+          ? (data as Record<string, unknown>).dues
+          : undefined;
+      }
       if (key === "team.get_team") {
         if (!data || typeof data !== "object" || Array.isArray(data)) {
           return undefined;
@@ -544,13 +548,54 @@ async function runModelLoop(input: {
             : []),
         ];
       }
-      if (
-        key === "catalog.list_subjects" ||
-        key === "catalog.list_packages" ||
-        key === "enrollments.list_groups" ||
-        key === "recurrence.list_recurring_schedules" ||
-        key === "communications.list_email_templates"
-      ) {
+      if (key === "schedule.get_schedule" && argumentsValue.month) {
+        if (!data || typeof data !== "object" || Array.isArray(data)) {
+          return undefined;
+        }
+        const schedule = data as Record<string, unknown>;
+        return [
+          ...(Array.isArray(schedule.realSessions)
+            ? schedule.realSessions
+            : []),
+          ...(Array.isArray(schedule.virtualSessions)
+            ? schedule.virtualSessions
+            : []),
+        ];
+      }
+      if (key === "reporting.get_dashboard_summary") {
+        if (!data || typeof data !== "object" || Array.isArray(data)) {
+          return undefined;
+        }
+        const dashboard = data as Record<string, unknown>;
+        return [
+          "todaySessions",
+          "tomorrowSessions",
+          "upcomingEndings",
+          "tutorCounts",
+          "unpaidStudents",
+        ].flatMap((field) => {
+          const section = dashboard[field];
+          if (Array.isArray(section)) return section;
+          return section && typeof section === "object"
+            ? Array.isArray((section as Record<string, unknown>).results)
+              ? ((section as Record<string, unknown>).results as unknown[])
+              : []
+            : [];
+        });
+      }
+      const namedListField: Record<string, string> = {
+        "catalog.list_subjects": "subjects",
+        "catalog.list_packages": "packages",
+        "enrollments.list_groups": "groups",
+        "communications.list_email_templates": "templates",
+      };
+      if (key in namedListField) {
+        if (Array.isArray(data)) return data;
+        return data && typeof data === "object"
+          ? (data as Record<string, unknown>)[namedListField[key]]
+          : undefined;
+      }
+      if (key === "recurrence.list_recurring_schedules") {
         return data;
       }
       return undefined;
@@ -585,7 +630,12 @@ async function runModelLoop(input: {
       authorizedMutationIds.add(id),
     );
     const key = `${namespace}.${name}`;
-    const candidates = candidateResultForTool(namespace, name, result);
+    const candidates = candidateResultForTool(
+      namespace,
+      name,
+      argumentsValue,
+      result,
+    );
     const primaryCandidateIds = candidates.records.flatMap((candidate) =>
       candidate && typeof candidate === "object" && !Array.isArray(candidate)
         ? collectAssistantIdentifierValues({
@@ -631,7 +681,21 @@ async function runModelLoop(input: {
       candidates.total > 1
     ) {
       ambiguousRecords = candidates.records;
+    } else if (
+      (key === "billing.list_payments" ||
+        key === "billing.get_upcoming_dues" ||
+        key === "recurrence.list_recurring_schedules" ||
+        key === "communications.list_email_templates" ||
+        (key === "schedule.get_schedule" && argumentsValue.month)) &&
+      candidates.total > 1
+    ) {
+      ambiguousRecords = candidates.records;
     } else if (key === "team.get_team" && candidates.total > 1) {
+      ambiguousRecords = candidates.records;
+    } else if (key === "reporting.get_dashboard_summary") {
+      // Dashboard reports are broad operational summaries, never exact record
+      // resolution. Require a dedicated lookup before any reported ID can be
+      // used by a mutation, even when a section contains only one row.
       ambiguousRecords = candidates.records;
     } else {
       const recordsByName = new Map<string, unknown[]>();
@@ -903,7 +967,6 @@ async function runModelLoop(input: {
           argumentsValue,
           toolRun.result,
         );
-        hasUntrustedEvidence = true;
         continue;
       }
       if (toolRun.status === "UNKNOWN") {
@@ -950,7 +1013,6 @@ async function runModelLoop(input: {
       });
       responseInput.push(toolOutput(call.call_id, result));
       recordProvenance(namespace, call.name, argumentsValue, result);
-      hasUntrustedEvidence = true;
     }
   } catch (error) {
     const message =
@@ -1172,6 +1234,7 @@ export async function processAssistantDecision(
 
     const responseInput = existing.run.resumeInput as unknown as ResponseInput;
     responseInput.push(toolOutput(existing.callId, result));
+    const context = await getAssistantContext(admin.id, existing.run.threadId);
     await runModelLoop({
       admin,
       runId: existing.run.id,
@@ -1179,7 +1242,8 @@ export async function processAssistantDecision(
       responseInput,
       emit,
       hasAttachments: existing.run.hasAttachments,
-      initialToolUsed: true,
+      hasHistoricalUntrustedContext:
+        context?.hasUntrustedHistory ?? existing.run.hasAttachments,
       initialMutationUsed: decision === "APPROVE",
       initialAuthorizedIds: collectAssistantIdentifierValues(result),
       initialToolHistory: [

@@ -46,10 +46,29 @@ export type AssistantToolSpec = {
     | ((argumentsValue: Record<string, unknown>) => boolean);
 };
 
+const assistantGuardianSchema = guardianSchema.omit({
+  avatarUrl: true,
+  avatarPublicId: true,
+});
+const assistantGuardianPatchSchema = guardianPatchSchema.omit({
+  avatarUrl: true,
+  avatarPublicId: true,
+});
+const assistantCreateStudentSchema = createStudentSchema
+  .omit({ avatarUrl: true, avatarPublicId: true, guardian: true })
+  .extend({ guardian: assistantGuardianSchema.optional() });
 const studentPatchSchema = updateStudentSchema
+  .omit({ avatarUrl: true, avatarPublicId: true })
   .partial()
   .extend({ id: idSchema });
-const tutorPatchSchema = updateTutorSchema.partial().extend({ id: idSchema });
+const assistantCreateTutorSchema = createTutorSchema.omit({
+  avatarUrl: true,
+  avatarPublicId: true,
+});
+const tutorPatchSchema = updateTutorSchema
+  .omit({ avatarUrl: true, avatarPublicId: true })
+  .partial()
+  .extend({ id: idSchema });
 const packagePatchSchema = z
   .object(createPackageSchema.shape)
   .partial()
@@ -105,6 +124,7 @@ const ASSISTANT_READ_ONLY_TOOL_KEYS = new Set([
   "billing.get_upcoming_dues",
   "billing.get_payment_stats",
   "communications.list_email_templates",
+  "communications.get_email_template",
   "team.get_team",
   "reporting.get_dashboard_summary",
 ]);
@@ -139,7 +159,7 @@ const toolSpecs: AssistantToolSpec[] = [
     name: "create_student",
     description:
       "Create one student, optionally with a first guardian. A guardian is optional and must not block creating the student; if guardian details were requested, collect every required guardian field before calling, otherwise offer guardian setup as a next step after creation.",
-    schema: createStudentSchema,
+    schema: assistantCreateStudentSchema,
     requiresConfirmation: false,
   },
   {
@@ -178,14 +198,14 @@ const toolSpecs: AssistantToolSpec[] = [
     namespace: "guardians",
     name: "add_guardian",
     description: "Create and link a guardian to a known student.",
-    schema: guardianSchema.extend({ studentId: idSchema }),
+    schema: assistantGuardianSchema.extend({ studentId: idSchema }),
     requiresConfirmation: false,
   },
   {
     namespace: "guardians",
     name: "update_guardian",
     description: "Update selected guardian fields for a known student.",
-    schema: guardianPatchSchema.extend({
+    schema: assistantGuardianPatchSchema.extend({
       studentId: idSchema,
       guardianId: idSchema,
     }),
@@ -217,7 +237,7 @@ const toolSpecs: AssistantToolSpec[] = [
     namespace: "tutors",
     name: "create_tutor",
     description: "Create a tutor and assign at least one subject ID.",
-    schema: createTutorSchema,
+    schema: assistantCreateTutorSchema,
     requiresConfirmation: false,
   },
   {
@@ -260,8 +280,12 @@ const toolSpecs: AssistantToolSpec[] = [
   {
     namespace: "catalog",
     name: "list_subjects",
-    description: "List all available subjects.",
-    schema: z.object({}),
+    description:
+      "List a bounded summary of available subjects, optionally inspecting one exact subject ID.",
+    schema: z.object({
+      id: idSchema.optional(),
+      limit: z.number().int().min(1).max(100).default(50),
+    }),
     requiresConfirmation: false,
   },
   {
@@ -288,8 +312,12 @@ const toolSpecs: AssistantToolSpec[] = [
   {
     namespace: "catalog",
     name: "list_packages",
-    description: "List packages, optionally active packages only.",
-    schema: z.object({ activeOnly: z.boolean().default(false) }),
+    description:
+      "List a bounded summary of packages, optionally active packages only.",
+    schema: z.object({
+      activeOnly: z.boolean().default(false),
+      limit: z.number().int().min(1).max(100).default(50),
+    }),
     requiresConfirmation: false,
   },
   {
@@ -383,10 +411,13 @@ const toolSpecs: AssistantToolSpec[] = [
   {
     namespace: "enrollments",
     name: "list_groups",
-    description: "List groups, optionally narrowed to a tutor and subject.",
+    description:
+      "List bounded group summaries, inspect one exact group ID, or narrow by tutor and subject.",
     schema: z.object({
+      groupId: idSchema.optional(),
       tutorId: idSchema.optional(),
       subjectId: idSchema.optional(),
+      limit: z.number().int().min(1).max(100).default(50),
     }),
     requiresConfirmation: false,
   },
@@ -593,8 +624,13 @@ const toolSpecs: AssistantToolSpec[] = [
     namespace: "billing",
     name: "get_upcoming_dues",
     description:
-      "List overdue, current, future, and recently paid package dues.",
-    schema: z.object({}),
+      "List a bounded summary of overdue, current, future, or recently paid package dues.",
+    schema: z.object({
+      status: z
+        .enum(["ALL", "OVERDUE", "DUE_THIS_MONTH", "UPCOMING", "PAID"])
+        .default("ALL"),
+      limit: z.number().int().min(1).max(100).default(50),
+    }),
     requiresConfirmation: false,
   },
   {
@@ -639,8 +675,16 @@ const toolSpecs: AssistantToolSpec[] = [
   {
     namespace: "communications",
     name: "list_email_templates",
-    description: "List saved email templates.",
-    schema: z.object({}),
+    description:
+      "List bounded email-template summaries without transmitting every saved body.",
+    schema: z.object({ limit: z.number().int().min(1).max(100).default(50) }),
+    requiresConfirmation: false,
+  },
+  {
+    namespace: "communications",
+    name: "get_email_template",
+    description: "Inspect one exact saved email template by ID.",
+    schema: z.object({ id: idSchema }),
     requiresConfirmation: false,
   },
   {

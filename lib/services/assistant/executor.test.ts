@@ -119,6 +119,7 @@ vi.mock("@/lib/services/emails", () => ({
 }));
 
 import {
+  collectAssistantIdentifierValues,
   enrichAssistantConfirmationCard,
   executeAssistantTool,
   getAssistantConfirmationCard,
@@ -129,6 +130,17 @@ import {
 describe("assistant tool result cards", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it("collects only non-empty CRM business references", () => {
+    expect(
+      collectAssistantIdentifierValues({
+        id: "student-1",
+        subjectId: "",
+        avatarPublicId: "cloudinary-internal-id",
+        nested: { paymentId: "payment-1" },
+      }),
+    ).toEqual(["student-1", "payment-1"]);
   });
 
   it("returns a student card with modal deep-link and next-step prompts", async () => {
@@ -451,8 +463,62 @@ describe("assistant tool result cards", () => {
     );
 
     expect(card.fields).toEqual([
-      { label: "Subjects", value: "Algebra", icon: "BOOK" },
       { label: "Selected subject", value: "Geometry", icon: "BOOK" },
+      { label: "Subjects", value: "Algebra", icon: "BOOK" },
+    ]);
+  });
+
+  it("keeps all referenced targets ahead of optional card details", async () => {
+    studentMocks.getStudent.mockResolvedValue({
+      id: "student-1",
+      firstName: "Maya",
+      lastName: "Chen",
+    });
+    referenceDataMocks.getTutor.mockResolvedValue({
+      id: "tutor-1",
+      firstName: "Theo",
+      lastName: "Grant",
+    });
+    referenceDataMocks.getSubject.mockResolvedValue({
+      id: "subject-1",
+      name: "Mathematics",
+    });
+    referenceDataMocks.getEnrollment.mockResolvedValue({
+      id: "enrollment-1",
+      student: { firstName: "Maya", lastName: "Chen" },
+      subject: { name: "Mathematics" },
+    });
+
+    const card = await enrichAssistantConfirmationCard(
+      {
+        kind: "SESSION",
+        entityKey: "draft-session",
+        title: "New session",
+        badges: [],
+        fields: [
+          { label: "Date", value: "August 24", icon: "CALENDAR" },
+          { label: "Duration", value: "60 minutes", icon: "CLOCK" },
+          { label: "Room", value: "A", icon: "LOCATION" },
+        ],
+        href: "/schedule",
+        actionLabel: "View schedule",
+        suggestedActions: [],
+      },
+      {
+        studentId: "student-1",
+        tutorId: "tutor-1",
+        subjectId: "subject-1",
+        enrollmentId: "enrollment-1",
+      },
+    );
+
+    expect(card.fields.map((field) => field.label)).toEqual([
+      "Student",
+      "Tutor",
+      "Subject",
+      "Enrollment",
+      "Date",
+      "Duration",
     ]);
   });
 

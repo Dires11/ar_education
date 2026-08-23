@@ -7,14 +7,21 @@ import {
   listStudents,
 } from "@/lib/data/students";
 import { listTutors, getTutor as getTutorData } from "@/lib/data/tutors";
-import { getSubject, listSubjects } from "@/lib/data/subjects";
-import { listPackages, getPackage } from "@/lib/data/packages";
+import {
+  getSubject,
+  listSubjects,
+  listSubjectsForAssistant,
+} from "@/lib/data/subjects";
+import {
+  getPackage,
+  listPackagesForAssistant,
+} from "@/lib/data/packages";
 import {
   getDiscountWithEnrollment,
   getEnrollment,
   searchEnrollmentsForAssistant,
 } from "@/lib/data/enrollments";
-import { listGroups } from "@/lib/data/groups";
+import { listGroups, listGroupsForAssistant } from "@/lib/data/groups";
 import {
   getPaymentForAssistantConfirmation,
   listPaymentsForAssistant,
@@ -23,7 +30,10 @@ import {
   getRecurrenceRuleWithParticipants,
   getSession as getSessionData,
 } from "@/lib/data/sessions";
-import { getEmailTemplate } from "@/lib/data/emails";
+import {
+  getEmailTemplate,
+  listEmailTemplatesForAssistant,
+} from "@/lib/data/emails";
 import {
   createStudentWithGuardian,
   updateStudentProfile,
@@ -59,7 +69,6 @@ import {
   removeDiscount,
 } from "@/lib/services/enrollments";
 import {
-  listGroupsForTutorSubject,
   updateExistingGroup,
 } from "@/lib/services/groups";
 import {
@@ -96,7 +105,6 @@ import {
   createTemplate,
   updateTemplate,
   deleteTemplate,
-  listEmailTemplates,
   sendEmailToStudents,
   getEmailDeliveryConfirmation,
 } from "@/lib/services/emails";
@@ -139,6 +147,28 @@ export type AssistantToolExecutionContext = {
   provenanceValidated?: boolean;
 };
 
+const ASSISTANT_BUSINESS_REFERENCE_KEYS = new Set([
+  "id",
+  "studentId",
+  "studentIds",
+  "guardianId",
+  "tutorId",
+  "subjectId",
+  "subjectIds",
+  "packageId",
+  "enrollmentId",
+  "groupId",
+  "existingGroupId",
+  "sessionId",
+  "recurrenceRuleId",
+  "recurrenceRuleIds",
+  "ruleId",
+  "paymentId",
+  "discountId",
+  "invitationId",
+  "adminId",
+]);
+
 export function collectAssistantIdentifierValues(value: unknown): string[] {
   const identifiers = new Set<string>();
   const visit = (item: unknown, key?: string) => {
@@ -149,8 +179,9 @@ export function collectAssistantIdentifierValues(value: unknown): string[] {
     if (!item || typeof item !== "object") {
       if (
         typeof item === "string" &&
+        item.trim().length > 0 &&
         key &&
-        /(?:^id$|Id$|Ids$)/.test(key)
+        ASSISTANT_BUSINESS_REFERENCE_KEYS.has(key)
       ) {
         identifiers.add(item);
       }
@@ -274,6 +305,20 @@ function toolResult(data: unknown, href?: string, card?: AssistantResultCard) {
     href,
     card: normalizedCard,
   });
+}
+
+function mutationToolResult(
+  data: unknown,
+  href: string,
+  card: AssistantResultCard,
+) {
+  try {
+    return toolResult(data, href, card);
+  } catch {
+    // The write has already committed. Card serialization or normalization is
+    // presentation-only and must not make a successful mutation retryable.
+    return toolResult(data, href);
+  }
 }
 
 async function resultAfterMutation(
@@ -1230,7 +1275,10 @@ export async function enrichAssistantConfirmationCard(
   });
   return {
     ...card,
-    fields: [...card.fields, ...proposedFields],
+    // Referenced targets are approval-critical. Put them before presentation
+    // details so the six-field card bound can never trim away an enrollment,
+    // student, tutor, subject, package, or group being changed.
+    fields: [...proposedFields, ...card.fields].slice(0, 6),
   };
 }
 
@@ -1548,7 +1596,7 @@ export async function getAssistantConfirmationCard(input: {
     );
     if (!confirmation.success) return undefined;
     return emailResultCard({
-      entityKey: `email-send:${studentIds.slice().sort().join(":")}`,
+      entityKey: `email-send:${confirmation.data.digest}`,
       title:
         studentIds.length === 1
           ? "Email 1 student"
@@ -1933,7 +1981,7 @@ async function executeTutors(name: string, args: ToolArguments) {
     }
     case "archive_tutor": {
       const tutor = await archiveTutorById(stringValue(args, "id"));
-      return toolResult(
+      return mutationToolResult(
         { id: tutor.id, status: tutor.status },
         `/tutors/${tutor.id}`,
         tutorResultCard(tutor, "Tutor archived"),
@@ -1956,11 +2004,18 @@ async function executeTutors(name: string, args: ToolArguments) {
 
 async function executeCatalog(name: string, args: ToolArguments) {
   switch (name) {
-    case "list_subjects":
-      return toolResult(await listSubjects(), "/subjects");
+    case "list_subjects": {
+      return toolResult(
+        await listSubjectsForAssistant({
+          id: args.id as string | undefined,
+          limit: Number(args.limit),
+        }),
+        "/subjects",
+      );
+    }
     case "create_subject": {
       const subject = await createSubjectOffering(args as never);
-      return toolResult(
+      return mutationToolResult(
         subject,
         "/subjects",
         subjectResultCard(subject, "Subject created"),
@@ -1975,7 +2030,7 @@ async function executeCatalog(name: string, args: ToolArguments) {
         description:
           (args.description as string | undefined) ?? subject.description ?? "",
       });
-      return toolResult(
+      return mutationToolResult(
         updated,
         "/subjects",
         subjectResultCard(updated, "Subject updated"),
@@ -1986,17 +2041,38 @@ async function executeCatalog(name: string, args: ToolArguments) {
       const subject = await getSubject(id);
       if (!subject) throw new Error("Subject not found");
       const deleted = await deleteSubjectOffering(id);
-      return toolResult(
+      return mutationToolResult(
         { id: deleted.id, deleted: true },
         "/subjects",
         subjectResultCard(subject, "Subject deleted"),
       );
     }
-    case "list_packages":
+    case "list_packages": {
+      const result = await listPackagesForAssistant({
+        activeOnly: Boolean(args.activeOnly),
+        limit: Number(args.limit),
+      });
       return toolResult(
-        await listPackages(Boolean(args.activeOnly)),
+        {
+          ...result,
+          packages: result.packages.map((pkg) => ({
+            id: pkg.id,
+            name: pkg.name,
+            type: pkg.type,
+            billingPeriod: pkg.billingPeriod,
+            lessonType: pkg.lessonType,
+            subject: pkg.subject
+              ? { id: pkg.subject.id, name: pkg.subject.name }
+              : null,
+            basePrice: pkg.basePrice.toString(),
+            sessionsPerWeek: pkg.sessionsPerWeek,
+            durationMinutes: pkg.durationMinutes,
+            isActive: pkg.isActive,
+          })),
+        },
         "/packages",
       );
+    }
     case "get_package": {
       const id = stringValue(args, "id");
       const pkg = await getPackage(id);
@@ -2174,14 +2250,15 @@ async function executeEnrollments(name: string, args: ToolArguments) {
       return toolResult({ discountId, removed: true }, "/enrollments");
     }
     case "list_groups": {
-      const groups =
-        args.tutorId && args.subjectId
-          ? await listGroupsForTutorSubject(
-              stringValue(args, "tutorId"),
-              stringValue(args, "subjectId"),
-            )
-          : await listGroups();
-      return toolResult(groups, "/enrollments");
+      return toolResult(
+        await listGroupsForAssistant({
+          groupId: args.groupId as string | undefined,
+          tutorId: args.tutorId as string | undefined,
+          subjectId: args.subjectId as string | undefined,
+          limit: Number(args.limit),
+        }),
+        "/enrollments",
+      );
     }
     case "rename_group": {
       const groupId = stringValue(args, "groupId");
@@ -2310,7 +2387,7 @@ async function executeSchedule(name: string, args: ToolArguments) {
       const session = await getSessionData(sessionId);
       if (!session) throw new Error("Session not found");
       await deleteSessionById(sessionId);
-      return toolResult(
+      return mutationToolResult(
         { sessionId, deleted: true },
         "/schedule",
         sessionResultCard(session, "Session deleted"),
@@ -2441,7 +2518,7 @@ async function executeRecurrence(name: string, args: ToolArguments) {
       const rule = await getRecurrenceRuleWithParticipants(ruleId);
       if (!rule) throw new Error("Recurring schedule not found");
       await deleteRecurringSchedule(ruleId);
-      return toolResult(
+      return mutationToolResult(
         { ruleId, deleted: true },
         "/schedule",
         recurrenceResultCard(rule, "Recurring schedule deleted"),
@@ -2505,8 +2582,40 @@ async function executeBilling(
         }),
         "/payments",
       );
-    case "get_upcoming_dues":
-      return toolResult(await getUpcomingPaymentDues(), "/payments");
+    case "get_upcoming_dues": {
+      const dues = await getUpcomingPaymentDues();
+      const status = String(args.status);
+      const filtered = dues.filter((due) => {
+        if (status === "OVERDUE") return due.isOverdue;
+        if (status === "DUE_THIS_MONTH") return due.isDueThisMonth;
+        if (status === "UPCOMING")
+          return !due.isPaid && !due.isOverdue && !due.isDueThisMonth;
+        if (status === "PAID") return due.isPaid;
+        return true;
+      });
+      const limit = Number(args.limit);
+      return toolResult(
+        {
+          total: filtered.length,
+          hasMore: filtered.length > limit,
+          dues: filtered.slice(0, limit).map((due) => ({
+            key: due.key,
+            enrollmentId: due.enrollmentId,
+            studentId: due.studentId,
+            studentName: due.studentName,
+            subjectName: due.subjectName,
+            packageName: due.packageName,
+            amount: due.amount,
+            month: due.month,
+            monthLabel: due.monthLabel,
+            isPaid: due.isPaid,
+            isOverdue: due.isOverdue,
+            isDueThisMonth: due.isDueThisMonth,
+          })),
+        },
+        "/payments",
+      );
+    }
     case "get_payment_stats":
       return toolResult(await getPaymentStats(), "/payments");
     case "record_payment": {
@@ -2554,7 +2663,7 @@ async function executeBilling(
         context.idempotencyKey,
         reminderConfirmation.digest,
       );
-      return toolResult(
+      return mutationToolResult(
         { sent: true },
         "/payments",
         emailResultCard({
@@ -2580,11 +2689,24 @@ async function executeCommunications(
   context: AssistantToolExecutionContext,
 ) {
   switch (name) {
-    case "list_email_templates":
-      return toolResult(await listEmailTemplates(), "/emails");
+    case "list_email_templates": {
+      return toolResult(
+        await listEmailTemplatesForAssistant(Number(args.limit)),
+        "/emails",
+      );
+    }
+    case "get_email_template": {
+      const template = await getEmailTemplate(stringValue(args, "id"));
+      if (!template) throw new Error("Email template not found");
+      return toolResult(
+        template,
+        "/emails",
+        emailTemplateResultCard(template, "Email template details"),
+      );
+    }
     case "create_email_template": {
       const template = await createTemplate(args as never);
-      return toolResult(
+      return mutationToolResult(
         template,
         "/emails",
         emailTemplateResultCard(template, "Email template created"),
@@ -2595,7 +2717,7 @@ async function executeCommunications(
       const template = { ...args };
       delete template.id;
       const updated = await updateTemplate(id, template as never);
-      return toolResult(
+      return mutationToolResult(
         updated,
         "/emails",
         emailTemplateResultCard(updated, "Email template updated"),
@@ -2606,7 +2728,7 @@ async function executeCommunications(
       const template = await getEmailTemplate(id);
       if (!template) throw new Error("Email template not found");
       await deleteTemplate(id);
-      return toolResult(
+      return mutationToolResult(
         { id, deleted: true },
         "/emails",
         emailTemplateResultCard(template, "Email template deleted"),
@@ -2622,11 +2744,11 @@ async function executeCommunications(
           idempotencyKey: context.idempotencyKey,
           expectedConfirmationDigest: emailConfirmation.digest,
         });
-      return toolResult(
+      return mutationToolResult(
         result,
         "/emails",
         emailResultCard({
-          entityKey: `email-send:${studentIds.slice().sort().join(":")}`,
+          entityKey: `email-send:${emailConfirmation.digest}`,
           title: studentIds.length === 1 ? "Email sent to 1 student" : `Email sent to ${studentIds.length} students`,
           subtitle: `${result.sent} sent${result.failed ? ` · ${result.failed} failed` : ""}`,
           subject: emailConfirmation.subject,
@@ -2690,7 +2812,7 @@ async function executeTeam(
       {
         const email = stringValue(args, "email");
         const invitation = await inviteTeamMember(email);
-        return toolResult(
+        return mutationToolResult(
           { invited: true, email },
           "/team",
           teamResultCard({
@@ -2709,7 +2831,7 @@ async function executeTeam(
       );
       if (!invitation) throw new Error("Team invitation not found");
       await revokeTeamInvitation(invitationId);
-      return toolResult(
+      return mutationToolResult(
         { revoked: true },
         "/team",
         teamResultCard({
@@ -2722,24 +2844,25 @@ async function executeTeam(
     }
     case "update_team_role": {
       const adminId = stringValue(args, "adminId");
-      await updateTeamMemberRole(
-        context.admin.id,
-        adminId,
-        args.role as "OWNER" | "STAFF",
-      );
       const member = (await getTeamPageData()).admins.find(
         (item) => item.id === adminId,
       );
-      if (!member) throw new Error("Updated team member could not be loaded");
-      return toolResult(
+      if (!member) throw new Error("Team member not found");
+      const role = args.role as "OWNER" | "STAFF";
+      await updateTeamMemberRole(
+        context.admin.id,
+        adminId,
+        role,
+      );
+      return mutationToolResult(
         { updated: true },
         "/team",
         teamResultCard({
           entityKey: `team-admin:${member.id}`,
           title: member.name,
-          subtitle: `Role changed to ${titleCase(member.role)}`,
+          subtitle: `Role changed to ${titleCase(role)}`,
           email: member.email,
-          role: member.role,
+          role,
         }),
       );
     }
@@ -2750,7 +2873,7 @@ async function executeTeam(
       );
       if (!member) throw new Error("Team member not found");
       const result = await removeTeamMember(context.admin.id, adminId);
-      return toolResult(
+      return mutationToolResult(
         result,
         "/team",
         teamResultCard({
@@ -2813,8 +2936,57 @@ export async function executeAssistantTool(input: {
       return executeCommunications(input.name, args, input.context);
     case "team":
       return executeTeam(input.name, args, input.context);
-    case "reporting":
-      return toolResult(await getDashboardStats(), "/dashboard");
+    case "reporting": {
+      const dashboard = await getDashboardStats();
+      const sessionSummary = (session: (typeof dashboard.todaySessions)[number]) => ({
+        id: session.id,
+        scheduledFor: session.scheduledFor,
+        durationMinutes: session.durationMinutes,
+        status: session.status,
+        tutorName: `${session.tutor.firstName} ${session.tutor.lastName}`,
+        subjectName: session.subject.name,
+        students: session.attendance.map((attendance) => ({
+          name: `${attendance.student.firstName} ${attendance.student.lastName}`,
+        })),
+      });
+      const bounded = <T, R>(
+        items: T[],
+        summarize: (item: T) => R,
+        limit = 50,
+      ) => ({
+        total: items.length,
+        hasMore: items.length > limit,
+        results: items.slice(0, limit).map(summarize),
+      });
+      return toolResult(
+        {
+          activeStudentCount: dashboard.activeStudentCount,
+          todaySessions: bounded(dashboard.todaySessions, sessionSummary),
+          tomorrowSessions: bounded(
+            dashboard.tomorrowSessions,
+            sessionSummary,
+          ),
+          upcomingEndings: bounded(
+            dashboard.upcomingEndings,
+            (enrollment) => ({
+              id: enrollment.id,
+              studentName: `${enrollment.student.firstName} ${enrollment.student.lastName}`,
+              packageName: enrollment.package.name,
+              subjectName: enrollment.subject.name,
+              endDate: enrollment.endDate,
+            }),
+          ),
+          tutorCounts: bounded(dashboard.tutorCounts, (tutor) => tutor),
+          unpaidStudents: bounded(
+            dashboard.unpaidStudents,
+            (student) => student,
+          ),
+          weeklySessionsByDay: dashboard.weeklySessionsByDay,
+          monthlyRevenue: dashboard.monthlyRevenue,
+        },
+        "/dashboard",
+      );
+    }
     default:
       throw new Error(`Unknown tool namespace: ${input.namespace}`);
   }

@@ -384,23 +384,23 @@ function buildConversationTurns(messages: ChatMessage[]) {
 }
 
 function persistedFailedTurn(messages: ChatMessage[]): FailedTurn | null {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message.role !== "USER" || !message.failure) continue;
-    return {
-      clientTurnId: message.failure.clientTurnId,
-      optimisticId: message.id,
-      content: message.content,
-      attachments: [],
-      error: message.failure.error,
-      outcomeUnknown: message.failure.outcomeUnknown,
-      requiresReattachment:
-        message.failure.retryable && message.failure.hasAttachments,
-      retryable: message.failure.retryable,
-      editing: false,
-    };
-  }
-  return null;
+  const latestUserMessage = messages.findLast(
+    (message) => message.role === "USER",
+  );
+  if (!latestUserMessage?.failure) return null;
+  return {
+    clientTurnId: latestUserMessage.failure.clientTurnId,
+    optimisticId: latestUserMessage.id,
+    content: latestUserMessage.content,
+    attachments: [],
+    error: latestUserMessage.failure.error,
+    outcomeUnknown: latestUserMessage.failure.outcomeUnknown,
+    requiresReattachment:
+      latestUserMessage.failure.retryable &&
+      latestUserMessage.failure.hasAttachments,
+    retryable: latestUserMessage.failure.retryable,
+    editing: false,
+  };
 }
 
 function resultHref(result: unknown) {
@@ -1123,9 +1123,14 @@ export function AssistantShell({
         sizeBytes: attachment.sizeBytes,
         kind: attachment.mimeType.startsWith("image/") ? "IMAGE" : "DOCUMENT",
       }));
-    const optimisticId = retry?.optimisticId ?? `local-${crypto.randomUUID()}`;
-    const clientTurnId = retry?.clientTurnId ?? crypto.randomUUID();
-    if (!retry || retry.editing) {
+    const retryingSafely = Boolean(retry?.retryable);
+    const optimisticId = retryingSafely
+      ? `local-${crypto.randomUUID()}`
+      : (retry?.optimisticId ?? `local-${crypto.randomUUID()}`);
+    const clientTurnId = retryingSafely
+      ? crypto.randomUUID()
+      : (retry?.clientTurnId ?? crypto.randomUUID());
+    if (!retry || retry.editing || retryingSafely) {
       setMessages((current) => [
         ...current.filter((item) => item.id !== optimisticId),
         {

@@ -243,6 +243,9 @@ export async function getAssistantContext(
     where: { id: threadId, adminId },
     select: {
       contextSummary: true,
+      _count: {
+        select: { runs: { where: { hasAttachments: true } } },
+      },
       messages: {
         orderBy: { createdAt: "desc" },
         take,
@@ -266,13 +269,12 @@ export async function getAssistantContext(
   return {
     summary: thread.contextSummary,
     hasUntrustedHistory:
-      Boolean(thread.contextSummary) ||
+      thread._count.runs > 0 ||
       orderedMessages.some(
         (message) =>
           (Array.isArray(message.attachments) &&
             message.attachments.length > 0) ||
-          Boolean(message.run?.hasAttachments) ||
-          (message.run?._count.toolRuns ?? 0) > 0,
+          Boolean(message.run?.hasAttachments),
       ),
     messages: orderedMessages.map((message) => ({
       role: message.role,
