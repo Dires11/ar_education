@@ -63,6 +63,25 @@ async function expireAssistantRunsInTransaction(
     });
   }
 
+  // A run can be marked failed after its CRM mutation succeeds but before the
+  // tool audit result is finalized. Recover those child rows immediately on
+  // the next page load instead of leaving them RUNNING forever.
+  await tx.assistantToolRun.updateMany({
+    where: {
+      status: "RUNNING",
+      run: {
+        status: "FAILED",
+        thread: threadWhere,
+      },
+    },
+    data: {
+      status: "UNKNOWN",
+      error:
+        "Execution finished without a durable audit result. Verify the CRM state before repeating this action.",
+      completedAt: input.now,
+    },
+  });
+
   const staleBefore = new Date(
     input.now.getTime() - ASSISTANT_RUN_STALE_AFTER_MS,
   );
@@ -347,6 +366,7 @@ export async function createAssistantTurn(input: {
                 status: "RUNNING",
                 error: null,
                 hasAttachments: Boolean(input.hasAttachments),
+                toolCallCount: 0,
                 completedAt: null,
               },
               include: {
@@ -772,14 +792,26 @@ export async function completeAssistantRun(input: {
 }
 
 export async function failAssistantRun(runId: string, error: string) {
-  return prisma.assistantRun.update({
-    where: { id: runId },
-    data: {
-      status: "FAILED",
-      error,
-      resumeInput: Prisma.JsonNull,
-      completedAt: new Date(),
-    },
+  return prisma.$transaction(async (tx) => {
+    const now = new Date();
+    await tx.assistantToolRun.updateMany({
+      where: { runId, status: "RUNNING" },
+      data: {
+        status: "UNKNOWN",
+        error:
+          "Execution finished without a durable audit result. Verify the CRM state before repeating this action.",
+        completedAt: now,
+      },
+    });
+    return tx.assistantRun.update({
+      where: { id: runId },
+      data: {
+        status: "FAILED",
+        error,
+        resumeInput: Prisma.JsonNull,
+        completedAt: now,
+      },
+    });
   });
 }
 

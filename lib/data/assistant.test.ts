@@ -19,6 +19,7 @@ import {
   createAssistantTurn,
   createOrGetAssistantToolRun,
   expireAssistantRuns,
+  failAssistantRun,
   getAssistantThreadMessageCount,
   recordAssistantModelStep,
   rejectAssistantToolRun,
@@ -167,6 +168,7 @@ describe("assistant persistence guarantees", () => {
         status: "RUNNING",
         error: null,
         hasAttachments: false,
+        toolCallCount: 0,
         completedAt: null,
       },
       include: {
@@ -312,6 +314,18 @@ describe("assistant persistence guarantees", () => {
 
     await expireAssistantRuns("admin-1", "thread-1");
 
+    expect(tx.assistantToolRun.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          status: "RUNNING",
+          run: {
+            status: "FAILED",
+            thread: { adminId: "admin-1", id: "thread-1" },
+          },
+        },
+        data: expect.objectContaining({ status: "UNKNOWN" }),
+      }),
+    );
     expect(tx.assistantRun.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
@@ -334,6 +348,36 @@ describe("assistant persistence guarantees", () => {
       expect.objectContaining({
         where: { id: { in: ["tool-1"] }, status: "RUNNING" },
         data: expect.objectContaining({ status: "UNKNOWN" }),
+      }),
+    );
+  });
+
+  it("marks an unfinalized running tool unknown when its parent run fails", async () => {
+    const tx = {
+      assistantToolRun: {
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+      assistantRun: {
+        update: vi.fn().mockResolvedValue({ id: "run-1", status: "FAILED" }),
+      },
+    };
+    prismaMock.$transaction.mockImplementation(
+      (callback: (client: typeof tx) => unknown) => callback(tx),
+    );
+
+    await failAssistantRun("run-1", "Audit finalization failed");
+
+    expect(tx.assistantToolRun.updateMany).toHaveBeenCalledWith({
+      where: { runId: "run-1", status: "RUNNING" },
+      data: expect.objectContaining({
+        status: "UNKNOWN",
+        error: expect.stringContaining("Verify the CRM state"),
+      }),
+    });
+    expect(tx.assistantRun.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "run-1" },
+        data: expect.objectContaining({ status: "FAILED" }),
       }),
     );
   });

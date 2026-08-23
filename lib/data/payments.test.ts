@@ -57,8 +57,15 @@ describe("payment persistence", () => {
   });
 
   it("deduplicates a due payment without excluding other payments from coverage", async () => {
+    const enrollment = {
+      id: "enrollment-1",
+      studentId: "student-1",
+      package: { id: "package-1" },
+      discounts: [],
+    };
     const tx = {
       $queryRaw: vi.fn().mockResolvedValue([]),
+      enrollment: { findUnique: vi.fn().mockResolvedValue(enrollment) },
       payment: {
         findUnique: vi.fn().mockResolvedValue(null),
         aggregate: vi.fn().mockResolvedValue({
@@ -75,8 +82,8 @@ describe("payment persistence", () => {
       ...paymentInput,
       enrollmentId: "enrollment-1",
       coversMonth: "2026-08",
-      amountDue: new Prisma.Decimal(100),
       expectedOutstandingAmount: "80",
+      calculateAmountDue: vi.fn().mockReturnValue(new Prisma.Decimal(100)),
       idempotencyKey: "tool-run-2",
     });
 
@@ -116,8 +123,8 @@ describe("payment persistence", () => {
         ...paymentInput,
         enrollmentId: "enrollment-1",
         coversMonth: "2026-08",
-        amountDue: new Prisma.Decimal(100),
         expectedOutstandingAmount: "80",
+        calculateAmountDue: vi.fn(),
         idempotencyKey: "tool-run-existing",
       }),
     ).resolves.toBe(existing);
@@ -127,8 +134,15 @@ describe("payment persistence", () => {
   });
 
   it("rejects approval when the outstanding amount changed", async () => {
+    const enrollment = {
+      id: "enrollment-1",
+      studentId: "student-1",
+      package: { id: "package-1" },
+      discounts: [],
+    };
     const tx = {
       $queryRaw: vi.fn().mockResolvedValue([]),
+      enrollment: { findUnique: vi.fn().mockResolvedValue(enrollment) },
       payment: {
         findUnique: vi.fn().mockResolvedValue(null),
         aggregate: vi.fn().mockResolvedValue({
@@ -146,12 +160,49 @@ describe("payment persistence", () => {
         ...paymentInput,
         enrollmentId: "enrollment-1",
         coversMonth: "2026-08",
-        amountDue: new Prisma.Decimal(100),
         expectedOutstandingAmount: "80",
+        calculateAmountDue: vi.fn().mockReturnValue(new Prisma.Decimal(100)),
         idempotencyKey: "tool-run-stale",
       }),
     ).rejects.toThrow("changed from $80.00 to $70.00");
 
+    expect(tx.payment.create).not.toHaveBeenCalled();
+  });
+
+  it("recalculates pricing only after locking its enrollment, package, and discounts", async () => {
+    const enrollment = {
+      id: "enrollment-1",
+      studentId: "student-1",
+      package: { id: "package-1" },
+      discounts: [{ id: "discount-1" }],
+    };
+    const calculateAmountDue = vi.fn().mockReturnValue(new Prisma.Decimal(80));
+    const tx = {
+      $queryRaw: vi.fn().mockResolvedValue([]),
+      enrollment: { findUnique: vi.fn().mockResolvedValue(enrollment) },
+      payment: {
+        findUnique: vi.fn().mockResolvedValue(null),
+        aggregate: vi.fn().mockResolvedValue({ _sum: { amount: null } }),
+        create: vi.fn(),
+      },
+    };
+    prismaMock.$transaction.mockImplementation(
+      (callback: (client: typeof tx) => unknown) => callback(tx),
+    );
+
+    await expect(
+      createOutstandingPaymentForPeriod({
+        ...paymentInput,
+        enrollmentId: "enrollment-1",
+        coversMonth: "2026-08",
+        expectedOutstandingAmount: "100",
+        calculateAmountDue,
+        idempotencyKey: "tool-run-pricing-change",
+      }),
+    ).rejects.toThrow("changed from $100.00 to $80.00");
+
+    expect(tx.$queryRaw).toHaveBeenCalledTimes(3);
+    expect(calculateAmountDue).toHaveBeenCalledWith(enrollment);
     expect(tx.payment.create).not.toHaveBeenCalled();
   });
 });

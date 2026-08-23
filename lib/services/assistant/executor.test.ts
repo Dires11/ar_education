@@ -154,6 +154,32 @@ describe("assistant tool result cards", () => {
     });
   });
 
+  it("keeps a committed mutation successful when card enrichment fails", async () => {
+    studentMocks.createStudentWithGuardian.mockResolvedValue({
+      id: "student-1",
+    });
+    studentMocks.getStudent.mockRejectedValue(new Error("read unavailable"));
+
+    await expect(
+      executeAssistantTool({
+        namespace: "students",
+        name: "create_student",
+        argumentsValue: {
+          firstName: "Test",
+          lastName: "Student",
+          dob: "2015-01-19",
+        },
+        context: { admin: { id: "admin-1", role: "STAFF" } },
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      data: { id: "student-1" },
+      href: "/students?student=student-1",
+    });
+
+    expect(studentMocks.createStudentWithGuardian).toHaveBeenCalledTimes(1);
+  });
+
   it("resolves a student record card before a destructive confirmation", async () => {
     const student = {
       id: "student-1",

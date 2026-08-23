@@ -107,8 +107,8 @@ export async function recordPaymentForDue(
   recordedById: string,
   idempotencyKey?: string,
 ) {
-  const quote = await getPaymentDueQuote(input);
-  const { parsed, amountDue } = quote;
+  const parsed = markPaymentPaidSchema.parse(input);
+  const timeZone = getConfiguredCenterTimeZone();
 
   return createOutstandingPaymentForPeriod({
     studentId: parsed.studentId,
@@ -117,8 +117,19 @@ export async function recordPaymentForDue(
     recordedById,
     enrollmentId: parsed.enrollmentId,
     coversMonth: parsed.month,
-    amountDue,
     expectedOutstandingAmount: parsed.amount,
+    calculateAmountDue: (enrollment) => {
+      const { periodDate, billingPeriodIndex } = getValidatedBillingPeriod(
+        enrollment,
+        parsed.month,
+        timeZone,
+      );
+      return applyDiscounts(
+        enrollment.customPriceOverride ?? enrollment.priceAtEnrollment,
+        enrollment.discounts,
+        { calendarDate: periodDate, billingPeriodIndex, timeZone },
+      );
+    },
     idempotencyKey,
   });
 }

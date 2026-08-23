@@ -155,8 +155,12 @@ export function createOutstandingPaymentForPeriod(input: {
   recordedById: string;
   enrollmentId: string;
   coversMonth: string;
-  amountDue: Prisma.Decimal;
   expectedOutstandingAmount: string;
+  calculateAmountDue: (
+    enrollment: Prisma.EnrollmentGetPayload<{
+      include: { package: true; discounts: true };
+    }>,
+  ) => Prisma.Decimal;
   idempotencyKey?: string;
 }) {
   return prisma.$transaction(
@@ -173,6 +177,32 @@ export function createOutstandingPaymentForPeriod(input: {
         });
         if (existing) return existing;
       }
+      // Lock every row that contributes to the calculated charge before
+      // re-reading it. The enrollment lock also blocks new child discounts
+      // while this payment is finalized through the foreign-key check.
+      await tx.$queryRaw`
+        SELECT "id"
+        FROM "Package"
+        WHERE "id" = (
+          SELECT "packageId" FROM "Enrollment" WHERE "id" = ${input.enrollmentId}
+        )
+        FOR UPDATE
+      `;
+      await tx.$queryRaw`
+        SELECT "id"
+        FROM "Discount"
+        WHERE "enrollmentId" = ${input.enrollmentId}
+        ORDER BY "id"
+        FOR UPDATE
+      `;
+      const enrollment = await tx.enrollment.findUnique({
+        where: { id: input.enrollmentId },
+        include: { package: true, discounts: true },
+      });
+      if (!enrollment || enrollment.studentId !== input.studentId) {
+        throw new Error("Enrollment does not belong to this student");
+      }
+      const amountDue = input.calculateAmountDue(enrollment);
       const paid = await tx.payment.aggregate({
         where: {
           enrollmentId: input.enrollmentId,
@@ -182,7 +212,7 @@ export function createOutstandingPaymentForPeriod(input: {
       });
       const outstanding = Prisma.Decimal.max(
         new Prisma.Decimal(0),
-        input.amountDue.sub(paid._sum.amount ?? 0),
+        amountDue.sub(paid._sum.amount ?? 0),
       );
       if (outstanding.isZero()) {
         throw new Error("This billing period is already paid");

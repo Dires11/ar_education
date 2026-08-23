@@ -148,6 +148,21 @@ function toolResult(data: unknown, href?: string, card?: AssistantResultCard) {
   });
 }
 
+async function resultAfterMutation(
+  fallbackData: unknown,
+  href: string,
+  enrich: () => Promise<unknown>,
+) {
+  try {
+    return await enrich();
+  } catch {
+    // The mutation is already committed. A secondary read used only to enrich
+    // the chat card must never turn that successful write into a retryable
+    // failure and risk executing it again under a new OpenAI call ID.
+    return toolResult(fallbackData, href);
+  }
+}
+
 function requireRecord(value: unknown): ToolArguments {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("Tool arguments must be an object");
@@ -1244,16 +1259,19 @@ async function executeStudents(name: string, args: ToolArguments) {
     }
     case "create_student": {
       const created = await createStudentWithGuardian(args as never);
-      const student = await getStudentData(created.id);
-      if (!student) throw new Error("Created student could not be loaded");
-      return toolResult(
-        { id: student.id, name: `${student.firstName} ${student.lastName}` },
-        `/students?student=${student.id}`,
-        studentResultCard(
-          student,
-          `Student created ${formatCalendarDate(student.createdAt)}`,
-        ),
-      );
+      const href = `/students?student=${created.id}`;
+      return resultAfterMutation({ id: created.id }, href, async () => {
+        const student = await getStudentData(created.id);
+        if (!student) throw new Error("Created student could not be loaded");
+        return toolResult(
+          { id: student.id, name: `${student.firstName} ${student.lastName}` },
+          href,
+          studentResultCard(
+            student,
+            `Student created ${formatCalendarDate(student.createdAt)}`,
+          ),
+        );
+      });
     }
     case "update_student": {
       const id = stringValue(args, "id");
@@ -1279,25 +1297,35 @@ async function executeStudents(name: string, args: ToolArguments) {
           (args.gradeLevel as string | undefined) ?? current.gradeLevel ?? "",
         notes: (args.notes as string | undefined) ?? current.notes ?? "",
       });
-      const student = await getStudentData(updated.id);
-      if (!student) throw new Error("Updated student could not be loaded");
-      return toolResult(
-        { id: updated.id },
-        `/students?student=${id}`,
-        studentResultCard(student, "Student details updated"),
-      );
+      const href = `/students?student=${id}`;
+      return resultAfterMutation({ id: updated.id }, href, async () => {
+        const student = await getStudentData(updated.id);
+        if (!student) throw new Error("Updated student could not be loaded");
+        return toolResult(
+          { id: updated.id },
+          href,
+          studentResultCard(student, "Student details updated"),
+        );
+      });
     }
     case "set_student_status": {
       const updated = await updateStudentStatusById(
         stringValue(args, "id"),
         z.enum(["ACTIVE", "PAUSED", "INACTIVE"]).parse(args.status),
       );
-      const student = await getStudentData(updated.id);
-      if (!student) throw new Error("Updated student could not be loaded");
-      return toolResult(
+      const href = `/students?student=${updated.id}`;
+      return resultAfterMutation(
         { id: updated.id, status: updated.status },
-        `/students?student=${updated.id}`,
-        studentResultCard(student, "Student status updated"),
+        href,
+        async () => {
+          const student = await getStudentData(updated.id);
+          if (!student) throw new Error("Updated student could not be loaded");
+          return toolResult(
+            { id: updated.id, status: updated.status },
+            href,
+            studentResultCard(student, "Student status updated"),
+          );
+        },
       );
     }
     case "archive_student": {
@@ -1323,12 +1351,19 @@ async function executeGuardians(name: string, args: ToolArguments) {
       const guardian = { ...args };
       delete guardian.studentId;
       const created = await addGuardianToStudent(studentId, guardian as never);
-      const student = await getStudentData(studentId);
-      if (!student) throw new Error("Student not found");
-      return toolResult(
+      const href = `/students?student=${studentId}`;
+      return resultAfterMutation(
         { id: created.id, studentId },
-        `/students?student=${studentId}`,
-        studentResultCard(student, "Guardian added"),
+        href,
+        async () => {
+          const student = await getStudentData(studentId);
+          if (!student) throw new Error("Student not found");
+          return toolResult(
+            { id: created.id, studentId },
+            href,
+            studentResultCard(student, "Guardian added"),
+          );
+        },
       );
     }
     case "update_guardian": {
@@ -1341,12 +1376,19 @@ async function executeGuardians(name: string, args: ToolArguments) {
         studentId,
         guardian as never,
       );
-      const student = await getStudentData(studentId);
-      if (!student) throw new Error("Student not found");
-      return toolResult(
+      const href = `/students?student=${studentId}`;
+      return resultAfterMutation(
         { id: updated.id, studentId },
-        `/students?student=${studentId}`,
-        studentResultCard(student, "Guardian details updated"),
+        href,
+        async () => {
+          const student = await getStudentData(studentId);
+          if (!student) throw new Error("Student not found");
+          return toolResult(
+            { id: updated.id, studentId },
+            href,
+            studentResultCard(student, "Guardian details updated"),
+          );
+        },
       );
     }
     case "remove_guardian": {
@@ -1400,13 +1442,16 @@ async function executeTutors(name: string, args: ToolArguments) {
     }
     case "create_tutor": {
       const created = await createTutorWithSubjects(args as never);
-      const tutor = await getTutorData(created.id);
-      if (!tutor) throw new Error("Created tutor could not be loaded");
-      return toolResult(
-        { id: tutor.id, name: `${tutor.firstName} ${tutor.lastName}` },
-        `/tutors/${tutor.id}`,
-        tutorResultCard(tutor, "Tutor created"),
-      );
+      const href = `/tutors/${created.id}`;
+      return resultAfterMutation({ id: created.id }, href, async () => {
+        const tutor = await getTutorData(created.id);
+        if (!tutor) throw new Error("Created tutor could not be loaded");
+        return toolResult(
+          { id: tutor.id, name: `${tutor.firstName} ${tutor.lastName}` },
+          href,
+          tutorResultCard(tutor, "Tutor created"),
+        );
+      });
     }
     case "update_tutor": {
       const id = stringValue(args, "id");
@@ -1428,13 +1473,16 @@ async function executeTutors(name: string, args: ToolArguments) {
           current.hourlyRate.toString(),
         notes: (args.notes as string | undefined) ?? current.notes ?? "",
       });
-      const tutor = await getTutorData(updated.id);
-      if (!tutor) throw new Error("Updated tutor could not be loaded");
-      return toolResult(
-        { id: updated.id },
-        `/tutors/${id}`,
-        tutorResultCard(tutor, "Tutor details updated"),
-      );
+      const href = `/tutors/${id}`;
+      return resultAfterMutation({ id: updated.id }, href, async () => {
+        const tutor = await getTutorData(updated.id);
+        if (!tutor) throw new Error("Updated tutor could not be loaded");
+        return toolResult(
+          { id: updated.id },
+          href,
+          tutorResultCard(tutor, "Tutor details updated"),
+        );
+      });
     }
     case "set_tutor_subjects": {
       const id = stringValue(args, "id");
@@ -1442,12 +1490,19 @@ async function executeTutors(name: string, args: ToolArguments) {
         id,
         z.array(z.string()).parse(args.subjectIds),
       );
-      const tutor = await getTutorData(id);
-      if (!tutor) throw new Error("Tutor not found");
-      return toolResult(
+      const href = `/tutors/${id}`;
+      return resultAfterMutation(
         { id, subjectIds: args.subjectIds },
-        `/tutors/${id}`,
-        tutorResultCard(tutor, "Tutor subjects updated"),
+        href,
+        async () => {
+          const tutor = await getTutorData(id);
+          if (!tutor) throw new Error("Tutor not found");
+          return toolResult(
+            { id, subjectIds: args.subjectIds },
+            href,
+            tutorResultCard(tutor, "Tutor subjects updated"),
+          );
+        },
       );
     }
     case "archive_tutor": {
@@ -1512,13 +1567,12 @@ async function executeCatalog(name: string, args: ToolArguments) {
     }
     case "create_package": {
       const created = await createPackageOffering(args as never);
-      const pkg = await getPackage(created.id);
-      if (!pkg) throw new Error("Created package could not be loaded");
-      return toolResult(
-        pkg,
-        `/packages/${pkg.id}/edit`,
-        packageResultCard(pkg, "Package created"),
-      );
+      const href = `/packages/${created.id}/edit`;
+      return resultAfterMutation({ id: created.id }, href, async () => {
+        const pkg = await getPackage(created.id);
+        if (!pkg) throw new Error("Created package could not be loaded");
+        return toolResult(pkg, href, packageResultCard(pkg, "Package created"));
+      });
     }
     case "update_package": {
       const id = stringValue(args, "id");
@@ -1550,28 +1604,34 @@ async function executeCatalog(name: string, args: ToolArguments) {
           (args.durationMinutes as string | undefined) ??
           current.durationMinutes.toString(),
       });
-      const pkg = await getPackage(updated.id);
-      if (!pkg) throw new Error("Updated package could not be loaded");
-      return toolResult(
-        pkg,
-        `/packages/${id}/edit`,
-        packageResultCard(pkg, "Package updated"),
-      );
+      const href = `/packages/${id}/edit`;
+      return resultAfterMutation({ id: updated.id }, href, async () => {
+        const pkg = await getPackage(updated.id);
+        if (!pkg) throw new Error("Updated package could not be loaded");
+        return toolResult(pkg, href, packageResultCard(pkg, "Package updated"));
+      });
     }
     case "set_package_active": {
       const updated = await setPackageActive(
         stringValue(args, "id"),
         z.boolean().parse(args.isActive),
       );
-      const pkg = await getPackage(updated.id);
-      if (!pkg) throw new Error("Updated package could not be loaded");
-      return toolResult(
-        pkg,
-        `/packages/${pkg.id}/edit`,
-        packageResultCard(
-          pkg,
-          pkg.isActive ? "Package activated" : "Package deactivated",
-        ),
+      const href = `/packages/${updated.id}/edit`;
+      return resultAfterMutation(
+        { id: updated.id, isActive: updated.isActive },
+        href,
+        async () => {
+          const pkg = await getPackage(updated.id);
+          if (!pkg) throw new Error("Updated package could not be loaded");
+          return toolResult(
+            pkg,
+            href,
+            packageResultCard(
+              pkg,
+              pkg.isActive ? "Package activated" : "Package deactivated",
+            ),
+          );
+        },
       );
     }
     default:
@@ -1603,14 +1663,17 @@ async function executeEnrollments(name: string, args: ToolArguments) {
     }
     case "create_enrollment": {
       const created = await createEnrollmentForStudent(args as never);
-      const enrollment = await getEnrollment(created.id);
-      if (!enrollment)
-        throw new Error("Created enrollment could not be loaded");
-      return toolResult(
-        enrollment,
-        `/enrollments?enrollment=${enrollment.id}`,
-        enrollmentResultCard(enrollment, "Enrollment created"),
-      );
+      const href = `/enrollments?enrollment=${created.id}`;
+      return resultAfterMutation({ id: created.id }, href, async () => {
+        const enrollment = await getEnrollment(created.id);
+        if (!enrollment)
+          throw new Error("Created enrollment could not be loaded");
+        return toolResult(
+          enrollment,
+          href,
+          enrollmentResultCard(enrollment, "Enrollment created"),
+        );
+      });
     }
     case "update_enrollment": {
       const id = stringValue(args, "id");
@@ -1619,14 +1682,17 @@ async function executeEnrollments(name: string, args: ToolArguments) {
         status: args.status as never,
         customPriceOverride: args.customPriceOverride as string | undefined,
       });
-      const enrollment = await getEnrollment(updated.id);
-      if (!enrollment)
-        throw new Error("Updated enrollment could not be loaded");
-      return toolResult(
-        enrollment,
-        `/enrollments?enrollment=${id}`,
-        enrollmentResultCard(enrollment, "Enrollment updated"),
-      );
+      const href = `/enrollments?enrollment=${id}`;
+      return resultAfterMutation({ id: updated.id }, href, async () => {
+        const enrollment = await getEnrollment(updated.id);
+        if (!enrollment)
+          throw new Error("Updated enrollment could not be loaded");
+        return toolResult(
+          enrollment,
+          href,
+          enrollmentResultCard(enrollment, "Enrollment updated"),
+        );
+      });
     }
     case "add_discount": {
       const enrollmentId = stringValue(args, "enrollmentId");
@@ -1636,13 +1702,16 @@ async function executeEnrollments(name: string, args: ToolArguments) {
         enrollmentId,
         discount as never,
       );
-      const enrollment = await getEnrollment(enrollmentId);
-      if (!enrollment) throw new Error("Enrollment not found");
-      return toolResult(
-        created,
-        `/enrollments?enrollment=${enrollmentId}`,
-        enrollmentResultCard(enrollment, "Discount added"),
-      );
+      const href = `/enrollments?enrollment=${enrollmentId}`;
+      return resultAfterMutation(created, href, async () => {
+        const enrollment = await getEnrollment(enrollmentId);
+        if (!enrollment) throw new Error("Enrollment not found");
+        return toolResult(
+          created,
+          href,
+          enrollmentResultCard(enrollment, "Discount added"),
+        );
+      });
     }
     case "remove_discount": {
       const discountId = stringValue(args, "discountId");
@@ -1867,13 +1936,15 @@ async function executeBilling(
         context.admin.id,
         context.idempotencyKey,
       );
-      const student = await getStudentData(stringValue(args, "studentId"));
-      if (!student) throw new Error("Student not found");
-      return toolResult(
-        payment,
-        "/payments",
-        paymentResultCard(payment, student),
-      );
+      return resultAfterMutation(payment, "/payments", async () => {
+        const student = await getStudentData(stringValue(args, "studentId"));
+        if (!student) throw new Error("Student not found");
+        return toolResult(
+          payment,
+          "/payments",
+          paymentResultCard(payment, student),
+        );
+      });
     }
     case "mark_due_paid": {
       const payment = await recordPaymentForDue(
@@ -1881,13 +1952,15 @@ async function executeBilling(
         context.admin.id,
         context.idempotencyKey,
       );
-      const student = await getStudentData(stringValue(args, "studentId"));
-      if (!student) throw new Error("Student not found");
-      return toolResult(
-        payment,
-        "/payments",
-        paymentResultCard(payment, student),
-      );
+      return resultAfterMutation(payment, "/payments", async () => {
+        const student = await getStudentData(stringValue(args, "studentId"));
+        if (!student) throw new Error("Student not found");
+        return toolResult(
+          payment,
+          "/payments",
+          paymentResultCard(payment, student),
+        );
+      });
     }
     case "delete_payment": {
       const paymentId = stringValue(args, "paymentId");

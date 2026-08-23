@@ -74,10 +74,15 @@ describe("payment due confirmation integrity", () => {
 
     expect(paymentData.createOutstandingPaymentForPeriod).toHaveBeenCalledWith(
       expect.objectContaining({
-        amountDue: expect.objectContaining({}),
         expectedOutstandingAmount: "80.00",
+        calculateAmountDue: expect.any(Function),
         idempotencyKey: "tool-run-1",
       }),
     );
+
+    const call = paymentData.createOutstandingPaymentForPeriod.mock.calls[0][0];
+    expect(
+      call.calculateAmountDue(enrollmentWithPaidAmount(0)).toString(),
+    ).toBe("100");
   });
 });
