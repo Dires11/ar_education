@@ -296,9 +296,56 @@ describe("assistant orchestration", () => {
     ).rejects.toThrow("did not complete (max_output_tokens)");
 
     expect(dataMocks.completeAssistantRun).not.toHaveBeenCalled();
+    expect(dataMocks.recordAssistantModelStep).toHaveBeenCalledWith({
+      runId: "run-1",
+      hasToolCall: false,
+      maxToolCalls: 12,
+      usage: {
+        inputTokens: 10,
+        outputTokens: 5,
+        reasoningTokens: 1,
+        cachedInputTokens: 2,
+        cacheWriteTokens: 0,
+      },
+    });
     expect(dataMocks.failAssistantRun).toHaveBeenCalledWith(
       "run-1",
       expect.stringContaining("max_output_tokens"),
+    );
+  });
+
+  it("persists token usage reported with a failed OpenAI response", async () => {
+    responses.queue.push({
+      events: [
+        {
+          type: "response.failed",
+          response: { error: { message: "Model unavailable" }, usage },
+        },
+      ],
+      final: { output_text: "", output: [], usage: null },
+    });
+
+    await expect(
+      processAssistantTurn(
+        { id: "admin-1", role: "STAFF" },
+        {
+          clientTurnId: "c7bcb6f9-41e7-4c17-bf0d-3e1b04c8e0d4",
+          message: "Try this request",
+        },
+        () => undefined,
+      ),
+    ).rejects.toThrow("Model unavailable");
+
+    expect(dataMocks.recordAssistantModelStep).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId: "run-1",
+        hasToolCall: false,
+        usage: expect.objectContaining({ inputTokens: 10, outputTokens: 5 }),
+      }),
+    );
+    expect(dataMocks.failAssistantRun).toHaveBeenCalledWith(
+      "run-1",
+      "Model unavailable",
     );
   });
 

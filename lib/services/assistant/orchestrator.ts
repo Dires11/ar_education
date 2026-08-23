@@ -539,6 +539,16 @@ async function runModelLoop(input: {
           input.emit({ type: "assistant_delta", delta: event.delta });
         }
         if (event.type === "response.failed") {
+          const failedUsage = emptyUsage();
+          if (event.response.usage) {
+            addUsage(failedUsage, event.response.usage);
+            await recordAssistantModelStep({
+              runId: input.runId,
+              hasToolCall: false,
+              maxToolCalls: MAX_TOOL_CALLS,
+              usage: failedUsage,
+            });
+          }
           throw new Error(
             event.response.error?.message ?? "OpenAI response failed",
           );
@@ -547,6 +557,16 @@ async function runModelLoop(input: {
 
       const response = await stream.finalResponse();
       if (response.status !== "completed") {
+        const incompleteUsage = emptyUsage();
+        if (response.usage) {
+          addUsage(incompleteUsage, response.usage);
+          await recordAssistantModelStep({
+            runId: input.runId,
+            hasToolCall: false,
+            maxToolCalls: MAX_TOOL_CALLS,
+            usage: incompleteUsage,
+          });
+        }
         const reason =
           response.incomplete_details?.reason ?? response.status ?? "unknown";
         throw new Error(
