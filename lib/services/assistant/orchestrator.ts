@@ -456,9 +456,13 @@ async function executeRecordedTool(input: {
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Tool execution failed";
-    await failAssistantToolRun(input.toolRun.id, message).catch(
-      () => undefined,
-    );
+    try {
+      await failAssistantToolRun(input.toolRun.id, message);
+    } catch {
+      throw new Error(
+        `The CRM operation failed, but its audit record could not be finalized, so its outcome is unknown. Reload and verify the affected records before retrying. ${message}`,
+      );
+    }
     const result = { ok: false, error: message };
     input.emit({
       type: "tool_completed",

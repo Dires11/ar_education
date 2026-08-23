@@ -1212,6 +1212,56 @@ describe("assistant orchestration", () => {
     );
   });
 
+  it("does not complete a run when failure auditing also fails", async () => {
+    responses.queue.push({
+      events: [],
+      final: {
+        output_text: "",
+        output: [
+          {
+            type: "function_call",
+            namespace: "catalog",
+            name: "create_subject",
+            call_id: "call-subject",
+            arguments: JSON.stringify({ name: "Algebra" }),
+          },
+        ],
+        usage,
+      },
+    });
+    dataMocks.createOrGetAssistantToolRun.mockResolvedValue({
+      id: "tool-subject",
+      runId: "run-1",
+      callId: "call-subject",
+      namespace: "catalog",
+      toolName: "create_subject",
+      arguments: { name: "Algebra" },
+      status: "RUNNING",
+      requiresConfirmation: false,
+    });
+    executeMock.mockRejectedValue(new Error("Subject already exists"));
+    dataMocks.failAssistantToolRun.mockRejectedValueOnce(
+      new Error("database unavailable"),
+    );
+
+    await expect(
+      processAssistantTurn(
+        { id: "admin-1", role: "STAFF" },
+        {
+          clientTurnId: "c7bcb6f9-41e7-4c17-bf0d-3e1b04c8e0d4",
+          message: "Create Algebra",
+        },
+        () => undefined,
+      ),
+    ).rejects.toThrow("outcome is unknown");
+
+    expect(dataMocks.completeAssistantRun).not.toHaveBeenCalled();
+    expect(dataMocks.failAssistantRun).toHaveBeenCalledWith(
+      "run-1",
+      expect.stringContaining("outcome is unknown"),
+    );
+  });
+
   it("replays a completed idempotent turn without calling OpenAI", async () => {
     dataMocks.createAssistantTurn.mockResolvedValue({
       thread: { id: "thread-1", title: "Test request" },
