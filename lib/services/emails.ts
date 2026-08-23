@@ -3,6 +3,7 @@ import "server-only";
 import { createHash } from "node:crypto";
 import { format } from "date-fns";
 import { sendEmail } from "@/lib/utils/email";
+import { DeliveryOutcomeUnknownError } from "@/lib/utils/email-errors";
 import { getStudentsForEmail } from "@/lib/data/emails";
 import {
   createEmailTemplate,
@@ -174,7 +175,8 @@ export async function sendEmailToStudents({
         email: delivery.email,
         success: true,
       });
-    } catch {
+    } catch (error) {
+      if (error instanceof DeliveryOutcomeUnknownError) throw error;
       results.push({
         studentId: delivery.studentId,
         email: delivery.email,

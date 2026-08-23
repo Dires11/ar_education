@@ -23,6 +23,7 @@ import {
   getAssistantThread,
   getAssistantThreadMessageCount,
   getAssistantToolRunForDecision,
+  markAssistantToolRunUnknown,
   pauseAssistantRun,
   recordAssistantModelStep,
   claimAssistantToolRun,
@@ -51,6 +52,7 @@ import {
   resolveAssistantConfirmationArguments,
 } from "@/lib/services/assistant/executor";
 import { ASSISTANT_MODEL } from "@/lib/services/assistant/config";
+import { DeliveryOutcomeUnknownError } from "@/lib/utils/email-errors";
 
 const MAX_TOOL_CALLS = 12;
 const CONFIRMATION_TTL_MS = 24 * 60 * 60 * 1000;
@@ -443,6 +445,29 @@ async function executeRecordedTool(input: {
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Tool execution failed";
+    if (error instanceof DeliveryOutcomeUnknownError) {
+      const auditMessage =
+        "Email delivery was attempted, but the provider response was interrupted. The outcome is unknown; verify delivery before sending again.";
+      try {
+        await markAssistantToolRunUnknown(input.toolRun.id, auditMessage);
+      } catch {
+        throw new Error(
+          `The email delivery outcome is unknown and its audit record could not be finalized. Reload and verify delivery before retrying. ${message}`,
+        );
+      }
+      input.emit({
+        type: "tool_completed",
+        toolRunId: input.toolRun.id,
+        namespace: input.toolRun.namespace,
+        toolName: input.toolRun.toolName,
+        result: {
+          ok: false,
+          status: "outcome_unknown",
+          error: auditMessage,
+        },
+      });
+      throw new Error(`${auditMessage} ${message}`);
+    }
     try {
       await failAssistantToolRun(input.toolRun.id, message);
     } catch {
@@ -485,6 +510,7 @@ async function runModelLoop(input: {
   responseInput: ResponseInput;
   emit: EventSink;
   hasAttachments: boolean;
+  hasHistoricalUntrustedContext?: boolean;
   initialAssistantContent?: string;
   initialToolUsed?: boolean;
   signal?: AbortSignal;
@@ -495,7 +521,9 @@ async function runModelLoop(input: {
   let assistantContent = input.initialAssistantContent ?? "";
   let crmToolRan = Boolean(input.initialToolUsed);
   let hasUntrustedEvidence =
-    input.hasAttachments || Boolean(input.initialToolUsed);
+    input.hasAttachments ||
+    Boolean(input.initialToolUsed) ||
+    Boolean(input.hasHistoricalUntrustedContext);
 
   try {
     while (true) {
@@ -869,6 +897,7 @@ export async function processAssistantTurn(
       ),
       emit,
       hasAttachments: attachments.length > 0,
+      hasHistoricalUntrustedContext: context.hasUntrustedHistory,
       signal,
     });
   } catch (error) {

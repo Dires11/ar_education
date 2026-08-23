@@ -381,7 +381,8 @@ async function preparePaymentReminderDelivery(
   const activeTemplate = template ?? DEFAULT_PAYMENT_REMINDER_TEMPLATE;
 
   const emailSubject = substitutePlaceholders(activeTemplate.subject, ctx);
-  const emailHtml = substitutePlaceholders(activeTemplate.body, ctx)
+  const emailBody = substitutePlaceholders(activeTemplate.body, ctx);
+  const emailHtml = emailBody
     .split("\n")
     .map((line) => `<p>${line}</p>`)
     .join("");
@@ -406,6 +407,10 @@ async function preparePaymentReminderDelivery(
     amount,
     monthLabel,
     subject: emailSubject,
+    bodyPreview:
+      emailBody.length <= 2_000
+        ? emailBody
+        : `${emailBody.slice(0, 1_999)}…`,
     html: emailHtml,
     usedDefaultTemplate: !template,
   };
@@ -423,6 +428,7 @@ export async function getPaymentReminderConfirmation(
     amount: prepared.amount,
     monthLabel: prepared.monthLabel,
     subject: prepared.subject,
+    bodyPreview: prepared.bodyPreview,
   };
 }
 

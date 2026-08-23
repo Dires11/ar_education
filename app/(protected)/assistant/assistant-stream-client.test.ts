@@ -2,6 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 import {
   consumeAssistantEventStream,
   getToolCompletionStatus,
+  IncompleteAssistantStreamError,
+  isAssistantOutcomeUnknown,
+  isVisibleConfirmationArgument,
 } from "./assistant-stream-client";
 
 function eventStream(frames: string[]) {
@@ -29,7 +32,7 @@ describe("assistant stream client", () => {
         ]),
         vi.fn(),
       ),
-    ).rejects.toThrow("closed before the request finished");
+    ).rejects.toBeInstanceOf(IncompleteAssistantStreamError);
   });
 
   it("classifies completed, failed, and rejected tool results", () => {
@@ -38,5 +41,27 @@ describe("assistant stream client", () => {
     expect(
       getToolCompletionStatus({ ok: false, status: "rejected_by_user" }),
     ).toBe("REJECTED");
+    expect(
+      getToolCompletionStatus({ ok: false, status: "outcome_unknown" }),
+    ).toBe("UNKNOWN");
+  });
+
+  it("marks incomplete connections as non-retryable unknown outcomes", () => {
+    expect(
+      isAssistantOutcomeUnknown(
+        new IncompleteAssistantStreamError("connection closed"),
+      ),
+    ).toBe(true);
+    expect(isAssistantOutcomeUnknown(new Error("Validation failed"))).toBe(
+      false,
+    );
+  });
+
+  it("hides internal confirmation metadata and database IDs", () => {
+    expect(isVisibleConfirmationArgument("__assistantConfirmation")).toBe(
+      false,
+    );
+    expect(isVisibleConfirmationArgument("studentId")).toBe(false);
+    expect(isVisibleConfirmationArgument("messagePreview")).toBe(true);
   });
 });

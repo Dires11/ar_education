@@ -20,6 +20,7 @@ import {
   createOrGetAssistantToolRun,
   expireAssistantRuns,
   failAssistantRun,
+  getAssistantContext,
   getAssistantThreadMessageCount,
   recordAssistantModelStep,
   rejectAssistantToolRun,
@@ -64,6 +65,42 @@ describe("assistant persistence guarantees", () => {
       where: { id: "thread-1", adminId: "admin-1" },
       select: { _count: { select: { messages: true } } },
     });
+  });
+
+  it("carries attachment and tool-output provenance into later turns", async () => {
+    prismaMock.assistantThread.findFirst.mockResolvedValue({
+      contextSummary: null,
+      messages: [
+        {
+          role: "ASSISTANT",
+          content: "I found the requested record.",
+          attachments: null,
+          createdAt: new Date(),
+          run: { _count: { toolRuns: 1 } },
+        },
+        {
+          role: "USER",
+          content: "Use this calendar.",
+          attachments: [{ name: "calendar.jpg" }],
+          createdAt: new Date(),
+          run: { _count: { toolRuns: 0 } },
+        },
+      ],
+    });
+
+    const context = await getAssistantContext("admin-1", "thread-1");
+
+    expect(context?.hasUntrustedHistory).toBe(true);
+    expect(context?.messages).toEqual(
+      expect.arrayContaining([
+        expect.not.objectContaining({ run: expect.anything() }),
+      ]),
+    );
+    expect(prismaMock.assistantThread.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "thread-1", adminId: "admin-1" },
+      }),
+    );
   });
 
   it("checks active runs inside a serializable transaction", async () => {

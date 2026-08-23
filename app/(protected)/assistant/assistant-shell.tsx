@@ -40,6 +40,8 @@ import { AssistantMarkdown } from "./assistant-markdown";
 import {
   consumeAssistantEventStream,
   getToolCompletionStatus,
+  isAssistantOutcomeUnknown,
+  isVisibleConfirmationArgument,
   type AssistantClientToolStatus,
 } from "./assistant-stream-client";
 import {
@@ -536,7 +538,7 @@ function confirmationContent(tool: ToolItem) {
         : "This action will change CRM data after approval.",
     card,
     details: Object.entries(argumentsValue)
-      .filter(([key]) => !/(?:^id$|Id$|Ids$)/.test(key))
+      .filter(([key]) => isVisibleConfirmationArgument(key))
       .map(([key, value]) => ({
         label: humanizeKey(key),
         value: formatPreviewValue(value),
@@ -1150,11 +1152,7 @@ export function AssistantShell({
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Assistant request failed";
-      const outcomeUnknown =
-        message.includes("may have completed") ||
-        message.includes("outcome is unknown") ||
-        message.includes("CRM operations completed") ||
-        message.includes("avoid a duplicate");
+      const outcomeUnknown = isAssistantOutcomeUnknown(error);
       toast.error(message);
       setStreamingText("");
       setFailedTurn({
@@ -1230,7 +1228,14 @@ export function AssistantShell({
             ? "The action completed, but the assistant response stopped. Reload to review the recorded result before continuing."
             : resolvedStatus === "REJECTED"
               ? "The action was discarded, but the assistant response stopped."
-              : "The action failed before the assistant response completed.",
+              : resolvedStatus === "UNKNOWN"
+                ? "The action's outcome is unknown. Reload and verify the affected record or delivery before continuing."
+                : "The action failed before the assistant response completed.",
+        );
+      } else if (isAssistantOutcomeUnknown(error)) {
+        updateTool(toolRunId, { status: "UNKNOWN", error: message });
+        setAnnouncement(
+          "The decision request stopped with an uncertain outcome. Reload to reconcile its recorded status before continuing.",
         );
       } else {
         const tool = messages

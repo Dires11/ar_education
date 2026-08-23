@@ -314,6 +314,49 @@ describe("assistant tool result cards", () => {
     });
   });
 
+  it("shows the rendered payment-reminder body before approval", async () => {
+    paymentServiceMocks.getPaymentReminderConfirmation.mockResolvedValue({
+      digest: "b".repeat(64),
+      recipientEmail: "guardian@example.com",
+      recipientName: "Maya Chen",
+      amount: "80.00",
+      monthLabel: "August 2026",
+      subject: "Math payment reminder",
+      bodyPreview: "Hello Ana. Maya's Math balance is $80.00.",
+    });
+
+    const resolved = await resolveAssistantConfirmationArguments({
+      namespace: "billing",
+      name: "send_payment_reminder",
+      argumentsValue: {
+        enrollmentId: "enrollment-1",
+        month: "2026-08",
+      },
+    });
+    expect(resolved).toMatchObject({
+      messagePreview: "Hello Ana. Maya's Math balance is $80.00.",
+      __assistantConfirmation: {
+        digest: "b".repeat(64),
+        bodyPreview: "Hello Ana. Maya's Math balance is $80.00.",
+      },
+    });
+    await expect(
+      getAssistantConfirmationCard({
+        namespace: "billing",
+        name: "send_payment_reminder",
+        argumentsValue: resolved,
+      }),
+    ).resolves.toMatchObject({
+      kind: "EMAIL",
+      fields: expect.arrayContaining([
+        expect.objectContaining({
+          label: "Message",
+          value: "Hello Ana. Maya's Math balance is $80.00.",
+        }),
+      ]),
+    });
+  });
+
   it("shows the guardian, not a database ID, for relationship removal", async () => {
     studentMocks.getStudent.mockResolvedValue({
       id: "student-1",

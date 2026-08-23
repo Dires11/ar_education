@@ -234,14 +234,33 @@ export async function getAssistantContext(
           content: true,
           attachments: true,
           createdAt: true,
+          run: {
+            select: {
+              _count: { select: { toolRuns: true } },
+            },
+          },
         },
       },
     },
   });
   if (!thread) return null;
+  const orderedMessages = thread.messages.reverse();
   return {
     summary: thread.contextSummary,
-    messages: thread.messages.reverse(),
+    hasUntrustedHistory:
+      Boolean(thread.contextSummary) ||
+      orderedMessages.some(
+        (message) =>
+          (Array.isArray(message.attachments) &&
+            message.attachments.length > 0) ||
+          (message.run?._count.toolRuns ?? 0) > 0,
+      ),
+    messages: orderedMessages.map((message) => ({
+      role: message.role,
+      content: message.content,
+      attachments: message.attachments,
+      createdAt: message.createdAt,
+    })),
   };
 }
 
@@ -587,6 +606,17 @@ export async function failAssistantToolRun(id: string, error: string) {
     where: { id },
     data: {
       status: "FAILED",
+      error,
+      completedAt: new Date(),
+    },
+  });
+}
+
+export async function markAssistantToolRunUnknown(id: string, error: string) {
+  return prisma.assistantToolRun.update({
+    where: { id },
+    data: {
+      status: "UNKNOWN",
       error,
       completedAt: new Date(),
     },

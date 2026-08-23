@@ -1,7 +1,15 @@
 export type AssistantClientToolStatus =
   | "COMPLETED"
   | "FAILED"
-  | "REJECTED";
+  | "REJECTED"
+  | "UNKNOWN";
+
+export class IncompleteAssistantStreamError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "IncompleteAssistantStreamError";
+  }
+}
 
 const TERMINAL_EVENT_TYPES = new Set([
   "assistant_completed",
@@ -23,12 +31,35 @@ export function getToolCompletionStatus(
   if (
     result &&
     typeof result === "object" &&
+    "status" in result &&
+    result.status === "outcome_unknown"
+  ) {
+    return "UNKNOWN";
+  }
+  if (
+    result &&
+    typeof result === "object" &&
     "ok" in result &&
     result.ok === false
   ) {
     return "FAILED";
   }
   return "COMPLETED";
+}
+
+export function isAssistantOutcomeUnknown(error: unknown) {
+  if (error instanceof IncompleteAssistantStreamError) return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.includes("may have completed") ||
+    message.includes("outcome is unknown") ||
+    message.includes("CRM operations completed") ||
+    message.includes("avoid a duplicate")
+  );
+}
+
+export function isVisibleConfirmationArgument(key: string) {
+  return !key.startsWith("__") && !/(?:^id$|Id$|Ids$)/.test(key);
 }
 
 export async function consumeAssistantEventStream<
@@ -54,13 +85,30 @@ export async function consumeAssistantEventStream<
       .map((line) => line.slice(5).trimStart())
       .join("\n");
     if (!data) return;
-    const event = JSON.parse(data) as Event;
+    let event: Event;
+    try {
+      event = JSON.parse(data) as Event;
+    } catch (error) {
+      throw new IncompleteAssistantStreamError(
+        "The assistant stream became unreadable, so its outcome is unknown. Reload to reconcile its status before retrying.",
+        { cause: error },
+      );
+    }
     if (TERMINAL_EVENT_TYPES.has(event.type)) terminalEventSeen = true;
     onEvent(event);
   };
 
   while (true) {
-    const { done, value } = await reader.read();
+    let chunk: ReadableStreamReadResult<Uint8Array>;
+    try {
+      chunk = await reader.read();
+    } catch (error) {
+      throw new IncompleteAssistantStreamError(
+        "The assistant connection failed before completion, so its outcome is unknown. Reload to reconcile its status before retrying.",
+        { cause: error },
+      );
+    }
+    const { done, value } = chunk;
     buffer += decoder.decode(value, { stream: !done });
     const frames = buffer.split(/\r?\n\r?\n/);
     buffer = frames.pop() ?? "";
@@ -72,8 +120,8 @@ export async function consumeAssistantEventStream<
   }
 
   if (!terminalEventSeen) {
-    throw new Error(
-      "The assistant connection closed before the request finished. Reload to reconcile its status before retrying.",
+    throw new IncompleteAssistantStreamError(
+      "The assistant connection closed before the request finished, so its outcome is unknown. Reload to reconcile its status before retrying.",
     );
   }
 }

@@ -20,6 +20,7 @@ const dataMocks = vi.hoisted(() => ({
   expireAssistantRuns: vi.fn(async () => undefined),
   failAssistantRun: vi.fn(async () => undefined),
   failAssistantToolRun: vi.fn(async () => undefined),
+  markAssistantToolRunUnknown: vi.fn(async () => undefined),
   getAssistantContext: vi.fn(),
   getAssistantSummarySource: vi.fn(async () => null),
   getAssistantThread: vi.fn(),
@@ -38,6 +39,19 @@ const dataMocks = vi.hoisted(() => ({
 
 const executeMock = vi.hoisted(() => vi.fn());
 const confirmationCardMock = vi.hoisted(() => vi.fn());
+const mutationDraftCardMock = vi.hoisted(() =>
+  vi.fn(() => ({
+    kind: "STUDENT",
+    entityKey: "draft:students:create_student",
+    title: "Maya Chen",
+    subtitle: "Proposed change derived from untrusted evidence",
+    badges: [],
+    fields: [],
+    href: "/students",
+    actionLabel: "Open manual workspace",
+    suggestedActions: [],
+  })),
+);
 const confirmationArgumentsMock = vi.hoisted(() =>
   vi.fn(
     async (input: { argumentsValue: Record<string, unknown> }) =>
@@ -73,6 +87,7 @@ vi.mock("@/lib/data/assistant", () => dataMocks);
 vi.mock("@/lib/services/assistant/executor", () => ({
   executeAssistantTool: executeMock,
   getAssistantConfirmationCard: confirmationCardMock,
+  getAssistantMutationDraftCard: mutationDraftCardMock,
   resolveAssistantConfirmationArguments: confirmationArgumentsMock,
 }));
 
@@ -92,6 +107,7 @@ import {
   processAssistantTurn,
   untrustedEvidenceToolRequiresConfirmation,
 } from "@/lib/services/assistant/orchestrator";
+import { DeliveryOutcomeUnknownError } from "@/lib/utils/email-errors";
 
 const usage = {
   input_tokens: 10,
@@ -107,6 +123,7 @@ describe("assistant orchestration", () => {
     dataMocks.createOrGetAssistantToolRun.mockReset();
     executeMock.mockReset();
     confirmationCardMock.mockReset();
+    mutationDraftCardMock.mockClear();
     confirmationArgumentsMock.mockReset();
     responses.queue.length = 0;
     responses.requests.length = 0;
@@ -124,6 +141,7 @@ describe("assistant orchestration", () => {
     });
     dataMocks.getAssistantContext.mockResolvedValue({
       summary: null,
+      hasUntrustedHistory: false,
       messages: [
         {
           role: "USER",
@@ -677,6 +695,71 @@ describe("assistant orchestration", () => {
     });
   });
 
+  it("preserves untrusted provenance across turns before a later create", async () => {
+    dataMocks.getAssistantContext.mockResolvedValue({
+      summary: "A calendar attachment listed Maya Chen.",
+      hasUntrustedHistory: true,
+      messages: [
+        {
+          role: "USER",
+          content: "Yes, apply it.",
+          attachments: null,
+          createdAt: new Date(),
+        },
+      ],
+    });
+    const mutationArguments = {
+      firstName: "Maya",
+      lastName: "Chen",
+      dob: "2012-04-08",
+    };
+    responses.queue.push({
+      events: [],
+      final: {
+        output_text: "",
+        output: [
+          {
+            type: "function_call",
+            namespace: "students",
+            name: "create_student",
+            call_id: "call-create-student",
+            arguments: JSON.stringify(mutationArguments),
+          },
+        ],
+        usage,
+      },
+    });
+    dataMocks.createOrGetAssistantToolRun.mockResolvedValue({
+      id: "tool-create-student",
+      runId: "run-1",
+      callId: "call-create-student",
+      namespace: "students",
+      toolName: "create_student",
+      arguments: mutationArguments,
+      status: "PENDING_CONFIRMATION",
+      requiresConfirmation: true,
+      expiresAt: new Date("2026-08-24T00:00:00.000Z"),
+    });
+    const events: Array<Record<string, unknown>> = [];
+
+    await processAssistantTurn(
+      { id: "admin-1", role: "STAFF" },
+      {
+        threadId: "thread-1",
+        clientTurnId: "c7bcb6f9-41e7-4c17-bf0d-3e1b04c8e0d4",
+        message: "Yes, apply it.",
+      },
+      (event) => events.push(event),
+    );
+
+    expect(executeMock).not.toHaveBeenCalled();
+    expect(mutationDraftCardMock).toHaveBeenCalledTimes(1);
+    expect(events.at(-1)).toMatchObject({
+      type: "confirmation_required",
+      toolRunId: "tool-create-student",
+    });
+  });
+
   it("strips attachment bytes from paused continuation state", () => {
     const stored = prepareResumeInputForStorage([
       {
@@ -1082,6 +1165,56 @@ describe("assistant orchestration", () => {
     expect(dataMocks.failAssistantRun).toHaveBeenCalledWith(
       "run-1",
       expect.stringContaining("may have completed"),
+    );
+  });
+
+  it("records provider-ambiguous email delivery as unknown and non-retryable", async () => {
+    const toolRun = {
+      id: "tool-email",
+      runId: "run-1",
+      callId: "call-email",
+      namespace: "communications",
+      toolName: "send_email",
+      arguments: {
+        studentIds: ["student-1"],
+        subject: "Schedule",
+        body: "Hello",
+      },
+      status: "PENDING_CONFIRMATION",
+      requiresConfirmation: true,
+      run: {
+        id: "run-1",
+        threadId: "thread-1",
+        status: "WAITING_CONFIRMATION",
+        resumeInput: [],
+      },
+    };
+    dataMocks.getAssistantToolRunForDecision.mockResolvedValue(toolRun);
+    dataMocks.claimAssistantToolRun.mockResolvedValue(toolRun);
+    executeMock.mockRejectedValue(
+      new DeliveryOutcomeUnknownError("accepted, then timed out"),
+    );
+    const events: Array<Record<string, unknown>> = [];
+
+    await expect(
+      processAssistantDecision(
+        { id: "admin-1", role: "STAFF" },
+        "tool-email",
+        "APPROVE",
+        (event) => events.push(event),
+      ),
+    ).rejects.toThrow("outcome is unknown");
+
+    expect(dataMocks.markAssistantToolRunUnknown).toHaveBeenCalledWith(
+      "tool-email",
+      expect.stringContaining("outcome is unknown"),
+    );
+    expect(dataMocks.failAssistantToolRun).not.toHaveBeenCalled();
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "tool_completed",
+        result: expect.objectContaining({ status: "outcome_unknown" }),
+      }),
     );
   });
 

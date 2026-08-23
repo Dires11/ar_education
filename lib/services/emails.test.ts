@@ -18,6 +18,7 @@ import {
   getEmailDeliveryConfirmation,
   sendEmailToStudents,
 } from "@/lib/services/emails";
+import { DeliveryOutcomeUnknownError } from "@/lib/utils/email-errors";
 
 function student(email: string) {
   return {
@@ -58,5 +59,22 @@ describe("email approval integrity", () => {
       }),
     ).rejects.toThrow("changed after approval was requested");
     expect(emailUtility.sendEmail).not.toHaveBeenCalled();
+  });
+
+  it("does not convert a provider-ambiguous delivery into a safe failure", async () => {
+    emailData.getStudentsForEmail.mockResolvedValue([
+      student("approved@example.com"),
+    ]);
+    emailUtility.sendEmail.mockRejectedValue(
+      new DeliveryOutcomeUnknownError("accepted, then timed out"),
+    );
+
+    await expect(
+      sendEmailToStudents({
+        studentIds: ["student-1"],
+        subject: "Schedule",
+        body: "Hello @guardian",
+      }),
+    ).rejects.toBeInstanceOf(DeliveryOutcomeUnknownError);
   });
 });

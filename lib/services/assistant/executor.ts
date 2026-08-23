@@ -126,6 +126,7 @@ const assistantConfirmationSnapshotSchema = z.object({
   subject: z.string().max(500),
   amount: z.string().optional(),
   monthLabel: z.string().optional(),
+  bodyPreview: z.string().max(2_000).optional(),
 });
 
 export type AssistantToolExecutionContext = {
@@ -160,7 +161,9 @@ export async function resolveAssistantConfirmationArguments(input: {
         subject: confirmation.subject,
         amount: confirmation.amount,
         monthLabel: confirmation.monthLabel,
+        bodyPreview: confirmation.bodyPreview,
       },
+      messagePreview: confirmation.bodyPreview,
     };
   }
   if (input.namespace === "communications" && input.name === "send_email") {
@@ -893,6 +896,7 @@ function emailResultCard(input: {
   recipientSummary?: string;
   href?: string;
   actionLabel?: string;
+  messagePreview?: string;
 }): AssistantResultCard {
   return {
     kind: "EMAIL",
@@ -912,6 +916,18 @@ function emailResultCard(input: {
         : []),
       ...(input.subject
         ? [{ label: "Subject", value: input.subject, icon: "MAIL" as const }]
+        : []),
+      ...(input.messagePreview
+        ? [
+            {
+              label: "Message",
+              value:
+                input.messagePreview.length <= 240
+                  ? input.messagePreview
+                  : `${input.messagePreview.slice(0, 239)}…`,
+              icon: "MAIL" as const,
+            },
+          ]
         : []),
     ],
     href: input.href ?? "/emails",
@@ -1200,6 +1216,7 @@ export async function getAssistantConfirmationCard(input: {
           : "Outbound reminder awaiting approval",
         recipientSummary: confirmation.data.recipientSummary,
         subject: confirmation.data.subject,
+        messagePreview: confirmation.data.bodyPreview,
         href: "/payments",
         actionLabel: "View payments",
       });
