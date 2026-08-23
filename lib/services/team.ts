@@ -3,8 +3,7 @@ import "server-only";
 import { clerkClient } from "@clerk/nextjs/server";
 import {
   listAdmins,
-  deleteAdminSafely,
-  restoreAdmin,
+  disableAdminSafely,
   setAdminRoleSafely,
 } from "@/lib/data/team";
 import { ADMIN_INVITATION_METADATA } from "@/lib/services/admin-access";
@@ -60,12 +59,15 @@ export async function removeTeamMember(
   adminId: string,
 ) {
   if (adminId === currentAdminId) throw new Error("Cannot remove yourself");
-  const admin = await deleteAdminSafely(adminId);
+  const admin = await disableAdminSafely(adminId);
   try {
     const client = await clerkClient();
     await client.users.deleteUser(admin.clerkUserId);
-  } catch (error) {
-    await restoreAdmin(admin);
-    throw error;
+    return { removed: true, clerkAccountDeleted: true };
+  } catch {
+    // Keep local access revoked if the remote delete is unavailable. The row
+    // preserves payment attribution and assistant audit history, and auth
+    // rejects it before Clerk metadata can reprovision the account.
+    return { removed: true, clerkAccountDeleted: false };
   }
 }

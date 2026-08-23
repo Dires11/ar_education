@@ -337,8 +337,15 @@ const toolSpecs: AssistantToolSpec[] = [
     namespace: "enrollments",
     name: "get_enrollment",
     description:
-      "Get an enrollment with student, tutor, package, discounts, recent sessions, and payments.",
-    schema: z.object({ id: idSchema }),
+      "Get an enrollment by enrollment ID, or resolve the owning enrollment by discount ID, including student, tutor, package, discounts, recent sessions, and payments.",
+    schema: z
+      .object({
+        id: idSchema.optional(),
+        discountId: idSchema.optional(),
+      })
+      .refine((value) => Boolean(value.id || value.discountId), {
+        message: "Provide id or discountId",
+      }),
     requiresConfirmation: false,
   },
   {
@@ -394,8 +401,15 @@ const toolSpecs: AssistantToolSpec[] = [
     namespace: "schedule",
     name: "get_schedule",
     description:
-      "Get real and virtual schedule entries for one yyyy-MM calendar month.",
-    schema: z.object({ month: monthSchema }),
+      "Get one exact session by session ID, or real and virtual schedule entries for one yyyy-MM calendar month.",
+    schema: z
+      .object({
+        month: monthSchema.optional(),
+        sessionId: idSchema.optional(),
+      })
+      .refine((value) => Boolean(value.month || value.sessionId), {
+        message: "Provide month or sessionId",
+      }),
     requiresConfirmation: false,
   },
   {
@@ -563,8 +577,9 @@ const toolSpecs: AssistantToolSpec[] = [
     namespace: "billing",
     name: "list_payments",
     description:
-      "List payment history when the administrator asks to view, search, or audit existing payments. Never use this as a prerequisite for an explicit record_payment request that already has its required fields.",
+      "List payment history when the administrator asks to view, search, or audit existing payments.",
     schema: z.object({
+      paymentId: idSchema.optional(),
       studentId: idSchema.optional(),
       enrollmentId: idSchema.optional(),
       method: z.enum(["CASH", "BANK_TRANSFER", "CARD", "OTHER"]).optional(),
@@ -594,7 +609,7 @@ const toolSpecs: AssistantToolSpec[] = [
     namespace: "billing",
     name: "record_payment",
     description:
-      "Record a new payment when the administrator explicitly asks to enter one and provides student ID, amount, method, and paid date. Call directly when those fields are known; the application will request confirmation.",
+      "Record a new payment after an unambiguous student lookup when the administrator explicitly provides the amount, method, and paid date. The application will request confirmation.",
     schema: createPaymentSchema,
     requiresConfirmation: true,
   },
@@ -602,7 +617,7 @@ const toolSpecs: AssistantToolSpec[] = [
     namespace: "billing",
     name: "mark_due_paid",
     description:
-      "Record the outstanding amount for a known enrollment billing month as paid. Call directly when enrollment ID, student ID, amount, method, and month are known; the application will request confirmation.",
+      "Record the outstanding amount for a verified enrollment billing month as paid after unambiguous enrollment and student lookups. The application will request confirmation.",
     schema: markPaymentPaidSchema,
     requiresConfirmation: true,
   },
@@ -617,7 +632,7 @@ const toolSpecs: AssistantToolSpec[] = [
     namespace: "billing",
     name: "send_payment_reminder",
     description:
-      "Send a payment reminder email for one known enrollment billing month. Call directly when enrollment ID and month are known; the application will request confirmation.",
+      "Send a payment reminder email for one verified enrollment billing month after an unambiguous enrollment lookup. The application will request confirmation.",
     schema: z.object({ enrollmentId: idSchema, month: monthSchema }),
     requiresConfirmation: true,
   },
@@ -659,8 +674,13 @@ const toolSpecs: AssistantToolSpec[] = [
   {
     namespace: "team",
     name: "get_team",
-    description: "List CRM administrators and pending invitations. Owner only.",
-    schema: z.object({}),
+    description:
+      "List CRM administrators and pending invitations, or verify an exact administrator ID, invitation ID, or email. Owner only.",
+    schema: z.object({
+      adminId: idSchema.optional(),
+      invitationId: idSchema.optional(),
+      email: z.email().optional(),
+    }),
     ownerOnly: true,
     requiresConfirmation: false,
   },

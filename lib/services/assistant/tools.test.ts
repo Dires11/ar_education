@@ -194,6 +194,36 @@ describe("assistant tool registry", () => {
     expect(() => enrollmentSearch.schema.parse({ limit: 31 })).toThrow();
   });
 
+  it("supports exact session and payment verification lookups", () => {
+    const scheduleLookup = getAssistantToolSpec(
+      "schedule",
+      "get_schedule",
+      "STAFF",
+    )!;
+    expect(scheduleLookup.schema.parse({ sessionId: "session-1" })).toEqual({
+      sessionId: "session-1",
+    });
+    expect(() => scheduleLookup.schema.parse({})).toThrow();
+
+    const paymentLookup = getAssistantToolSpec(
+      "billing",
+      "list_payments",
+      "STAFF",
+    )!;
+    expect(
+      paymentLookup.schema.parse({ paymentId: "payment-1" }),
+    ).toMatchObject({ paymentId: "payment-1" });
+
+    const enrollmentLookup = getAssistantToolSpec(
+      "enrollments",
+      "get_enrollment",
+      "STAFF",
+    )!;
+    expect(
+      enrollmentLookup.schema.parse({ discountId: "discount-1" }),
+    ).toEqual({ discountId: "discount-1" });
+  });
+
   it("provides one bounded student-directory tool for rankings", () => {
     const directoryQuery = getAssistantToolSpec(
       "students",

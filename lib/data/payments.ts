@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { Prisma } from "../../generated/prisma";
 
 export type PaymentFilters = {
+  paymentId?: string;
   studentId?: string;
   enrollmentId?: string;
   method?: string;
@@ -14,6 +15,7 @@ export type PaymentFilters = {
 };
 
 export async function listPayments({
+  paymentId,
   studentId,
   enrollmentId,
   method,
@@ -23,6 +25,7 @@ export async function listPayments({
   pageSize = 30,
 }: PaymentFilters = {}) {
   const where = {
+    ...(paymentId && { id: paymentId }),
     ...(studentId && { studentId }),
     ...(enrollmentId && { enrollmentId }),
     ...(method && {
@@ -58,6 +61,7 @@ export async function listPayments({
 
 export async function listPaymentsForAssistant(filters: PaymentFilters = {}) {
   const {
+    paymentId,
     studentId,
     enrollmentId,
     method,
@@ -67,6 +71,7 @@ export async function listPaymentsForAssistant(filters: PaymentFilters = {}) {
     pageSize = 20,
   } = filters;
   const where = {
+    ...(paymentId && { id: paymentId }),
     ...(studentId && { studentId }),
     ...(enrollmentId && { enrollmentId }),
     ...(method && {

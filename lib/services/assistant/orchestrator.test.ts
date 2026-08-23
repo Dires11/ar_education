@@ -455,7 +455,7 @@ describe("assistant orchestration", () => {
     );
   });
 
-  it("blocks a blind retry when the response stops after a recorded tool", async () => {
+  it("keeps a read-only outage retryable after a completed lookup", async () => {
     responses.queue.push({
       events: [],
       final: {
@@ -493,12 +493,12 @@ describe("assistant orchestration", () => {
         },
         () => undefined,
       ),
-    ).rejects.toThrow("may have completed");
+    ).rejects.toThrow("No fake response queued");
 
     expect(dataMocks.completeAssistantToolRun).toHaveBeenCalledTimes(1);
     expect(dataMocks.failAssistantRun).toHaveBeenCalledWith(
       "run-1",
-      expect.stringContaining("may have completed"),
+      "No fake response queued",
     );
   });
 
@@ -1472,6 +1472,101 @@ describe("assistant orchestration", () => {
     expect(executeMock).toHaveBeenCalledTimes(1);
     expect(dataMocks.completeAssistantToolRun).toHaveBeenCalledTimes(1);
     expect(events.at(-1)?.type).toBe("assistant_completed");
+  });
+
+  it("preserves verified lookup provenance across an approval resume", async () => {
+    const enrollmentArguments = {
+      studentId: "student-2",
+      packageId: "package-1",
+      tutorId: "tutor-1",
+      subjectId: "subject-1",
+      startDate: "2026-09-01",
+    };
+    const toolRun = {
+      id: "tool-payment",
+      runId: "run-1",
+      callId: "call-payment",
+      namespace: "billing",
+      toolName: "record_payment",
+      arguments: { studentId: "student-1", amount: "120" },
+      status: "PENDING_CONFIRMATION",
+      requiresConfirmation: true,
+      run: {
+        id: "run-1",
+        threadId: "thread-1",
+        status: "WAITING_CONFIRMATION",
+        resumeInput: [],
+        toolRuns: [
+          {
+            namespace: "students",
+            toolName: "get_student",
+            arguments: { id: "student-2" },
+            status: "COMPLETED",
+            result: { ok: true, data: { id: "student-2" } },
+          },
+          {
+            namespace: "catalog",
+            toolName: "get_package",
+            arguments: { id: "package-1" },
+            status: "COMPLETED",
+            result: {
+              ok: true,
+              data: { id: "package-1", subjectId: "subject-1" },
+            },
+          },
+          {
+            namespace: "tutors",
+            toolName: "get_tutor",
+            arguments: { id: "tutor-1" },
+            status: "COMPLETED",
+            result: { ok: true, data: { id: "tutor-1" } },
+          },
+        ],
+      },
+    };
+    dataMocks.getAssistantToolRunForDecision.mockResolvedValue(toolRun);
+    dataMocks.claimAssistantToolRun.mockResolvedValue(toolRun);
+    executeMock.mockResolvedValue({ ok: true, data: { id: "payment-1" } });
+    dataMocks.createOrGetAssistantToolRun.mockResolvedValue({
+      id: "tool-enrollment",
+      runId: "run-1",
+      callId: "call-enrollment",
+      namespace: "enrollments",
+      toolName: "create_enrollment",
+      arguments: enrollmentArguments,
+      status: "PENDING_CONFIRMATION",
+      requiresConfirmation: true,
+      expiresAt: new Date("2026-08-24T00:00:00.000Z"),
+    });
+    responses.queue.push({
+      events: [],
+      final: {
+        output_text: "",
+        output: [{
+          type: "function_call",
+          namespace: "enrollments",
+          name: "create_enrollment",
+          call_id: "call-enrollment",
+          arguments: JSON.stringify(enrollmentArguments),
+        }],
+        usage,
+      },
+    });
+
+    await processAssistantDecision(
+      { id: "admin-1", role: "STAFF" },
+      "tool-payment",
+      "APPROVE",
+      () => undefined,
+    );
+
+    expect(dataMocks.createOrGetAssistantToolRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        namespace: "enrollments",
+        toolName: "create_enrollment",
+      }),
+    );
+    expect(dataMocks.pauseAssistantRun).toHaveBeenCalledTimes(1);
   });
 
   it("fails a claimed approval run when its tool audit cannot be finalized", async () => {

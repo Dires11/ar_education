@@ -31,7 +31,10 @@ import {
   startOfBillingMonth,
 } from "@/lib/services/pricing-calculator";
 import { sendEmail } from "@/lib/utils/email";
-import { substitutePlaceholders } from "@/lib/services/emails";
+import {
+  plainTextToEmailHtml,
+  substitutePlaceholders,
+} from "@/lib/services/emails";
 import { createEmailTemplate, getLatestEmailTemplate } from "@/lib/data/emails";
 import {
   addCalendarMonths,
@@ -382,10 +385,7 @@ async function preparePaymentReminderDelivery(
 
   const emailSubject = substitutePlaceholders(activeTemplate.subject, ctx);
   const emailBody = substitutePlaceholders(activeTemplate.body, ctx);
-  const emailHtml = emailBody
-    .split("\n")
-    .map((line) => `<p>${line}</p>`)
-    .join("");
+  const emailHtml = plainTextToEmailHtml(emailBody);
 
   const digest = createHash("sha256")
     .update(

@@ -210,6 +210,9 @@ export async function resolveAssistantConfirmationArguments(input: {
     );
     return {
       ...input.argumentsValue,
+      recipientPreview: confirmation.recipients.map(
+        (recipient) => `${recipient.name} — ${recipient.email}`,
+      ),
       __assistantConfirmation: {
         digest: confirmation.digest,
         recipientSummary:
@@ -221,6 +224,35 @@ export async function resolveAssistantConfirmationArguments(input: {
       },
       messagePreview: confirmation.bodyPreview,
     };
+  }
+  if (input.namespace === "schedule" && input.name === "mark_attendance") {
+    const parsed = z
+      .object({
+        attendances: z.array(
+          z.object({
+            studentId: z.string(),
+            status: z.string(),
+            billable: z.boolean(),
+          }),
+        ),
+      })
+      .parse(input.argumentsValue);
+    const attendancePreview = await Promise.all(
+      parsed.attendances.map(async (attendance) => {
+        const student = await getStudentData(attendance.studentId);
+        if (!student) {
+          throw new Error(
+            "Every attendance entry must reference an available student before approval.",
+          );
+        }
+        return {
+          student: `${student.firstName} ${student.lastName}`,
+          status: titleCase(attendance.status),
+          billable: attendance.billable,
+        };
+      }),
+    );
+    return { ...input.argumentsValue, attendancePreview };
   }
   return input.argumentsValue;
 }
@@ -683,7 +715,10 @@ function sessionResultCard(
     fields: [
       {
         label: "Date & time",
-        value: formatDateTime(session.scheduledFor),
+        value: formatDateTime(
+          session.scheduledFor,
+          getConfiguredCenterTimeZone(),
+        ),
         icon: "CALENDAR",
       },
       {
@@ -743,7 +778,10 @@ function sessionDraftResultCard(
     fields: [
       {
         label: "Date & time",
-        value: formatDateTime(scheduledFor),
+        value: formatDateTime(
+          scheduledFor,
+          getConfiguredCenterTimeZone(),
+        ),
         icon: "CALENDAR",
       },
       {
@@ -974,6 +1012,28 @@ function emailResultCard(input: {
   };
 }
 
+function emailTemplateResultCard(
+  template: {
+    id: string;
+    name: string;
+    subject: string;
+    type: string;
+  },
+  subtitle: string,
+): AssistantResultCard {
+  return {
+    kind: "EMAIL",
+    entityKey: `email-template:${template.id}`,
+    title: template.name,
+    subtitle,
+    badges: [{ label: titleCase(template.type), tone: "NEUTRAL" }],
+    fields: [{ label: "Subject", value: template.subject, icon: "MAIL" }],
+    href: "/emails",
+    actionLabel: "View email templates",
+    suggestedActions: [],
+  };
+}
+
 function teamResultCard(input: {
   entityKey: string;
   title: string;
@@ -1152,13 +1212,25 @@ export async function enrichAssistantConfirmationCard(
   argumentsValue: Record<string, unknown>,
 ): Promise<AssistantResultCard> {
   const resolvedFields = await resolveAssistantReferenceFields(argumentsValue);
-  const existingLabels = new Set(card.fields.map((field) => field.label));
+  const proposedFields = resolvedFields.flatMap((field) => {
+    const comparableLabel = (label: string) =>
+      label.toLocaleLowerCase().replace(/s$/, "");
+    const current = card.fields.find(
+      (existing) =>
+        comparableLabel(existing.label) === comparableLabel(field.label),
+    );
+    if (!current) return [field];
+    if (current.value === field.value) return [];
+    return [
+      {
+        ...field,
+        label: `Selected ${field.label.toLocaleLowerCase()}`,
+      },
+    ];
+  });
   return {
     ...card,
-    fields: [
-      ...card.fields,
-      ...resolvedFields.filter((field) => !existingLabels.has(field.label)),
-    ],
+    fields: [...card.fields, ...proposedFields],
   };
 }
 
@@ -1271,12 +1343,12 @@ export async function getAssistantConfirmationCard(input: {
     const guardian = student?.guardians.find(
       (link) => link.guardianId === guardianId,
     )?.guardian;
+    const subtitle =
+      name === "remove_guardian"
+        ? "Guardian relationship selected for removal"
+        : "Guardian affected by this change";
     return guardian
-      ? guardianResultCard(
-          guardian,
-          studentId,
-          "Guardian relationship selected for removal",
-        )
+      ? guardianResultCard(guardian, studentId, subtitle)
       : undefined;
   }
 
@@ -1284,9 +1356,13 @@ export async function getAssistantConfirmationCard(input: {
     const tutorId = value("id");
     if (!tutorId) return undefined;
     const tutor = await getTutorData(tutorId);
-    return tutor
-      ? tutorResultCard(tutor, "Tutor selected for archiving")
-      : undefined;
+    const subtitle =
+      name === "archive_tutor"
+        ? "Tutor selected for archiving"
+        : name === "set_tutor_subjects"
+          ? "Tutor subject assignment affected by this change"
+          : "Tutor affected by this change";
+    return tutor ? tutorResultCard(tutor, subtitle) : undefined;
   }
 
   if (namespace === "catalog") {
@@ -1304,9 +1380,13 @@ export async function getAssistantConfirmationCard(input: {
         : undefined;
     }
     const pkg = await getPackage(id);
-    return pkg
-      ? packageResultCard(pkg, "Package selected for deactivation")
-      : undefined;
+    const subtitle =
+      name === "set_package_active"
+        ? argumentsValue.isActive === false
+          ? "Package selected for deactivation"
+          : "Package selected for activation"
+        : "Package affected by this change";
+    return pkg ? packageResultCard(pkg, subtitle) : undefined;
   }
 
   if (namespace === "enrollments") {
@@ -1856,6 +1936,7 @@ async function executeTutors(name: string, args: ToolArguments) {
       return toolResult(
         { id: tutor.id, status: tutor.status },
         `/tutors/${tutor.id}`,
+        tutorResultCard(tutor, "Tutor archived"),
       );
     }
     case "get_tutor_payroll": {
@@ -1879,7 +1960,11 @@ async function executeCatalog(name: string, args: ToolArguments) {
       return toolResult(await listSubjects(), "/subjects");
     case "create_subject": {
       const subject = await createSubjectOffering(args as never);
-      return toolResult(subject, "/subjects");
+      return toolResult(
+        subject,
+        "/subjects",
+        subjectResultCard(subject, "Subject created"),
+      );
     }
     case "update_subject": {
       const id = stringValue(args, "id");
@@ -1890,11 +1975,22 @@ async function executeCatalog(name: string, args: ToolArguments) {
         description:
           (args.description as string | undefined) ?? subject.description ?? "",
       });
-      return toolResult(updated, "/subjects");
+      return toolResult(
+        updated,
+        "/subjects",
+        subjectResultCard(updated, "Subject updated"),
+      );
     }
     case "delete_subject": {
-      const deleted = await deleteSubjectOffering(stringValue(args, "id"));
-      return toolResult({ id: deleted.id, deleted: true }, "/subjects");
+      const id = stringValue(args, "id");
+      const subject = await getSubject(id);
+      if (!subject) throw new Error("Subject not found");
+      const deleted = await deleteSubjectOffering(id);
+      return toolResult(
+        { id: deleted.id, deleted: true },
+        "/subjects",
+        subjectResultCard(subject, "Subject deleted"),
+      );
     }
     case "list_packages":
       return toolResult(
@@ -1998,6 +2094,19 @@ async function executeEnrollments(name: string, args: ToolArguments) {
         "/enrollments",
       );
     case "get_enrollment": {
+      const discountId = args.discountId as string | undefined;
+      if (discountId) {
+        const discount = await getDiscountWithEnrollment(discountId);
+        if (!discount?.enrollment) throw new Error("Discount not found");
+        return toolResult(
+          { discount, enrollment: discount.enrollment },
+          `/enrollments?enrollment=${discount.enrollment.id}`,
+          enrollmentResultCard(
+            discount.enrollment,
+            "Enrollment and discount details",
+          ),
+        );
+      }
       const id = stringValue(args, "id");
       const enrollment = await getEnrollment(id);
       if (!enrollment) throw new Error("Enrollment not found");
@@ -2079,7 +2188,15 @@ async function executeEnrollments(name: string, args: ToolArguments) {
       const group = await updateExistingGroup(groupId, {
         name: stringValue(args, "name"),
       });
-      return toolResult(group, "/enrollments");
+      return resultAfterMutation(group, "/enrollments", async () => {
+        const loaded = (await listGroups()).find((item) => item.id === groupId);
+        if (!loaded) throw new Error("Updated group could not be loaded");
+        return toolResult(
+          group,
+          "/enrollments",
+          groupResultCard(loaded, "Group renamed"),
+        );
+      });
     }
     default:
       throw new Error(`Unknown enrollments tool: ${name}`);
@@ -2088,11 +2205,22 @@ async function executeEnrollments(name: string, args: ToolArguments) {
 
 async function executeSchedule(name: string, args: ToolArguments) {
   switch (name) {
-    case "get_schedule":
+    case "get_schedule": {
+      const sessionId = args.sessionId as string | undefined;
+      if (sessionId) {
+        const session = await getSessionData(sessionId);
+        if (!session) throw new Error("Session not found");
+        return toolResult(
+          session,
+          "/schedule",
+          sessionResultCard(session, "Session details"),
+        );
+      }
       return toolResult(
         await getMonthSchedule(stringValue(args, "month")),
         "/schedule",
       );
+    }
     case "get_enrollment_capacity":
       return toolResult(
         await getEnrollmentMonthSummary(
@@ -2132,29 +2260,61 @@ async function executeSchedule(name: string, args: ToolArguments) {
     }
     case "mark_attendance": {
       const sessionId = stringValue(args, "sessionId");
-      const result = await markSessionAttendance(sessionId, {
+      await markSessionAttendance(sessionId, {
         attendances: args.attendances as never,
       });
-      return toolResult(result, "/schedule");
+      return resultAfterMutation({ sessionId, updated: true }, "/schedule", async () => {
+        const session = await getSessionData(sessionId);
+        if (!session) throw new Error("Updated session could not be loaded");
+        return toolResult(
+          { sessionId, updated: true },
+          "/schedule",
+          sessionResultCard(session, "Attendance updated"),
+        );
+      });
     }
     case "set_session_status": {
+      const sessionId = stringValue(args, "sessionId");
       const result = await updateSessionStatus(
-        stringValue(args, "sessionId"),
+        sessionId,
         args.status as never,
       );
-      return toolResult(result, "/schedule");
+      return resultAfterMutation(result, "/schedule", async () => {
+        const session = await getSessionData(sessionId);
+        if (!session) throw new Error("Updated session could not be loaded");
+        return toolResult(
+          result,
+          "/schedule",
+          sessionResultCard(session, "Session status updated"),
+        );
+      });
     }
     case "cancel_session": {
+      const sessionId = stringValue(args, "sessionId");
       const result = await cancelSessionById(
-        stringValue(args, "sessionId"),
+        sessionId,
         args.cancelledBy as "TUTOR" | "STUDENT",
       );
-      return toolResult(result, "/schedule");
+      return resultAfterMutation(result, "/schedule", async () => {
+        const session = await getSessionData(sessionId);
+        if (!session) throw new Error("Cancelled session could not be loaded");
+        return toolResult(
+          result,
+          "/schedule",
+          sessionResultCard(session, "Session cancelled"),
+        );
+      });
     }
     case "delete_session": {
       const sessionId = stringValue(args, "sessionId");
+      const session = await getSessionData(sessionId);
+      if (!session) throw new Error("Session not found");
       await deleteSessionById(sessionId);
-      return toolResult({ sessionId, deleted: true }, "/schedule");
+      return toolResult(
+        { sessionId, deleted: true },
+        "/schedule",
+        sessionResultCard(session, "Session deleted"),
+      );
     }
     default:
       throw new Error(`Unknown schedule tool: ${name}`);
@@ -2185,52 +2345,124 @@ async function executeRecurrence(name: string, args: ToolArguments) {
         recurrenceResultCard(rule, "Recurring schedule details"),
       );
     }
-    case "create_recurring_schedule":
-      return toolResult(
-        await createRecurringSchedule(args as never),
-        "/schedule",
-      );
+    case "create_recurring_schedule": {
+      const result = await createRecurringSchedule(args as never);
+      return resultAfterMutation(result, "/schedule", async () => {
+        const enrollmentId = args.enrollmentId as string | undefined;
+        if (enrollmentId) {
+          const enrollment = await getEnrollment(enrollmentId);
+          if (!enrollment) throw new Error("Enrollment not found");
+          return toolResult(
+            result,
+            "/schedule",
+            enrollmentResultCard(enrollment, "Recurring schedule created"),
+          );
+        }
+        const groupId = stringValue(args, "groupId");
+        const group = (await listGroups()).find((item) => item.id === groupId);
+        if (!group) throw new Error("Group not found");
+        return toolResult(
+          result,
+          "/schedule",
+          groupResultCard(group, "Recurring schedule created"),
+        );
+      });
+    }
     case "split_recurring_schedule": {
+      const ruleId = stringValue(args, "ruleId");
       const params = args.params as Record<string, unknown>;
       await splitRecurrenceRule(
-        stringValue(args, "ruleId"),
+        ruleId,
         new Date(stringValue(args, "splitDate")),
         params as never,
       );
-      return toolResult({ updated: true }, "/schedule");
+      return resultAfterMutation({ updated: true }, "/schedule", async () => {
+        const rule = await getRecurrenceRuleWithParticipants(ruleId);
+        if (!rule) throw new Error("Updated recurring schedule could not be loaded");
+        return toolResult(
+          { updated: true },
+          "/schedule",
+          recurrenceResultCard(rule, "Recurring schedule changed"),
+        );
+      });
     }
-    case "end_recurring_schedule":
+    case "end_recurring_schedule": {
+      const ruleId = stringValue(args, "ruleId");
       await endRecurrenceFromDate(
-        stringValue(args, "ruleId"),
+        ruleId,
         new Date(stringValue(args, "occurrenceFor")),
       );
-      return toolResult({ ended: true }, "/schedule");
-    case "cancel_occurrence":
+      return resultAfterMutation({ ended: true }, "/schedule", async () => {
+        const rule = await getRecurrenceRuleWithParticipants(ruleId);
+        if (!rule) throw new Error("Ended recurring schedule could not be loaded");
+        return toolResult(
+          { ended: true },
+          "/schedule",
+          recurrenceResultCard(rule, "Recurring schedule ended"),
+        );
+      });
+    }
+    case "cancel_occurrence": {
+      const ruleId = stringValue(args, "ruleId");
       await cancelVirtualOccurrence(
-        stringValue(args, "ruleId"),
+        ruleId,
         new Date(stringValue(args, "occurrenceFor")),
       );
-      return toolResult({ cancelled: true }, "/schedule");
+      return resultAfterMutation({ cancelled: true }, "/schedule", async () => {
+        const rule = await getRecurrenceRuleWithParticipants(ruleId);
+        if (!rule) throw new Error("Recurring schedule could not be loaded");
+        return toolResult(
+          { cancelled: true },
+          "/schedule",
+          recurrenceResultCard(rule, "Occurrence cancelled"),
+        );
+      });
+    }
     case "reschedule_occurrence": {
+      const ruleId = stringValue(args, "ruleId");
       await rescheduleVirtualOccurrence(
-        stringValue(args, "ruleId"),
+        ruleId,
         new Date(stringValue(args, "occurrenceFor")),
         new Date(stringValue(args, "newScheduledFor")),
         (args.overrides ?? {}) as never,
       );
-      return toolResult({ rescheduled: true }, "/schedule");
+      return resultAfterMutation({ rescheduled: true }, "/schedule", async () => {
+        const rule = await getRecurrenceRuleWithParticipants(ruleId);
+        if (!rule) throw new Error("Recurring schedule could not be loaded");
+        return toolResult(
+          { rescheduled: true },
+          "/schedule",
+          recurrenceResultCard(rule, "Occurrence rescheduled"),
+        );
+      });
     }
     case "delete_recurring_schedule": {
       const ruleId = stringValue(args, "ruleId");
+      const rule = await getRecurrenceRuleWithParticipants(ruleId);
+      if (!rule) throw new Error("Recurring schedule not found");
       await deleteRecurringSchedule(ruleId);
-      return toolResult({ ruleId, deleted: true }, "/schedule");
+      return toolResult(
+        { ruleId, deleted: true },
+        "/schedule",
+        recurrenceResultCard(rule, "Recurring schedule deleted"),
+      );
     }
-    case "set_schedule_color":
+    case "set_schedule_color": {
+      const enrollmentId = stringValue(args, "enrollmentId");
       await updateEnrollmentRecurrenceColor(
-        stringValue(args, "enrollmentId"),
+        enrollmentId,
         stringValue(args, "color"),
       );
-      return toolResult({ updated: true }, "/schedule");
+      return resultAfterMutation({ updated: true }, "/schedule", async () => {
+        const enrollment = await getEnrollment(enrollmentId);
+        if (!enrollment) throw new Error("Enrollment not found");
+        return toolResult(
+          { updated: true },
+          "/schedule",
+          enrollmentResultCard(enrollment, "Schedule color updated"),
+        );
+      });
+    }
     default:
       throw new Error(`Unknown recurrence tool: ${name}`);
   }
@@ -2263,6 +2495,7 @@ async function executeBilling(
     case "list_payments":
       return toolResult(
         await listPaymentsForAssistant({
+          paymentId: args.paymentId as string | undefined,
           studentId: args.studentId as string | undefined,
           enrollmentId: args.enrollmentId as string | undefined,
           method: args.method as string | undefined,
@@ -2321,7 +2554,20 @@ async function executeBilling(
         context.idempotencyKey,
         reminderConfirmation.digest,
       );
-      return toolResult({ sent: true }, "/payments");
+      return toolResult(
+        { sent: true },
+        "/payments",
+        emailResultCard({
+          entityKey: `payment-reminder:${stringValue(args, "enrollmentId")}:${stringValue(args, "month")}`,
+          title: `Payment reminder for ${reminderConfirmation.monthLabel ?? stringValue(args, "month")}`,
+          subtitle: "Payment reminder sent",
+          recipientSummary: reminderConfirmation.recipientSummary,
+          subject: reminderConfirmation.subject,
+          messagePreview: reminderConfirmation.bodyPreview,
+          href: "/payments",
+          actionLabel: "View payments",
+        }),
+      );
     }
     default:
       throw new Error(`Unknown billing tool: ${name}`);
@@ -2338,32 +2584,55 @@ async function executeCommunications(
       return toolResult(await listEmailTemplates(), "/emails");
     case "create_email_template": {
       const template = await createTemplate(args as never);
-      return toolResult(template, "/emails");
+      return toolResult(
+        template,
+        "/emails",
+        emailTemplateResultCard(template, "Email template created"),
+      );
     }
     case "update_email_template": {
       const id = stringValue(args, "id");
       const template = { ...args };
       delete template.id;
       const updated = await updateTemplate(id, template as never);
-      return toolResult(updated, "/emails");
+      return toolResult(
+        updated,
+        "/emails",
+        emailTemplateResultCard(updated, "Email template updated"),
+      );
     }
     case "delete_email_template": {
       const id = stringValue(args, "id");
+      const template = await getEmailTemplate(id);
+      if (!template) throw new Error("Email template not found");
       await deleteTemplate(id);
-      return toolResult({ id, deleted: true }, "/emails");
+      return toolResult(
+        { id, deleted: true },
+        "/emails",
+        emailTemplateResultCard(template, "Email template deleted"),
+      );
     }
     case "send_email": {
       const emailConfirmation = confirmationSnapshot(args);
       const studentIds = z.array(z.string()).parse(args.studentIds);
-      return toolResult(
-        await sendEmailToStudents({
+      const result = await sendEmailToStudents({
           studentIds,
           subject: stringValue(args, "subject"),
           body: stringValue(args, "body"),
           idempotencyKey: context.idempotencyKey,
           expectedConfirmationDigest: emailConfirmation.digest,
-        }),
+        });
+      return toolResult(
+        result,
         "/emails",
+        emailResultCard({
+          entityKey: `email-send:${studentIds.slice().sort().join(":")}`,
+          title: studentIds.length === 1 ? "Email sent to 1 student" : `Email sent to ${studentIds.length} students`,
+          subtitle: `${result.sent} sent${result.failed ? ` · ${result.failed} failed` : ""}`,
+          subject: emailConfirmation.subject,
+          recipientSummary: emailConfirmation.recipientSummary,
+          messagePreview: emailConfirmation.bodyPreview,
+        }),
       );
     }
     default:
@@ -2382,39 +2651,119 @@ async function executeTeam(
   switch (name) {
     case "get_team": {
       const team = await getTeamPageData();
+      const adminId = args.adminId as string | undefined;
+      const invitationId = args.invitationId as string | undefined;
+      const email = (args.email as string | undefined)?.toLocaleLowerCase();
       return toolResult(
         {
-          admins: team.admins.map(({ id, name, email, role }) => ({
-            id,
-            name,
-            email,
-            role,
-          })),
-          pendingInvitations: team.pendingInvitations.map((invitation) => ({
-            id: invitation.id,
-            emailAddress: invitation.emailAddress,
-            status: invitation.status,
-          })),
+          admins: team.admins
+            .filter(
+              (admin) =>
+                !invitationId &&
+                (!adminId || admin.id === adminId) &&
+                (!email || admin.email.toLocaleLowerCase() === email),
+            )
+            .map(({ id, name, email: adminEmail, role }) => ({
+              id,
+              name,
+              email: adminEmail,
+              role,
+            })),
+          pendingInvitations: team.pendingInvitations
+            .filter(
+              (invitation) =>
+                !adminId &&
+                (!invitationId || invitation.id === invitationId) &&
+                (!email ||
+                  invitation.emailAddress.toLocaleLowerCase() === email),
+            )
+            .map((invitation) => ({
+              id: invitation.id,
+              emailAddress: invitation.emailAddress,
+              status: invitation.status,
+            })),
         },
         "/team",
       );
     }
     case "invite_team_member":
-      await inviteTeamMember(stringValue(args, "email"));
-      return toolResult({ invited: true, email: args.email }, "/team");
-    case "revoke_team_invitation":
-      await revokeTeamInvitation(stringValue(args, "invitationId"));
-      return toolResult({ revoked: true }, "/team");
-    case "update_team_role":
+      {
+        const email = stringValue(args, "email");
+        const invitation = await inviteTeamMember(email);
+        return toolResult(
+          { invited: true, email },
+          "/team",
+          teamResultCard({
+            entityKey: `team-invite:${invitation.id}`,
+            title: email,
+            subtitle: "Team invitation sent",
+            email,
+            role: "STAFF",
+          }),
+        );
+      }
+    case "revoke_team_invitation": {
+      const invitationId = stringValue(args, "invitationId");
+      const invitation = (await getTeamPageData()).pendingInvitations.find(
+        (item) => item.id === invitationId,
+      );
+      if (!invitation) throw new Error("Team invitation not found");
+      await revokeTeamInvitation(invitationId);
+      return toolResult(
+        { revoked: true },
+        "/team",
+        teamResultCard({
+          entityKey: `team-invitation:${invitation.id}`,
+          title: invitation.emailAddress,
+          subtitle: "Team invitation revoked",
+          email: invitation.emailAddress,
+        }),
+      );
+    }
+    case "update_team_role": {
+      const adminId = stringValue(args, "adminId");
       await updateTeamMemberRole(
         context.admin.id,
-        stringValue(args, "adminId"),
+        adminId,
         args.role as "OWNER" | "STAFF",
       );
-      return toolResult({ updated: true }, "/team");
-    case "remove_team_member":
-      await removeTeamMember(context.admin.id, stringValue(args, "adminId"));
-      return toolResult({ removed: true }, "/team");
+      const member = (await getTeamPageData()).admins.find(
+        (item) => item.id === adminId,
+      );
+      if (!member) throw new Error("Updated team member could not be loaded");
+      return toolResult(
+        { updated: true },
+        "/team",
+        teamResultCard({
+          entityKey: `team-admin:${member.id}`,
+          title: member.name,
+          subtitle: `Role changed to ${titleCase(member.role)}`,
+          email: member.email,
+          role: member.role,
+        }),
+      );
+    }
+    case "remove_team_member": {
+      const adminId = stringValue(args, "adminId");
+      const member = (await getTeamPageData()).admins.find(
+        (item) => item.id === adminId,
+      );
+      if (!member) throw new Error("Team member not found");
+      const result = await removeTeamMember(context.admin.id, adminId);
+      return toolResult(
+        result,
+        "/team",
+        teamResultCard({
+          entityKey: `team-admin:${member.id}`,
+          title: member.name,
+          subtitle: result.clerkAccountDeleted
+            ? "Team access removed"
+            : "Team access removed · Clerk cleanup pending",
+          email: member.email,
+          role: member.role,
+        }),
+      );
+    }
     default:
       throw new Error(`Unknown team tool: ${name}`);
   }

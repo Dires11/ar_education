@@ -47,7 +47,24 @@ type PreparedStudentEmail = {
   email: string;
   subject: string;
   body: string;
+  html: string;
 };
+
+function escapeHtml(text: string) {
+  return text
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+export function plainTextToEmailHtml(text: string) {
+  return text
+    .split("\n")
+    .map((line) => `<p>${escapeHtml(line)}</p>`)
+    .join("");
+}
 
 function deliveryDigest(deliveries: PreparedStudentEmail[]) {
   return createHash("sha256")
@@ -108,12 +125,14 @@ async function prepareStudentEmails(input: {
       month: format(new Date(), "MMMM yyyy"),
     };
 
+    const personalizedBody = substitutePlaceholders(input.body, ctx);
     deliveries.push({
       studentId,
       studentName: `${student.firstName} ${student.lastName}`,
       email: recipientEmail,
       subject: substitutePlaceholders(input.subject, ctx),
-      body: substitutePlaceholders(input.body, ctx),
+      body: personalizedBody,
+      html: plainTextToEmailHtml(personalizedBody),
     });
   }
 
@@ -178,10 +197,7 @@ export async function sendEmailToStudents({
       await sendEmail({
         to: delivery.email,
         subject: delivery.subject,
-        html: delivery.body
-          .split("\n")
-          .map((line) => `<p>${line}</p>`)
-          .join(""),
+        html: delivery.html,
         idempotencyKey: idempotencyKey
           ? `${idempotencyKey}:${delivery.studentId}`
           : undefined,

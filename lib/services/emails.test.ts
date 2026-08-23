@@ -83,4 +83,35 @@ describe("email approval integrity", () => {
       }),
     ).rejects.toBeInstanceOf(DeliveryOutcomeUnknownError);
   });
+
+  it("delivers reviewed text as escaped HTML instead of active markup", async () => {
+    emailData.getStudentsForEmail.mockResolvedValue([
+      {
+        ...student("approved@example.com"),
+        firstName: "<Maya>",
+      },
+    ]);
+    emailUtility.sendEmail.mockResolvedValue(undefined);
+
+    const input = {
+      studentIds: ["student-1"],
+      subject: "Notice for @name",
+      body: "Hello @name\n<img src=x onerror=alert(1)>",
+    };
+    const confirmation = await getEmailDeliveryConfirmation(input);
+    expect(confirmation.bodyPreview).toContain(
+      "Hello <Maya>\n<img src=x onerror=alert(1)>",
+    );
+
+    await sendEmailToStudents({
+      ...input,
+      expectedConfirmationDigest: confirmation.digest,
+    });
+
+    expect(emailUtility.sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        html: "<p>Hello &lt;Maya&gt;</p><p>&lt;img src=x onerror=alert(1)&gt;</p>",
+      }),
+    );
+  });
 });

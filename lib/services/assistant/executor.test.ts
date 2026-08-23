@@ -119,6 +119,7 @@ vi.mock("@/lib/services/emails", () => ({
 }));
 
 import {
+  enrichAssistantConfirmationCard,
   executeAssistantTool,
   getAssistantConfirmationCard,
   getAssistantMutationDraftCard,
@@ -322,6 +323,7 @@ describe("assistant tool result cards", () => {
     expect(resolved).toMatchObject({
       messagePreview:
         "Maya Chen — guardian@example.com\nSubject: Schedule\nHello Ana",
+      recipientPreview: ["Maya Chen — guardian@example.com"],
       __assistantConfirmation: {
         digest: "a".repeat(64),
         recipientSummary: "Maya Chen — guardian@example.com",
@@ -429,6 +431,31 @@ describe("assistant tool result cards", () => {
     );
   });
 
+  it("shows selected replacement subjects alongside current card values", async () => {
+    referenceDataMocks.getSubject.mockResolvedValue({
+      id: "subject-geometry",
+      name: "Geometry",
+    });
+    const card = await enrichAssistantConfirmationCard(
+      {
+        kind: "TUTOR",
+        entityKey: "tutor:tutor-1",
+        title: "Theo Grant",
+        badges: [],
+        fields: [{ label: "Subjects", value: "Algebra", icon: "BOOK" }],
+        href: "/tutors/tutor-1",
+        actionLabel: "View tutor",
+        suggestedActions: [],
+      },
+      { id: "tutor-1", subjectIds: ["subject-geometry"] },
+    );
+
+    expect(card.fields).toEqual([
+      { label: "Subjects", value: "Algebra", icon: "BOOK" },
+      { label: "Selected subject", value: "Geometry", icon: "BOOK" },
+    ]);
+  });
+
   it("shows the rendered payment-reminder body before approval", async () => {
     paymentServiceMocks.getPaymentReminderConfirmation.mockResolvedValue({
       digest: "b".repeat(64),
@@ -470,6 +497,130 @@ describe("assistant tool result cards", () => {
         }),
       ]),
     });
+  });
+
+  it("keeps the full resolved recipient set visible for bulk-email approval", async () => {
+    const recipients = Array.from({ length: 4 }, (_, index) => ({
+      studentId: `student-${index + 1}`,
+      name: `Student ${index + 1}`,
+      email: `guardian${index + 1}@example.com`,
+    }));
+    emailServiceMocks.getEmailDeliveryConfirmation.mockResolvedValue({
+      digest: "c".repeat(64),
+      bodyPreview: "Student 1 — guardian1@example.com\nSubject: Notice\nHello",
+      recipients,
+    });
+
+    const resolved = await resolveAssistantConfirmationArguments({
+      namespace: "communications",
+      name: "send_email",
+      argumentsValue: {
+        studentIds: recipients.map((recipient) => recipient.studentId),
+        subject: "Notice",
+        body: "Hello",
+      },
+    });
+
+    expect(resolved).toMatchObject({
+      recipientPreview: recipients.map(
+        (recipient) => `${recipient.name} — ${recipient.email}`,
+      ),
+      __assistantConfirmation: {
+        recipientSummary: expect.stringContaining("and 1 more"),
+      },
+    });
+  });
+
+  it("pairs every attendance decision with the resolved student name", async () => {
+    studentMocks.getStudent
+      .mockResolvedValueOnce({ firstName: "Maya", lastName: "Chen" })
+      .mockResolvedValueOnce({ firstName: "Noah", lastName: "Patel" });
+
+    const resolved = await resolveAssistantConfirmationArguments({
+      namespace: "schedule",
+      name: "mark_attendance",
+      argumentsValue: {
+        sessionId: "session-1",
+        attendances: [
+          { studentId: "student-1", status: "COMPLETED", billable: true },
+          { studentId: "student-2", status: "NO_SHOW", billable: false },
+        ],
+      },
+    });
+
+    expect(resolved).toMatchObject({
+      attendancePreview: [
+        { student: "Maya Chen", status: "Completed", billable: true },
+        { student: "Noah Patel", status: "No Show", billable: false },
+      ],
+    });
+  });
+
+  it("uses action-specific confirmation copy for routine evidence changes", async () => {
+    studentMocks.getStudent.mockResolvedValue({
+      id: "student-1",
+      guardians: [
+        {
+          guardianId: "guardian-1",
+          guardian: {
+            id: "guardian-1",
+            firstName: "Ana",
+            lastName: "Chen",
+            email: "ana@example.com",
+            phone: "555-0100",
+            relationship: "PARENT",
+          },
+        },
+      ],
+    });
+    referenceDataMocks.getTutor.mockResolvedValue({
+      id: "tutor-1",
+      firstName: "Theo",
+      lastName: "Grant",
+      avatarUrl: null,
+      status: "ACTIVE",
+      email: "theo@example.com",
+      phone: "555-0101",
+      hourlyRate: "45",
+      subjects: [],
+    });
+    referenceDataMocks.getPackage.mockResolvedValue({
+      id: "package-1",
+      name: "Math Monthly",
+      type: "MONTHLY",
+      lessonType: "PRIVATE",
+      basePrice: "200",
+      durationMinutes: 60,
+      isActive: true,
+      subject: null,
+    });
+
+    await expect(
+      getAssistantConfirmationCard({
+        namespace: "guardians",
+        name: "update_guardian",
+        argumentsValue: {
+          studentId: "student-1",
+          guardianId: "guardian-1",
+        },
+      }),
+    ).resolves.toMatchObject({ subtitle: "Guardian affected by this change" });
+    await expect(
+      getAssistantConfirmationCard({
+        namespace: "tutors",
+        name: "set_tutor_subjects",
+        argumentsValue: { id: "tutor-1", subjectIds: ["subject-1"] },
+      }),
+    ).resolves.toMatchObject({
+      subtitle: "Tutor subject assignment affected by this change",
+    });
+    await expect(
+      getAssistantConfirmationCard({
+        namespace: "catalog",
+        name: "update_package",
+        argumentsValue: { id: "package-1", name: "Updated" },
+      }),
+    ).resolves.toMatchObject({ subtitle: "Package affected by this change" });
   });
 
   it("shows the guardian, not a database ID, for relationship removal", async () => {
@@ -554,6 +705,51 @@ describe("assistant tool result cards", () => {
       subtitle: "Payment selected for permanent deletion",
       badges: [{ label: "Permanent action", tone: "DESTRUCTIVE" }],
     });
+  });
+
+  it("supports exact session and payment lookups needed before mutations", async () => {
+    sessionDataMocks.getSession.mockResolvedValue({
+      id: "session-1",
+      scheduledFor: new Date("2026-08-24T18:00:00.000Z"),
+      durationMinutes: 60,
+      room: "A",
+    });
+    paymentDataMocks.listPaymentsForAssistant.mockResolvedValue({
+      payments: [{ id: "payment-1", amount: "120" }],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+    });
+
+    await expect(
+      executeAssistantTool({
+        namespace: "schedule",
+        name: "get_schedule",
+        argumentsValue: { sessionId: "session-1" },
+        context: { admin: { id: "admin-1", role: "STAFF" } },
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      card: {
+        entityKey: "session:session-1",
+        title: "Scheduled session",
+        fields: expect.arrayContaining([
+          expect.objectContaining({
+            label: "Date & time",
+            value: "Aug 24, 2026, 11:00 AM",
+          }),
+        ]),
+      },
+    });
+    await executeAssistantTool({
+      namespace: "billing",
+      name: "list_payments",
+      argumentsValue: { paymentId: "payment-1", limit: 20 },
+      context: { admin: { id: "admin-1", role: "STAFF" } },
+    });
+    expect(paymentDataMocks.listPaymentsForAssistant).toHaveBeenCalledWith(
+      expect.objectContaining({ paymentId: "payment-1" }),
+    );
   });
 
   it("passes a deterministic idempotency key to outbound email", async () => {

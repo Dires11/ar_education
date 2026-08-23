@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { ASSISTANT_ROUTING_EVAL_CASES } from "@/lib/services/assistant/evals";
-import { getAssistantToolSpec } from "@/lib/services/assistant/tools";
+import {
+  assistantToolRequiresConfirmation,
+  getAssistantToolSpec,
+} from "@/lib/services/assistant/tools";
 
 describe("assistant routing evaluation set", () => {
   it("requires an exact, available owner tool for every scenario", () => {
@@ -15,6 +18,36 @@ describe("assistant routing evaluation set", () => {
         ),
         item.name,
       ).toBeDefined();
+      const expectedSpec = getAssistantToolSpec(
+        item.expectedNamespace,
+        item.expectedTool,
+        "OWNER",
+      );
+      if (item.expectedConfirmation !== undefined && expectedSpec) {
+        const exampleArguments =
+          item.expectedTool === "mark_attendance"
+            ? {
+                sessionId: "session_123",
+                attendances: [
+                  {
+                    studentId: "student_123",
+                    status: "COMPLETED",
+                    billable: true,
+                  },
+                ],
+              }
+            : {};
+        expect(
+          assistantToolRequiresConfirmation(expectedSpec, exampleArguments),
+          item.name,
+        ).toBe(item.expectedConfirmation);
+      }
+      for (const lookupGroup of item.requiredLookupGroups ?? []) {
+        for (const lookup of lookupGroup) {
+          const [namespace, name] = lookup.split(".");
+          expect(getAssistantToolSpec(namespace, name, "OWNER"), item.name).toBeDefined();
+        }
+      }
     }
   });
 

@@ -528,6 +528,8 @@ function confirmationContent(tool: ToolItem) {
   const argumentsValue = isRecord(preview.arguments)
     ? redactAssistantIdentifiers(preview.arguments)
     : {};
+  const hasAttendancePreview =
+    isRecord(argumentsValue) && Array.isArray(argumentsValue.attendancePreview);
   const card = parseAssistantResultCardValue(preview.card);
 
   return {
@@ -541,7 +543,11 @@ function confirmationContent(tool: ToolItem) {
         : "This action will change CRM data after approval.",
     card,
     details: Object.entries(isRecord(argumentsValue) ? argumentsValue : {})
-      .filter(([key]) => isVisibleConfirmationArgument(key))
+      .filter(
+        ([key]) =>
+          isVisibleConfirmationArgument(key) &&
+          !(key === "attendances" && hasAttendancePreview),
+      )
       .map(([key, value]) => ({
         label: humanizeKey(key),
         value: formatPreviewValue(value),

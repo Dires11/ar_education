@@ -121,12 +121,15 @@ model Admin {
   email       String
   name        String
   role        AdminRole @default(STAFF)
+  disabledAt  DateTime?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
   payments               Payment[]
   assistantThreads       AssistantThread[]
   assistantConfirmations AssistantToolRun[] @relation("AssistantToolRunConfirmedBy")
+
+  @@index([disabledAt])
 }
 
 model Guardian {

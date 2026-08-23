@@ -82,24 +82,6 @@ async function expireAssistantRunsInTransaction(
     },
   });
 
-  // A confirmation row may be created just before pausing its parent run. If
-  // that pause fails, reconcile the child with the already-failed parent so a
-  // dead approval button can never be shown after reload.
-  await tx.assistantToolRun.updateMany({
-    where: {
-      status: "PENDING_CONFIRMATION",
-      run: {
-        status: "FAILED",
-        thread: threadWhere,
-      },
-    },
-    data: {
-      status: "FAILED",
-      error: "Confirmation could not be activated. Start the request again.",
-      completedAt: input.now,
-    },
-  });
-
   const staleBefore = new Date(
     input.now.getTime() - ASSISTANT_RUN_STALE_AFTER_MS,
   );
@@ -174,6 +156,23 @@ async function expireAssistantRunsInTransaction(
       "Assistant response was interrupted before any CRM operation completed. It is safe to retry.",
     );
   }
+
+  // Run this after stale parents are finalized as well as for parents that
+  // failed earlier, so the first reload always removes dead approval controls.
+  await tx.assistantToolRun.updateMany({
+    where: {
+      status: "PENDING_CONFIRMATION",
+      run: {
+        status: "FAILED",
+        thread: threadWhere,
+      },
+    },
+    data: {
+      status: "FAILED",
+      error: "Confirmation could not be activated. Start the request again.",
+      completedAt: input.now,
+    },
+  });
 }
 
 export function expireAssistantRuns(adminId: string, threadId?: string) {
@@ -667,6 +666,7 @@ export async function getAssistantToolRunForDecision(
         include: {
           thread: true,
           messages: true,
+          toolRuns: { orderBy: { createdAt: "asc" } },
         },
       },
     },

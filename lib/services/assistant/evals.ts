@@ -3,6 +3,8 @@ export type AssistantRoutingEvalCase = {
   prompt: string;
   expectedNamespace: string;
   expectedTool: string;
+  requiredLookupGroups?: string[][];
+  expectedConfirmation?: boolean;
 };
 
 export const ASSISTANT_ROUTING_EVAL_CASES: AssistantRoutingEvalCase[] = [
@@ -24,6 +26,7 @@ export const ASSISTANT_ROUTING_EVAL_CASES: AssistantRoutingEvalCase[] = [
       "Create student Maya Thompson, born 2012-04-08. I do not want to add a guardian yet.",
     expectedNamespace: "students",
     expectedTool: "create_student",
+    expectedConfirmation: false,
   },
   {
     name: "create enrollment",
@@ -31,6 +34,13 @@ export const ASSISTANT_ROUTING_EVAL_CASES: AssistantRoutingEvalCase[] = [
       "Enroll student ID student_123 into package package_123 with tutor tutor_123 and subject subject_123 starting 2026-08-10.",
     expectedNamespace: "enrollments",
     expectedTool: "create_enrollment",
+    requiredLookupGroups: [
+      ["students.get_student", "students.search_students"],
+      ["tutors.get_tutor", "tutors.search_tutors"],
+      ["catalog.get_package"],
+      ["catalog.list_subjects"],
+    ],
+    expectedConfirmation: false,
   },
   {
     name: "student balance",
@@ -57,6 +67,8 @@ export const ASSISTANT_ROUTING_EVAL_CASES: AssistantRoutingEvalCase[] = [
       "Create a weekly recurring schedule for enrollment ID enrollment_123 every Monday at 15:30 for 60 minutes, starting 2026-08-10.",
     expectedNamespace: "recurrence",
     expectedTool: "create_recurring_schedule",
+    requiredLookupGroups: [["enrollments.get_enrollment"]],
+    expectedConfirmation: false,
   },
   {
     name: "inspect enrollment schedule capacity",
@@ -78,6 +90,11 @@ export const ASSISTANT_ROUTING_EVAL_CASES: AssistantRoutingEvalCase[] = [
       "For session ID session_123, mark student ID student_123 completed and billable.",
     expectedNamespace: "schedule",
     expectedTool: "mark_attendance",
+    requiredLookupGroups: [
+      ["schedule.get_schedule"],
+      ["students.get_student", "students.search_students"],
+    ],
+    expectedConfirmation: false,
   },
   {
     name: "record payment",
@@ -85,6 +102,10 @@ export const ASSISTANT_ROUTING_EVAL_CASES: AssistantRoutingEvalCase[] = [
       "Record a $120 card payment on 2026-08-08 for student ID student_123.",
     expectedNamespace: "billing",
     expectedTool: "record_payment",
+    requiredLookupGroups: [
+      ["students.get_student", "students.search_students"],
+    ],
+    expectedConfirmation: true,
   },
   {
     name: "send payment reminder",
@@ -92,11 +113,14 @@ export const ASSISTANT_ROUTING_EVAL_CASES: AssistantRoutingEvalCase[] = [
       "Send the payment reminder for enrollment ID enrollment_123 for 2026-08.",
     expectedNamespace: "billing",
     expectedTool: "send_payment_reminder",
+    requiredLookupGroups: [["enrollments.get_enrollment"]],
+    expectedConfirmation: true,
   },
   {
     name: "invite staff",
     prompt: "Invite new staff member alex@example.com to the CRM team.",
     expectedNamespace: "team",
     expectedTool: "invite_team_member",
+    expectedConfirmation: true,
   },
 ];
