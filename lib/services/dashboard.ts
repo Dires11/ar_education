@@ -29,6 +29,7 @@ import {
 export async function getDashboardStats(options?: {
   materialize?: boolean;
   includeSessionDetails?: boolean;
+  includeScheduleAggregates?: boolean;
 }) {
   const now = new Date();
   const timeZone = getConfiguredCenterTimeZone();
@@ -102,9 +103,13 @@ export async function getDashboardStats(options?: {
       : getSessionsForDay(tomorrowStart, dayAfterTomorrowStart),
     getActiveStudentCount(),
     getUpcomingPackageEndings(today, 14),
-    getTutorSessionCountsThisWeek(week.start, week.endExclusive),
+    options?.includeScheduleAggregates === false
+      ? Promise.resolve([])
+      : getTutorSessionCountsThisWeek(week.start, week.endExclusive),
     getStudentsWithBalance(),
-    getWeeklySessionsByDay(week.start, week.endExclusive, timeZone),
+    options?.includeScheduleAggregates === false
+      ? Promise.resolve([])
+      : getWeeklySessionsByDay(week.start, week.endExclusive, timeZone),
     getMonthlyRevenue(revenueRanges),
   ]);
 

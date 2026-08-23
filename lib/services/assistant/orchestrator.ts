@@ -380,18 +380,46 @@ function collectPrimaryToolResultGrants(
     return [];
   }
   const data = wrappedData as Record<string, unknown>;
-  return collectAssistantIdentifierReferences(namespace, name, {
-    id: data.id,
-    studentId: data.studentId,
-    guardianId: data.guardianId,
-    paymentId: data.paymentId,
-    discountId: data.discountId,
-    sessionId: data.sessionId,
-    recurrenceRuleId: data.recurrenceRuleId,
-    recurrenceRuleIds: data.recurrenceRuleIds,
-    invitationId: data.invitationId,
-    adminId: data.adminId,
-  }).map(referenceGrant);
+  const grants: string[] = [];
+  const add = (kind: AssistantGrantKind, value: unknown) => {
+    if (typeof value === "string" && value.length > 0) {
+      grants.push(grantKey(kind, value));
+    }
+  };
+  const key = `${namespace}.${name}`;
+  if (namespace === "students") add("student", data.id);
+  if (namespace === "guardians") add("guardian", data.id ?? data.guardianId);
+  if (namespace === "tutors") add("tutor", data.id);
+  if (key === "catalog.create_subject" || key === "catalog.update_subject") {
+    add("subject", data.id);
+  }
+  if (key === "catalog.create_package" || key === "catalog.update_package") {
+    add("package", data.id);
+  }
+  if (
+    key === "enrollments.create_enrollment" ||
+    key === "enrollments.update_enrollment"
+  ) {
+    add("enrollment", data.id);
+  }
+  if (key === "enrollments.add_discount") add("discount", data.id);
+  if (key === "enrollments.rename_group") add("group", data.id);
+  if (namespace === "schedule") add("session", data.id ?? data.sessionId);
+  if (namespace === "recurrence") {
+    add("recurrence", data.recurrenceRuleId);
+    if (Array.isArray(data.recurrenceRuleIds)) {
+      data.recurrenceRuleIds.forEach((id) => add("recurrence", id));
+    }
+  }
+  if (namespace === "billing") add("payment", data.id ?? data.paymentId);
+  if (namespace === "communications" && name.includes("email_template")) {
+    add("emailTemplate", data.id);
+  }
+  if (namespace === "team") {
+    add("invitation", data.invitationId);
+    add("admin", data.adminId);
+  }
+  return [...new Set(grants)];
 }
 
 async function refreshAssistantSummary(
@@ -754,10 +782,29 @@ async function runModelLoop(input: {
         if (typeof studentId !== "string" || typeof guardianId !== "string") {
           return [];
         }
+        return [relationshipGrant("studentGuardianLink", studentId, guardianId)];
+      }
+      if (key === "attendance.get_session_participants") {
+        const sessionId = argumentsValue.sessionId;
+        if (typeof sessionId !== "string") return [];
+        const participants = Array.isArray(data?.participants)
+          ? data.participants
+          : [];
         return [
-          grantKey("student", studentId),
-          grantKey("guardian", guardianId),
-          relationshipGrant("studentGuardianLink", studentId, guardianId),
+          grantKey("session", sessionId),
+          ...participants.flatMap((participant) => {
+            if (
+              !participant ||
+              typeof participant !== "object" ||
+              Array.isArray(participant)
+            ) {
+              return [];
+            }
+            const studentId = (participant as Record<string, unknown>).studentId;
+            return typeof studentId === "string"
+              ? [relationshipGrant("sessionParticipant", sessionId, studentId)]
+              : [];
+          }),
         ];
       }
       if (key === "schedule.get_schedule" && argumentsValue.sessionId) {

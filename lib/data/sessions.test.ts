@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const prismaMock = vi.hoisted(() => ({
   recurrenceRule: { count: vi.fn(), findMany: vi.fn() },
   session: { count: vi.fn(), findMany: vi.fn(), findUnique: vi.fn() },
+  sessionAttendance: { count: vi.fn(), findMany: vi.fn() },
   $transaction: vi.fn(),
 }));
 
@@ -10,6 +11,7 @@ vi.mock("@/lib/prisma", () => ({ prisma: prismaMock }));
 
 import {
   getSessionForAssistant,
+  getSessionParticipantsForAssistant,
   getSessionsForAssistantMonth,
   getSessionsForAssistantRange,
   listRecurrenceRulesForAssistant,
@@ -32,6 +34,7 @@ describe("assistant recurrence lookup", () => {
       enrollmentId: "enrollment-1",
       includeEnded: false,
       calendarDate,
+      page: 1,
       limit: 20,
     });
 
@@ -54,6 +57,7 @@ describe("assistant recurrence lookup", () => {
       groupId: "group-1",
       includeEnded: true,
       calendarDate: new Date("2026-08-08T00:00:00.000Z"),
+      page: 1,
       limit: 5,
     });
 
@@ -74,13 +78,40 @@ describe("assistant recurrence lookup", () => {
         enrollmentId: "enrollment-1",
         includeEnded: false,
         calendarDate: new Date("2026-08-08T00:00:00.000Z"),
+        page: 1,
         limit: 1,
       }),
     ).resolves.toEqual({
       total: 3,
+      page: 1,
+      limit: 1,
       hasMore: true,
       rules: [{ id: "rule-1" }],
     });
+  });
+
+  it("pages recurrence rules without repeatedly returning the first page", async () => {
+    prismaMock.recurrenceRule.count.mockResolvedValue(12);
+    prismaMock.recurrenceRule.findMany.mockResolvedValue([{ id: "rule-6" }]);
+
+    await expect(
+      listRecurrenceRulesForAssistant({
+        enrollmentId: "enrollment-1",
+        includeEnded: false,
+        calendarDate: new Date("2026-08-08T00:00:00.000Z"),
+        page: 2,
+        limit: 5,
+      }),
+    ).resolves.toEqual({
+      total: 12,
+      page: 2,
+      limit: 5,
+      hasMore: true,
+      rules: [{ id: "rule-6" }],
+    });
+    expect(prismaMock.recurrenceRule.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ skip: 5, take: 5 }),
+    );
   });
 
   it("bounds monthly assistant sessions and omits participant contact data", async () => {
@@ -118,5 +149,53 @@ describe("assistant recurrence lookup", () => {
     expect(prismaMock.session.findUnique.mock.calls[0][0].select.attendance.take).toBe(
       100,
     );
+  });
+
+  it("pages and filters compact session participants for large attendance rosters", async () => {
+    prismaMock.session.findUnique.mockResolvedValue({ id: "session-1" });
+    prismaMock.sessionAttendance.count.mockResolvedValue(1);
+    prismaMock.sessionAttendance.findMany.mockResolvedValue([
+      {
+        studentId: "student-101",
+        enrollmentId: "enrollment-101",
+        status: "SCHEDULED",
+        billable: true,
+        student: {
+          id: "student-101",
+          firstName: "Ada",
+          lastName: "Lovelace",
+        },
+      },
+    ]);
+
+    await expect(
+      getSessionParticipantsForAssistant({
+        sessionId: "session-1",
+        studentId: "student-101",
+        page: 2,
+        limit: 100,
+      }),
+    ).resolves.toMatchObject({
+      sessionId: "session-1",
+      total: 1,
+      page: 2,
+      limit: 100,
+      hasMore: false,
+      participants: [
+        {
+          studentId: "student-101",
+          student: { firstName: "Ada", lastName: "Lovelace" },
+        },
+      ],
+    });
+
+    const query = prismaMock.sessionAttendance.findMany.mock.calls[0][0];
+    expect(query.where).toEqual({
+      sessionId: "session-1",
+      studentId: "student-101",
+    });
+    expect(query.skip).toBe(100);
+    expect(query.take).toBe(100);
+    expect(query.select.student.select).not.toHaveProperty("email");
   });
 });

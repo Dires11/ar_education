@@ -35,6 +35,7 @@ import {
   getCalendarDateInTimeZone,
   getCalendarDateKey,
   getCalendarMonthRange,
+  getCalendarWeekRange,
   getConfiguredCenterTimeZone,
   getEnrollmentWeekKey,
   getFirstMatchingDate,
@@ -57,6 +58,7 @@ import {
   assertEnrollmentHasMonthlyCapacity,
   getRecurringSchedulePreview,
 } from "@/lib/services/session-capacity";
+import { summarizeAssistantWeekSchedule } from "@/lib/services/assistant/schedule-summary";
 import {
   createAdHocSessionSchema,
   createRecurrenceSchema,
@@ -79,7 +81,7 @@ export type VirtualSession = {
   status: "VIRTUAL_UPCOMING" | "VIRTUAL_DEPLETED";
   room: string | null;
   color: string | null;
-  tutor: { firstName: string; lastName: string };
+  tutor: { id: string; firstName: string; lastName: string };
   subject: { name: string };
   attendance: Array<{ student: { firstName: string; lastName: string } }>;
   virtual: true;
@@ -477,6 +479,7 @@ export async function getVirtualSessionsForMonth(
           room: rule.room,
           color: rule.color ?? null,
           tutor: {
+            id: enrollment.tutor.id,
             firstName: enrollment.tutor.firstName,
             lastName: enrollment.tutor.lastName,
           },
@@ -552,6 +555,7 @@ export async function getVirtualSessionsForMonth(
           room: rule.room,
           color: rule.color ?? null,
           tutor: {
+            id: rule.group.tutor.id,
             firstName: rule.group.tutor.firstName,
             lastName: rule.group.tutor.lastName,
           },
@@ -1008,14 +1012,17 @@ export async function getDashboardScheduleForAssistant(limit = 50) {
     "00:00",
     timeZone,
   );
+  const week = getCalendarWeekRange(new Date(), timeZone);
   const monthKeys = [
     ...new Set([
       today.toISOString().slice(0, 7),
       tomorrow.toISOString().slice(0, 7),
+      week.calendarStart.toISOString().slice(0, 7),
+      week.calendarEnd.toISOString().slice(0, 7),
     ]),
   ];
 
-  const [todayReal, tomorrowReal, virtualByMonth] = await Promise.all([
+  const [todayReal, tomorrowReal, monthData] = await Promise.all([
     getSessionsForAssistantRange(todayStart, tomorrowStart, limit),
     getSessionsForAssistantRange(tomorrowStart, dayAfterTomorrowStart, limit),
     Promise.all(
@@ -1025,16 +1032,17 @@ export async function getDashboardScheduleForAssistant(limit = 50) {
           getAssistantSessionSlots(range.start, range.endExclusive),
           getRecurrenceRulesForMonth(range.calendarStart, range.calendarEnd),
         ]);
-        return getVirtualSessionsForMonth(
+        const virtual = await getVirtualSessionsForMonth(
           range.calendarStart,
           slots,
           rules,
           true,
         );
+        return { slots, virtual };
       }),
     ),
   ]);
-  const virtualSessions = virtualByMonth.flat();
+  const virtualSessions = monthData.flatMap((month) => month.virtual);
   const inRange = (session: VirtualSession, start: Date, end: Date) => {
     const scheduledFor = new Date(session.scheduledFor);
     return scheduledFor >= start && scheduledFor < end;
@@ -1085,6 +1093,33 @@ export async function getDashboardScheduleForAssistant(limit = 50) {
     return { total, hasMore: total > results.length, results };
   };
 
+  const realWeek = monthData
+    .flatMap((month) => month.slots)
+    .filter((session) => {
+      const scheduledFor = new Date(session.scheduledFor);
+      return (
+        scheduledFor >= week.start &&
+        scheduledFor < week.endExclusive &&
+        (session.status === "SCHEDULED" || session.status === "COMPLETED")
+      );
+    });
+  const virtualWeek = virtualSessions.filter((session) =>
+    inRange(session, week.start, week.endExclusive),
+  );
+  const weekSummary = summarizeAssistantWeekSchedule(
+    [
+      ...realWeek.map((session) => ({
+        scheduledFor: session.scheduledFor,
+        tutor: session.tutor,
+      })),
+      ...virtualWeek.map((session) => ({
+        scheduledFor: session.scheduledFor,
+        tutor: session.tutor,
+      })),
+    ],
+    timeZone,
+  );
+
   return {
     todaySessions: section(
       todayReal,
@@ -1098,6 +1133,8 @@ export async function getDashboardScheduleForAssistant(limit = 50) {
         inRange(session, tomorrowStart, dayAfterTomorrowStart),
       ),
     ),
+    tutorCounts: weekSummary.tutorCounts,
+    weeklySessionsByDay: weekSummary.weeklySessionsByDay,
   };
 }
 
@@ -1128,6 +1165,7 @@ export function listRecurrenceRulesForAssistant(input: {
   enrollmentId?: string;
   groupId?: string;
   includeEnded: boolean;
+  page: number;
   limit: number;
 }) {
   const calendarDate = getCalendarDateInTimeZone(

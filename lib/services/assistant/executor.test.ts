@@ -14,6 +14,13 @@ const sessionDataMocks = vi.hoisted(() => ({
   getRecurrenceRuleWithParticipants: vi.fn(),
   getSession: vi.fn(),
   getSessionForAssistant: vi.fn(),
+  getSessionParticipantsForAssistant: vi.fn(),
+}));
+const enrollmentServiceMocks = vi.hoisted(() => ({
+  createEnrollmentForStudent: vi.fn(),
+  updateEnrollmentStatus: vi.fn(),
+  addDiscountToEnrollment: vi.fn(),
+  removeDiscount: vi.fn(),
 }));
 const sessionServiceMocks = vi.hoisted(() => ({
   getEnrollmentMonthSummary: vi.fn(),
@@ -93,6 +100,8 @@ vi.mock("@/lib/services/students", () => ({
   updateStudentProfile: vi.fn(),
   updateStudentStatusById: vi.fn(),
 }));
+
+vi.mock("@/lib/services/enrollments", () => enrollmentServiceMocks);
 
 vi.mock("@/lib/services/sessions", () => ({
   cancelSessionById: vi.fn(),
@@ -905,6 +914,113 @@ describe("assistant tool result cards", () => {
     );
   });
 
+  it("returns compact enrollment data after a mutation", async () => {
+    enrollmentServiceMocks.updateEnrollmentStatus.mockResolvedValue({
+      id: "enrollment-1",
+      studentId: "student-1",
+      privateServiceField: "must-not-leak",
+    });
+    referenceDataMocks.getEnrollmentForAssistant.mockResolvedValue({
+      id: "enrollment-1",
+      status: "ACTIVE",
+      startDate: new Date("2026-08-24T00:00:00.000Z"),
+      endDate: null,
+      priceAtEnrollment: "240",
+      customPriceOverride: null,
+      studentId: "student-1",
+      tutorId: "tutor-1",
+      subjectId: "subject-1",
+      packageId: "package-1",
+      student: {
+        id: "student-1",
+        firstName: "Maya",
+        lastName: "Chen",
+        avatarUrl: null,
+      },
+      tutor: { id: "tutor-1", firstName: "Theo", lastName: "Grant" },
+      subject: { id: "subject-1", name: "Mathematics" },
+      package: {
+        id: "package-1",
+        name: "Private Math",
+        lessonType: "ONE_ON_ONE",
+      },
+      discounts: [],
+      _count: { discounts: 0, sessions: 0, payments: 0 },
+    });
+
+    const result = await executeAssistantTool({
+      namespace: "enrollments",
+      name: "update_enrollment",
+      argumentsValue: { id: "enrollment-1", status: "ACTIVE" },
+      context: {
+        admin: { id: "admin-1", role: "STAFF" },
+        provenanceValidated: true,
+      },
+    });
+
+    expect(referenceDataMocks.getEnrollmentForAssistant).toHaveBeenCalledWith(
+      "enrollment-1",
+    );
+    expect(referenceDataMocks.getEnrollment).not.toHaveBeenCalled();
+    expect(JSON.stringify(result)).not.toContain("privateServiceField");
+    expect(result).toMatchObject({
+      data: {
+        id: "enrollment-1",
+        student: { id: "student-1", firstName: "Maya" },
+        discountTotal: 0,
+        sessionTotal: 0,
+        paymentTotal: 0,
+      },
+      card: { kind: "ENROLLMENT", title: "Maya Chen · Mathematics" },
+    });
+  });
+
+  it("preserves compact participant rows for attendance provenance", async () => {
+    sessionDataMocks.getSessionParticipantsForAssistant.mockResolvedValue({
+      sessionId: "session-1",
+      total: 1,
+      page: 1,
+      limit: 100,
+      hasMore: false,
+      participants: [
+        {
+          studentId: "student-101",
+          enrollmentId: "enrollment-101",
+          status: "SCHEDULED",
+          billable: true,
+          student: {
+            id: "student-101",
+            firstName: "Ada",
+            lastName: "Lovelace",
+          },
+        },
+      ],
+    });
+
+    const result = await executeAssistantTool({
+      namespace: "attendance",
+      name: "get_session_participants",
+      argumentsValue: {
+        sessionId: "session-1",
+        studentId: "student-101",
+      },
+      context: { admin: { id: "admin-1", role: "STAFF" } },
+    });
+
+    expect(sessionDataMocks.getSessionParticipantsForAssistant).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      studentId: "student-101",
+      page: 1,
+      limit: 100,
+    });
+    expect(result).toMatchObject({
+      data: {
+        sessionId: "session-1",
+        participants: [{ studentId: "student-101" }],
+      },
+    });
+  });
+
   it("uses pure bounded schedule and dashboard reads", async () => {
     sessionServiceMocks.getMonthScheduleForAssistant.mockResolvedValue({
       month: "2026-08",
@@ -924,6 +1040,8 @@ describe("assistant tool result cards", () => {
     sessionServiceMocks.getDashboardScheduleForAssistant.mockResolvedValue({
       todaySessions: { total: 0, hasMore: false, results: [] },
       tomorrowSessions: { total: 0, hasMore: false, results: [] },
+      tutorCounts: [],
+      weeklySessionsByDay: [],
     });
 
     await executeAssistantTool({
@@ -945,6 +1063,7 @@ describe("assistant tool result cards", () => {
     expect(dashboardMocks.getDashboardStats).toHaveBeenCalledWith({
       materialize: false,
       includeSessionDetails: false,
+      includeScheduleAggregates: false,
     });
     expect(
       sessionServiceMocks.getDashboardScheduleForAssistant,
@@ -1067,6 +1186,7 @@ describe("assistant tool result cards", () => {
       enrollmentId: "enrollment-1",
       groupId: undefined,
       includeEnded: false,
+      page: 1,
       limit: 20,
     });
     expect(detailResult).toMatchObject({

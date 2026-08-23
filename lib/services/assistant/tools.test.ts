@@ -112,6 +112,29 @@ describe("assistant tool registry", () => {
     expect(assistantToolMutatesData(guardian)).toBe(false);
   });
 
+  it("supports filtered and pageable attendance participant verification", () => {
+    const lookup = getAssistantToolSpec(
+      "attendance",
+      "get_session_participants",
+      "STAFF",
+    )!;
+    expect(assistantToolMutatesData(lookup)).toBe(false);
+    expect(
+      lookup.schema.parse({ sessionId: "session-1" }),
+    ).toEqual({ sessionId: "session-1", page: 1, limit: 100 });
+    expect(
+      lookup.schema.safeParse({
+        sessionId: "session-1",
+        studentId: "student-101",
+        page: 2,
+        limit: 100,
+      }).success,
+    ).toBe(true);
+    expect(
+      lookup.schema.safeParse({ sessionId: "session-1", limit: 101 }).success,
+    ).toBe(false);
+  });
+
   it("does not expose internal avatar storage identifiers to the model", () => {
     for (const [namespace, name] of [
       ["students", "create_student"],
@@ -352,6 +375,7 @@ describe("assistant tool registry", () => {
     ).toEqual({
       enrollmentId: "enrollment-1",
       includeEnded: false,
+      page: 1,
       limit: 20,
     });
     expect(() => recurrenceList.schema.parse({})).toThrow();

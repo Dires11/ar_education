@@ -6,6 +6,7 @@ export type AssistantRoutingEvalCase = {
   acceptableAlternativeTools?: string[];
   requiredLookupGroups?: string[][];
   expectedConfirmation?: boolean;
+  trials?: number;
 };
 
 export const ASSISTANT_ROUTING_EVAL_CASES: AssistantRoutingEvalCase[] = [
@@ -85,6 +86,7 @@ export const ASSISTANT_ROUTING_EVAL_CASES: AssistantRoutingEvalCase[] = [
       "Before creating anything, preview a weekly schedule for enrollment ID enrollment_123 every Monday at 15:30 for 60 minutes starting 2026-08-10.",
     expectedNamespace: "schedule",
     expectedTool: "preview_recurring_schedule",
+    trials: 3,
   },
   {
     name: "mark attendance",
@@ -92,7 +94,10 @@ export const ASSISTANT_ROUTING_EVAL_CASES: AssistantRoutingEvalCase[] = [
       "For session ID session_123, mark student ID student_123 completed and billable.",
     expectedNamespace: "schedule",
     expectedTool: "mark_attendance",
-    requiredLookupGroups: [["schedule.get_schedule"]],
+    requiredLookupGroups: [[
+      "schedule.get_schedule",
+      "attendance.get_session_participants",
+    ]],
     expectedConfirmation: false,
   },
   {

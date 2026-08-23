@@ -1357,6 +1357,171 @@ describe("assistant orchestration", () => {
     );
   });
 
+  it("does not authorize a student mutation from a guardian relationship lookup", async () => {
+    responses.queue.push(
+      {
+        events: [],
+        final: {
+          output_text: "",
+          output: [{
+            type: "function_call",
+            namespace: "guardians",
+            name: "get_guardian",
+            call_id: "call-guardian-no-student-grant",
+            arguments: JSON.stringify({
+              studentId: "student-1",
+              guardianId: "guardian-1",
+            }),
+          }],
+          usage,
+        },
+      },
+      {
+        events: [],
+        final: {
+          output_text: "",
+          output: [{
+            type: "function_call",
+            namespace: "students",
+            name: "update_student",
+            call_id: "call-update-unverified-student",
+            arguments: JSON.stringify({
+              id: "student-1",
+              school: "North High",
+            }),
+          }],
+          usage,
+        },
+      },
+      {
+        events: [],
+        final: {
+          output_text: "I need to inspect the student record first.",
+          output: [],
+          usage,
+        },
+      },
+    );
+    dataMocks.createOrGetAssistantToolRun.mockResolvedValue({
+      id: "tool-guardian-no-student-grant",
+      runId: "run-1",
+      callId: "call-guardian-no-student-grant",
+      namespace: "guardians",
+      toolName: "get_guardian",
+      arguments: { studentId: "student-1", guardianId: "guardian-1" },
+      status: "RUNNING",
+      requiresConfirmation: false,
+    });
+    executeMock.mockResolvedValue({
+      ok: true,
+      data: { studentId: "student-1", guardianId: "guardian-1" },
+    });
+
+    await processAssistantTurn(
+      { id: "admin-1", role: "STAFF" },
+      {
+        clientTurnId: "cd86d71b-fbe0-48cc-91c3-20922cbfac19",
+        message: "Inspect the guardian, then update the linked student.",
+      },
+      () => undefined,
+    );
+
+    expect(executeMock).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(responses.requests.at(-1)?.input)).toContain(
+      "mutation targets were not established",
+    );
+  });
+
+  it("does not authorize a foreign student ID returned by an enrollment mutation", async () => {
+    responses.queue.push(
+      {
+        events: [],
+        final: {
+          output_text: "",
+          output: [{
+            type: "function_call",
+            namespace: "enrollments",
+            name: "get_enrollment",
+            call_id: "call-enrollment-exact",
+            arguments: JSON.stringify({ id: "enrollment-1" }),
+          }],
+          usage,
+        },
+      },
+      {
+        events: [],
+        final: {
+          output_text: "",
+          output: [{
+            type: "function_call",
+            namespace: "enrollments",
+            name: "update_enrollment",
+            call_id: "call-enrollment-update",
+            arguments: JSON.stringify({ id: "enrollment-1", status: "ACTIVE" }),
+          }],
+          usage,
+        },
+      },
+      {
+        events: [],
+        final: {
+          output_text: "",
+          output: [{
+            type: "function_call",
+            namespace: "students",
+            name: "update_student",
+            call_id: "call-foreign-student-update",
+            arguments: JSON.stringify({
+              id: "student-foreign",
+              school: "North High",
+            }),
+          }],
+          usage,
+        },
+      },
+      {
+        events: [],
+        final: {
+          output_text: "I need to inspect that student first.",
+          output: [],
+          usage,
+        },
+      },
+    );
+    dataMocks.createOrGetAssistantToolRun.mockImplementation(async (tool) => ({
+      ...tool,
+      id: `tool-${tool.callId}`,
+      status: "RUNNING",
+    }));
+    executeMock
+      .mockResolvedValueOnce({
+        ok: true,
+        data: { id: "enrollment-1", studentId: "student-foreign" },
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        data: {
+          id: "enrollment-1",
+          studentId: "student-foreign",
+          status: "ACTIVE",
+        },
+      });
+
+    await processAssistantTurn(
+      { id: "admin-1", role: "STAFF" },
+      {
+        clientTurnId: "d6a92b60-e478-4d92-86fe-af5d22f18b05",
+        message: "Update the enrollment and then its student.",
+      },
+      () => undefined,
+    );
+
+    expect(executeMock).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(responses.requests.at(-1)?.input)).toContain(
+      "mutation targets were not established",
+    );
+  });
+
   it("grants all inspected session participants for one attendance mutation", async () => {
     const attendances = Array.from({ length: 20 }, (_, index) => ({
       studentId: `student-${index + 1}`,
@@ -1416,6 +1581,87 @@ describe("assistant orchestration", () => {
       {
         clientTurnId: "7df09199-7bdf-417a-97ac-77a10a8d0837",
         message: "Mark all 20 listed students completed and billable.",
+      },
+      () => undefined,
+    );
+
+    expect(executeMock).toHaveBeenCalledTimes(2);
+    expect(executeMock.mock.calls[1][0]).toEqual(
+      expect.objectContaining({ namespace: "schedule", name: "mark_attendance" }),
+    );
+  });
+
+  it("authorizes attendance for a participant found beyond the first session page", async () => {
+    responses.queue.push(
+      {
+        events: [],
+        final: {
+          output_text: "",
+          output: [{
+            type: "function_call",
+            namespace: "attendance",
+            name: "get_session_participants",
+            call_id: "call-participant-page-two",
+            arguments: JSON.stringify({
+              sessionId: "session-1",
+              studentId: "student-101",
+              page: 1,
+              limit: 100,
+            }),
+          }],
+          usage,
+        },
+      },
+      {
+        events: [],
+        final: {
+          output_text: "",
+          output: [{
+            type: "function_call",
+            namespace: "schedule",
+            name: "mark_attendance",
+            call_id: "call-participant-page-two-attendance",
+            arguments: JSON.stringify({
+              sessionId: "session-1",
+              attendances: [{
+                studentId: "student-101",
+                status: "COMPLETED",
+                billable: true,
+              }],
+            }),
+          }],
+          usage,
+        },
+      },
+      {
+        events: [],
+        final: { output_text: "Attendance saved.", output: [], usage },
+      },
+    );
+    dataMocks.createOrGetAssistantToolRun.mockImplementation(async (tool) => ({
+      ...tool,
+      id: `tool-${tool.callId}`,
+      status: "RUNNING",
+    }));
+    executeMock
+      .mockResolvedValueOnce({
+        ok: true,
+        data: {
+          sessionId: "session-1",
+          total: 1,
+          page: 1,
+          limit: 100,
+          hasMore: false,
+          participants: [{ studentId: "student-101" }],
+        },
+      })
+      .mockResolvedValueOnce({ ok: true, data: { sessionId: "session-1" } });
+
+    await processAssistantTurn(
+      { id: "admin-1", role: "STAFF" },
+      {
+        clientTurnId: "d9092827-d86d-4314-bdc1-785ab752388d",
+        message: "Mark student 101 completed and billable.",
       },
       () => undefined,
     );

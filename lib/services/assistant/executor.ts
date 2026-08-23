@@ -39,6 +39,7 @@ import {
   getRecurrenceRuleWithParticipants,
   getSession as getSessionData,
   getSessionForAssistant,
+  getSessionParticipantsForAssistant,
 } from "@/lib/data/sessions";
 import {
   getEmailTemplate,
@@ -2274,11 +2275,18 @@ async function executeEnrollments(name: string, args: ToolArguments) {
       const created = await createEnrollmentForStudent(args as never);
       const href = `/enrollments?enrollment=${created.id}`;
       return resultAfterMutation({ id: created.id }, href, async () => {
-        const enrollment = await getEnrollment(created.id);
-        if (!enrollment)
+        const result = await getEnrollmentForAssistant(created.id);
+        if (!result)
           throw new Error("Created enrollment could not be loaded");
+        const { _count, ...enrollment } = result;
         return toolResult(
-          enrollment,
+          {
+            ...enrollment,
+            discountTotal: _count.discounts,
+            sessionTotal: _count.sessions,
+            paymentTotal: _count.payments,
+            hasMoreDiscounts: _count.discounts > enrollment.discounts.length,
+          },
           href,
           enrollmentResultCard(enrollment, "Enrollment created"),
         );
@@ -2293,11 +2301,18 @@ async function executeEnrollments(name: string, args: ToolArguments) {
       });
       const href = `/enrollments?enrollment=${id}`;
       return resultAfterMutation({ id: updated.id }, href, async () => {
-        const enrollment = await getEnrollment(updated.id);
-        if (!enrollment)
+        const result = await getEnrollmentForAssistant(updated.id);
+        if (!result)
           throw new Error("Updated enrollment could not be loaded");
+        const { _count, ...enrollment } = result;
         return toolResult(
-          enrollment,
+          {
+            ...enrollment,
+            discountTotal: _count.discounts,
+            sessionTotal: _count.sessions,
+            paymentTotal: _count.payments,
+            hasMoreDiscounts: _count.discounts > enrollment.discounts.length,
+          },
           href,
           enrollmentResultCard(enrollment, "Enrollment updated"),
         );
@@ -2493,6 +2508,7 @@ async function executeRecurrence(name: string, args: ToolArguments) {
         enrollmentId,
         groupId,
         includeEnded: Boolean(args.includeEnded),
+        page: Number(args.page),
         limit: Number(args.limit),
       });
       return toolResult(rules, "/schedule");
@@ -2637,6 +2653,21 @@ async function executeRecurrence(name: string, args: ToolArguments) {
     default:
       throw new Error(`Unknown recurrence tool: ${name}`);
   }
+}
+
+async function executeAttendance(name: string, args: ToolArguments) {
+  if (name !== "get_session_participants") {
+    throw new Error(`Unknown attendance tool: ${name}`);
+  }
+  const sessionId = stringValue(args, "sessionId");
+  const result = await getSessionParticipantsForAssistant({
+    sessionId,
+    studentId: args.studentId as string | undefined,
+    page: Number(args.page),
+    limit: Number(args.limit),
+  });
+  if (!result) throw new Error("Session not found");
+  return toolResult(result, "/schedule");
 }
 
 async function executeBilling(
@@ -3023,6 +3054,8 @@ export async function executeAssistantTool(input: {
       return executeEnrollments(input.name, args);
     case "schedule":
       return executeSchedule(input.name, args);
+    case "attendance":
+      return executeAttendance(input.name, args);
     case "recurrence":
       return executeRecurrence(input.name, args);
     case "billing":
@@ -3036,6 +3069,7 @@ export async function executeAssistantTool(input: {
         getDashboardStats({
           materialize: false,
           includeSessionDetails: false,
+          includeScheduleAggregates: false,
         }),
         getDashboardScheduleForAssistant(),
       ]);
@@ -3063,12 +3097,12 @@ export async function executeAssistantTool(input: {
               endDate: enrollment.endDate,
             }),
           ),
-          tutorCounts: bounded(dashboard.tutorCounts, (tutor) => tutor),
+          tutorCounts: bounded(schedule.tutorCounts, (tutor) => tutor),
           unpaidStudents: bounded(
             dashboard.unpaidStudents,
             (student) => student,
           ),
-          weeklySessionsByDay: dashboard.weeklySessionsByDay,
+          weeklySessionsByDay: schedule.weeklySessionsByDay,
           monthlyRevenue: dashboard.monthlyRevenue,
         },
         "/dashboard",

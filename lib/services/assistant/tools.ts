@@ -88,6 +88,7 @@ const recurringScheduleLookupSchema = z
     enrollmentId: idSchema.optional(),
     groupId: idSchema.optional(),
     includeEnded: z.boolean().default(false),
+    page: z.number().int().min(1).max(10_000).default(1),
     limit: z.number().int().min(1).max(20).default(20),
   })
   .refine(
@@ -118,6 +119,7 @@ const ASSISTANT_READ_ONLY_TOOL_KEYS = new Set([
   "schedule.get_schedule",
   "schedule.get_enrollment_capacity",
   "schedule.preview_recurring_schedule",
+  "attendance.get_session_participants",
   "recurrence.list_recurring_schedules",
   "recurrence.get_recurring_schedule",
   "billing.get_student_balance",
@@ -484,7 +486,7 @@ const toolSpecs: AssistantToolSpec[] = [
     namespace: "schedule",
     name: "preview_recurring_schedule",
     description:
-      "Preview a complete recurring schedule proposal without writing it. Returns package limits, proposed and materializable sessions, and a suggested end date when applicable.",
+      "Required for preview/check/simulate requests: preview a complete recurring schedule proposal without writing it after the enrollment or group lookup. Never answer a preview request from enrollment details alone. Returns package limits, proposed and materializable sessions, and a suggested end date when applicable.",
     schema: createRecurrenceSchema,
     requiresConfirmation: false,
   },
@@ -555,10 +557,23 @@ const toolSpecs: AssistantToolSpec[] = [
     requiresConfirmation: true,
   },
   {
+    namespace: "attendance",
+    name: "get_session_participants",
+    description:
+      "Verify session-scoped participants for attendance. Filter by an exact student ID or page through up to 100 participants; returned students are authorized only for attendance on this session.",
+    schema: z.object({
+      sessionId: idSchema,
+      studentId: idSchema.optional(),
+      page: z.number().int().min(1).max(10_000).default(1),
+      limit: z.number().int().min(1).max(100).default(100),
+    }),
+    requiresConfirmation: false,
+  },
+  {
     namespace: "recurrence",
     name: "list_recurring_schedules",
     description:
-      "List bounded current and future recurring-schedule candidates for exactly one known enrollment or group. Optionally include ended rules. Always inspect the chosen rule with get_recurring_schedule before occurrence, series, or deletion changes.",
+      "Page through bounded current and future recurring-schedule candidates for exactly one known enrollment or group. Use total, page, and hasMore to continue until the intended rule is found. Optionally include ended rules. Always inspect the chosen rule with get_recurring_schedule before occurrence, series, or deletion changes.",
     schema: recurringScheduleLookupSchema,
     requiresConfirmation: false,
   },

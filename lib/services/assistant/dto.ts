@@ -185,6 +185,7 @@ const ALLOWED_ASSISTANT_FIELDS = new Set([
   "sessionAttendance",
   "attendance",
   "attendances",
+  "participants",
   "payments",
   "payment",
   "dues",

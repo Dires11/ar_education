@@ -110,10 +110,12 @@ export function getAssistantSessionSlots(
     where: { scheduledFor: { gte: rangeStart, lt: rangeEndExclusive } },
     select: {
       enrollmentId: true,
+      tutorId: true,
       scheduledFor: true,
       status: true,
       recurrenceRuleId: true,
       recurrenceOccurrenceFor: true,
+      tutor: { select: { id: true, firstName: true, lastName: true } },
     },
     orderBy: { scheduledFor: "asc" },
   });
@@ -187,6 +189,49 @@ export async function getSessionForAssistant(id: string) {
       },
     },
   });
+}
+
+export async function getSessionParticipantsForAssistant(input: {
+  sessionId: string;
+  studentId?: string;
+  page: number;
+  limit: number;
+}) {
+  const where = {
+    sessionId: input.sessionId,
+    ...(input.studentId ? { studentId: input.studentId } : {}),
+  };
+  const [session, total, participants] = await Promise.all([
+    prisma.session.findUnique({
+      where: { id: input.sessionId },
+      select: { id: true },
+    }),
+    prisma.sessionAttendance.count({ where }),
+    prisma.sessionAttendance.findMany({
+      where,
+      select: {
+        studentId: true,
+        enrollmentId: true,
+        status: true,
+        billable: true,
+        student: {
+          select: { id: true, firstName: true, lastName: true },
+        },
+      },
+      orderBy: { studentId: "asc" },
+      skip: (input.page - 1) * input.limit,
+      take: input.limit,
+    }),
+  ]);
+  if (!session) return null;
+  return {
+    sessionId: session.id,
+    total,
+    page: input.page,
+    limit: input.limit,
+    hasMore: input.page * input.limit < total,
+    participants,
+  };
 }
 
 export async function getSession(id: string) {
@@ -359,6 +404,7 @@ export async function listRecurrenceRulesForAssistant(input: {
   groupId?: string;
   includeEnded: boolean;
   calendarDate: Date;
+  page: number;
   limit: number;
 }) {
   const where = {
@@ -404,10 +450,17 @@ export async function listRecurrenceRulesForAssistant(input: {
       },
       },
       orderBy: [{ updatedAt: "desc" }, { dayOfWeek: "asc" }],
+      skip: (input.page - 1) * input.limit,
       take: input.limit,
     }),
   ]);
-  return { total, hasMore: total > rules.length, rules };
+  return {
+    total,
+    page: input.page,
+    limit: input.limit,
+    hasMore: input.page * input.limit < total,
+    rules,
+  };
 }
 
 export async function createSession(data: {

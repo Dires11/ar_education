@@ -1,6 +1,10 @@
 import "dotenv/config";
 import OpenAI from "openai";
-import type { ResponseInputItem } from "openai/resources/responses/responses";
+import type {
+  Response,
+  ResponseCreateParamsNonStreaming,
+  ResponseInputItem,
+} from "openai/resources/responses/responses";
 import { ASSISTANT_MODEL } from "@/lib/services/assistant/config";
 import { ASSISTANT_ROUTING_EVAL_CASES } from "@/lib/services/assistant/evals";
 import { getAssistantInstructions } from "@/lib/services/assistant/instructions";
@@ -138,8 +142,50 @@ function simulatedLookupResult(
       ok: true,
       data: {
         id: stringArgument(args, "sessionId", "session_123"),
-        studentIds: ["student_123"],
         status: "SCHEDULED",
+        attendance: [
+          {
+            studentId: "student_123",
+            status: "SCHEDULED",
+            billable: true,
+            student: {
+              id: "student_123",
+              firstName: "Maya",
+              lastName: "Thompson",
+            },
+          },
+        ],
+        attendanceTotal: 1,
+        hasMoreAttendance: false,
+      },
+    };
+  }
+  if (namespace === "attendance" && name === "get_session_participants") {
+    const requestedStudentId = stringArgument(
+      args,
+      "studentId",
+      "student_123",
+    );
+    return {
+      ok: true,
+      data: {
+        sessionId: stringArgument(args, "sessionId", "session_123"),
+        total: 1,
+        page: 1,
+        limit: 100,
+        hasMore: false,
+        participants: [
+          {
+            studentId: requestedStudentId,
+            status: "SCHEDULED",
+            billable: true,
+            student: {
+              id: requestedStudentId,
+              firstName: "Maya",
+              lastName: "Thompson",
+            },
+          },
+        ],
       },
     };
   }
@@ -150,6 +196,46 @@ function simulatedLookupResult(
     };
   }
   return { ok: true, data: [] };
+}
+
+async function createEvaluationResponse(
+  client: OpenAI,
+  request: ResponseCreateParamsNonStreaming,
+): Promise<Response> {
+  for (let attempt = 1; attempt <= 4; attempt += 1) {
+    try {
+      return await client.responses.create(request);
+    } catch (error) {
+      const status =
+        error && typeof error === "object" && "status" in error
+          ? (error as { status?: unknown }).status
+          : undefined;
+      if (status !== 429 || attempt === 4) throw error;
+      await new Promise((resolve) => setTimeout(resolve, attempt * 1_500));
+    }
+  }
+  throw new Error("Assistant evaluation retry loop exited unexpectedly");
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  mapItem: (item: T) => Promise<R>,
+) {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const workers = Array.from(
+    { length: Math.min(concurrency, items.length) },
+    async () => {
+      while (nextIndex < items.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        results[index] = await mapItem(items[index]);
+      }
+    },
+  );
+  await Promise.all(workers);
+  return results;
 }
 
 async function evaluateCase(
@@ -172,7 +258,7 @@ async function evaluateCase(
   let failure: string | null = null;
 
   for (let step = 1; step <= 12 && !failure; step += 1) {
-    const response = await client.responses.create({
+    const response = await createEvaluationResponse(client, {
       model: ASSISTANT_MODEL,
       instructions: getAssistantInstructions("OWNER"),
       input,
@@ -257,8 +343,19 @@ async function main() {
   }
 
   const client = new OpenAI();
-  const results = await Promise.all(
-    ASSISTANT_ROUTING_EVAL_CASES.map((item) => evaluateCase(client, item)),
+  const evaluationItems = ASSISTANT_ROUTING_EVAL_CASES.flatMap((item) =>
+    Array.from({ length: item.trials ?? 1 }, (_, index) => ({
+      ...item,
+      name:
+        (item.trials ?? 1) > 1
+          ? `${item.name} (trial ${index + 1}/${item.trials})`
+          : item.name,
+    })),
+  );
+  const results = await mapWithConcurrency(
+    evaluationItems,
+    3,
+    (item) => evaluateCase(client, item),
   );
 
   for (const result of results) console.log(JSON.stringify(result));
