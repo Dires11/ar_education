@@ -76,6 +76,7 @@ describe("payment persistence", () => {
       enrollmentId: "enrollment-1",
       coversMonth: "2026-08",
       amountDue: new Prisma.Decimal(100),
+      expectedOutstandingAmount: "80",
       idempotencyKey: "tool-run-2",
     });
 
@@ -116,11 +117,41 @@ describe("payment persistence", () => {
         enrollmentId: "enrollment-1",
         coversMonth: "2026-08",
         amountDue: new Prisma.Decimal(100),
+        expectedOutstandingAmount: "80",
         idempotencyKey: "tool-run-existing",
       }),
     ).resolves.toBe(existing);
 
     expect(tx.payment.aggregate).not.toHaveBeenCalled();
+    expect(tx.payment.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects approval when the outstanding amount changed", async () => {
+    const tx = {
+      $queryRaw: vi.fn().mockResolvedValue([]),
+      payment: {
+        findUnique: vi.fn().mockResolvedValue(null),
+        aggregate: vi.fn().mockResolvedValue({
+          _sum: { amount: new Prisma.Decimal(30) },
+        }),
+        create: vi.fn(),
+      },
+    };
+    prismaMock.$transaction.mockImplementation(
+      (callback: (client: typeof tx) => unknown) => callback(tx),
+    );
+
+    await expect(
+      createOutstandingPaymentForPeriod({
+        ...paymentInput,
+        enrollmentId: "enrollment-1",
+        coversMonth: "2026-08",
+        amountDue: new Prisma.Decimal(100),
+        expectedOutstandingAmount: "80",
+        idempotencyKey: "tool-run-stale",
+      }),
+    ).rejects.toThrow("changed from $80.00 to $70.00");
+
     expect(tx.payment.create).not.toHaveBeenCalled();
   });
 });

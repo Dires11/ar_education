@@ -296,13 +296,7 @@ export async function createRecurringSchedule(input: CreateRecurrenceInput) {
   const rules = await createRecurrenceRules(
     daysOfWeek.map((dayOfWeek) => {
       const dayKey = String(dayOfWeek) as
-        | "0"
-        | "1"
-        | "2"
-        | "3"
-        | "4"
-        | "5"
-        | "6";
+        "0" | "1" | "2" | "3" | "4" | "5" | "6";
       return {
         enrollmentId: ruleEnrollmentId,
         groupId: ruleGroupId,
@@ -320,26 +314,41 @@ export async function createRecurringSchedule(input: CreateRecurrenceInput) {
   );
 
   const now = new Date();
+  const through = addDays(now, 30);
+  const recurrenceRuleIds = rules.map((rule) => rule.id);
+  const materializationTasks: Array<() => Promise<number>> = [];
   if (isBefore(startsOn, now)) {
-    await materializeSessions(startsOn, now, {
-      recurrenceRuleIds: rules.map((r) => r.id),
-    });
-    await materializeGroupSessions(startsOn, now, {
-      recurrenceRuleIds: rules.map((r) => r.id),
-    });
+    materializationTasks.push(
+      () => materializeSessions(startsOn, now, { recurrenceRuleIds }),
+      () => materializeGroupSessions(startsOn, now, { recurrenceRuleIds }),
+    );
   }
-  const materializedSessions = await materializeSessions(
-    now,
-    addDays(now, 30),
-    {
-      recurrenceRuleIds: rules.map((rule) => rule.id),
-    },
+  materializationTasks.push(
+    () => materializeSessions(now, through, { recurrenceRuleIds }),
+    () => materializeGroupSessions(now, through, { recurrenceRuleIds }),
   );
-  await materializeGroupSessions(now, addDays(now, 30), {
-    recurrenceRuleIds: rules.map((rule) => rule.id),
-  });
 
-  return { rulesCreated: rules.length, materializedSessions, preview };
+  let materializedSessions = 0;
+  let materializationFailures = 0;
+  for (const materialize of materializationTasks) {
+    try {
+      materializedSessions += await materialize();
+    } catch {
+      materializationFailures += 1;
+    }
+  }
+
+  return {
+    rulesCreated: rules.length,
+    materializedSessions,
+    preview,
+    warnings:
+      materializationFailures > 0
+        ? [
+            "The recurring schedule was created, but some upcoming sessions could not be prepared yet. They will be retried by schedule maintenance.",
+          ]
+        : [],
+  };
 }
 
 // ─── Virtual sessions ─────────────────────────────────────────────────────────

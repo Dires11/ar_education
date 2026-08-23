@@ -18,6 +18,7 @@ const sessionServiceMocks = vi.hoisted(() => ({
   listRecurrenceRulesForAssistant: vi.fn(),
 }));
 const paymentServiceMocks = vi.hoisted(() => ({
+  getPaymentDueQuote: vi.fn(),
   getStudentBalance: vi.fn(),
   recordPayment: vi.fn(),
   recordPaymentForDue: vi.fn(),
@@ -68,6 +69,7 @@ vi.mock("@/lib/services/sessions", () => ({
 
 vi.mock("@/lib/services/payments", () => ({
   deletePaymentById: vi.fn(),
+  getPaymentDueQuote: paymentServiceMocks.getPaymentDueQuote,
   getStudentBalance: paymentServiceMocks.getStudentBalance,
   getPaymentStats: vi.fn(),
   getUpcomingPaymentDues: vi.fn(),
@@ -87,6 +89,7 @@ vi.mock("@/lib/services/emails", () => ({
 import {
   executeAssistantTool,
   getAssistantConfirmationCard,
+  resolveAssistantConfirmationArguments,
 } from "@/lib/services/assistant/executor";
 
 describe("assistant tool result cards", () => {
@@ -180,6 +183,34 @@ describe("assistant tool result cards", () => {
       subtitle: "Student selected for permanent deletion",
       href: "/students?student=student-1",
     });
+  });
+
+  it("replaces a model-supplied due amount with the current outstanding amount", async () => {
+    paymentServiceMocks.getPaymentDueQuote.mockResolvedValue({
+      confirmationArguments: {
+        enrollmentId: "enrollment-1",
+        studentId: "student-1",
+        amount: "87.50",
+        method: "CARD",
+        month: "2026-08",
+      },
+    });
+
+    await expect(
+      resolveAssistantConfirmationArguments({
+        namespace: "billing",
+        name: "mark_due_paid",
+        argumentsValue: {
+          enrollmentId: "enrollment-1",
+          studentId: "student-1",
+          amount: "120",
+          method: "CARD",
+          month: "2026-08",
+        },
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({ amount: "87.50", month: "2026-08" }),
+    );
   });
 
   it("shows the guardian, not a database ID, for relationship removal", async () => {

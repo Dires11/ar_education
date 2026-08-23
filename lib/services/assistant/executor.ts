@@ -89,6 +89,7 @@ import {
   getPaymentStats,
   sendPaymentReminderEmail,
   getStudentBalance,
+  getPaymentDueQuote,
 } from "@/lib/services/payments";
 import {
   createTemplate,
@@ -121,6 +122,18 @@ export type AssistantToolExecutionContext = {
   admin: Pick<Admin, "id" | "role">;
   idempotencyKey?: string;
 };
+
+export async function resolveAssistantConfirmationArguments(input: {
+  namespace: string;
+  name: string;
+  argumentsValue: Record<string, unknown>;
+}) {
+  if (input.namespace === "billing" && input.name === "mark_due_paid") {
+    const quote = await getPaymentDueQuote(input.argumentsValue);
+    return quote.confirmationArguments as Record<string, unknown>;
+  }
+  return input.argumentsValue;
+}
 
 function safeJson<T>(value: T) {
   return JSON.parse(JSON.stringify(value)) as unknown;
@@ -1028,6 +1041,14 @@ export async function getAssistantConfirmationCard(input: {
     const studentId = value("studentId");
     if (!studentId) return undefined;
     const student = await getStudentData(studentId);
+    if (name === "mark_due_paid") {
+      return student
+        ? studentResultCard(
+            student,
+            `Record ${formatMoney(value("amount"))} for ${value("month") ?? "the billing period"}`,
+          )
+        : undefined;
+    }
     return student
       ? studentResultCard(student, "Payment action for this student")
       : undefined;
@@ -1509,10 +1530,8 @@ async function executeCatalog(name: string, args: ToolArguments) {
           (args.type as "MONTHLY" | "PER_SESSION" | undefined) ?? current.type,
         billingPeriod:
           (args.billingPeriod as
-            | "MONTHLY"
-            | "THREE_MONTHS"
-            | "YEARLY"
-            | undefined) ?? current.billingPeriod,
+            "MONTHLY" | "THREE_MONTHS" | "YEARLY" | undefined) ??
+          current.billingPeriod,
         lessonType:
           (args.lessonType as "PRIVATE" | "GROUP" | undefined) ??
           current.lessonType,

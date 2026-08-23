@@ -19,6 +19,7 @@ import {
   createAssistantTurn,
   createOrGetAssistantToolRun,
   expireAssistantRuns,
+  getAssistantThreadMessageCount,
   recordAssistantModelStep,
   rejectAssistantToolRun,
 } from "@/lib/data/assistant";
@@ -48,6 +49,20 @@ describe("assistant persistence guarantees", () => {
         update: {},
       }),
     );
+  });
+
+  it("scopes authoritative thread message counts to the administrator", async () => {
+    prismaMock.assistantThread.findFirst.mockResolvedValue({
+      _count: { messages: 7 },
+    });
+
+    await expect(
+      getAssistantThreadMessageCount("admin-1", "thread-1"),
+    ).resolves.toBe(7);
+    expect(prismaMock.assistantThread.findFirst).toHaveBeenCalledWith({
+      where: { id: "thread-1", adminId: "admin-1" },
+      select: { _count: { select: { messages: true } } },
+    });
   });
 
   it("checks active runs inside a serializable transaction", async () => {
@@ -106,6 +121,10 @@ describe("assistant persistence guarantees", () => {
     };
     const restartedRun = { ...failedRun, status: "RUNNING" };
     const tx = {
+      assistantMessage: {
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        count: vi.fn().mockResolvedValue(1),
+      },
       assistantRun: {
         findUnique: vi.fn().mockResolvedValue(failedRun),
         findUniqueOrThrow: vi.fn().mockResolvedValue(failedRun),
@@ -139,6 +158,7 @@ describe("assistant persistence guarantees", () => {
       thread,
       run: restartedRun,
       duplicate: false,
+      messageCount: 1,
     });
 
     expect(tx.assistantRun.update).toHaveBeenCalledWith({
@@ -146,12 +166,20 @@ describe("assistant persistence guarantees", () => {
       data: {
         status: "RUNNING",
         error: null,
+        hasAttachments: false,
         completedAt: null,
       },
       include: {
         thread: true,
         messages: true,
         toolRuns: true,
+      },
+    });
+    expect(tx.assistantMessage.updateMany).toHaveBeenCalledWith({
+      where: { runId: "run-1", role: "USER" },
+      data: {
+        content: "Retry this request",
+        attachments: expect.anything(),
       },
     });
   });

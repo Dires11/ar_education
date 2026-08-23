@@ -188,6 +188,7 @@ const ALLOWED_ASSISTANT_FIELDS = new Set([
   "lastMonth",
   "allTime",
   "results",
+  "warnings",
 ]);
 
 export function minimizeAssistantDto(value: unknown): unknown {

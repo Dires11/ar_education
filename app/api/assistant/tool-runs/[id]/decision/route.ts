@@ -15,6 +15,12 @@ export async function POST(
     const input = assistantDecisionSchema.parse(await request.json());
     return streamAssistantDecision(admin, id, input.decision, request.signal);
   } catch (error) {
+    if (error instanceof SyntaxError) {
+      return Response.json(
+        { error: "Invalid confirmation decision: malformed JSON" },
+        { status: 400 },
+      );
+    }
     if (error instanceof z.ZodError) {
       return Response.json(
         { error: "Invalid confirmation decision", issues: error.issues },

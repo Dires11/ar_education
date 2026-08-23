@@ -9,6 +9,7 @@ import {
   getActiveSubscriptionEnrollments,
   getEnrollmentForPaymentReminder,
   getEnrollmentPaymentDue,
+  getEnrollmentPaymentDueQuote,
   createOutstandingPaymentForPeriod,
 } from "@/lib/data/payments";
 import {
@@ -106,8 +107,28 @@ export async function recordPaymentForDue(
   recordedById: string,
   idempotencyKey?: string,
 ) {
+  const quote = await getPaymentDueQuote(input);
+  const { parsed, amountDue } = quote;
+
+  return createOutstandingPaymentForPeriod({
+    studentId: parsed.studentId,
+    method: parsed.method,
+    paidAt: new Date(),
+    recordedById,
+    enrollmentId: parsed.enrollmentId,
+    coversMonth: parsed.month,
+    amountDue,
+    expectedOutstandingAmount: parsed.amount,
+    idempotencyKey,
+  });
+}
+
+export async function getPaymentDueQuote(input: unknown) {
   const parsed = markPaymentPaidSchema.parse(input);
-  const enrollment = await getEnrollmentPaymentDue(parsed.enrollmentId);
+  const enrollment = await getEnrollmentPaymentDueQuote(
+    parsed.enrollmentId,
+    parsed.month,
+  );
   if (!enrollment || enrollment.studentId !== parsed.studentId) {
     throw new Error("Enrollment does not belong to this student");
   }
@@ -128,16 +149,23 @@ export async function recordPaymentForDue(
       timeZone,
     },
   );
-  return createOutstandingPaymentForPeriod({
-    studentId: parsed.studentId,
-    method: parsed.method,
-    paidAt: new Date(),
-    recordedById,
-    enrollmentId: parsed.enrollmentId,
-    coversMonth: parsed.month,
+  const outstanding = calculateOutstandingAmount(
     amountDue,
-    idempotencyKey,
-  });
+    enrollment.payments.map((payment) => payment.amount),
+  );
+  if (outstanding.isZero()) {
+    throw new Error("This billing period is already paid");
+  }
+
+  return {
+    parsed,
+    confirmationArguments: {
+      ...parsed,
+      amount: outstanding.toFixed(2),
+    },
+    enrollment,
+    amountDue,
+  };
 }
 
 export async function deletePaymentById(id: string) {

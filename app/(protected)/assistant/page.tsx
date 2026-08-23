@@ -33,6 +33,18 @@ export default async function AssistantPage({
           content: message.content,
           createdAt: message.createdAt.toISOString(),
           attachments: parseAssistantAttachmentMetadata(message.attachments),
+          failure:
+            message.role === "USER" && message.run?.status === "FAILED"
+              ? {
+                  clientTurnId: message.run.clientTurnId,
+                  error: message.run.error ?? "This request did not complete.",
+                  hasAttachments: message.run.hasAttachments,
+                  outcomeUnknown: message.run.toolRuns.some((tool) =>
+                    ["RUNNING", "UNKNOWN", "COMPLETED"].includes(tool.status),
+                  ),
+                  retryable: message.run.toolRuns.length === 0,
+                }
+              : null,
           tools:
             message.role === "USER"
               ? (message.run?.toolRuns ?? []).map((tool) => ({

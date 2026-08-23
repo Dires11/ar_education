@@ -1,7 +1,7 @@
 import "server-only";
 
 import { prisma } from "@/lib/prisma";
-import { PersonStatus } from "../../generated/prisma";
+import { PersonStatus, Prisma } from "../../generated/prisma";
 
 export type TutorFilters = {
   search?: string;
@@ -10,6 +10,20 @@ export type TutorFilters = {
   page?: number;
   pageSize?: number;
 };
+
+function tutorSearchWhere(search: string): Prisma.TutorWhereInput {
+  const tokens = search.trim().split(/\s+/).filter(Boolean).slice(0, 10);
+  return {
+    AND: tokens.map((token) => ({
+      OR: [
+        { firstName: { contains: token, mode: "insensitive" } },
+        { lastName: { contains: token, mode: "insensitive" } },
+        { email: { contains: token, mode: "insensitive" } },
+        { phone: { contains: token, mode: "insensitive" } },
+      ],
+    })),
+  };
+}
 
 export async function listTutors({
   search,
@@ -21,13 +35,7 @@ export async function listTutors({
   const where = {
     ...(status && { status }),
     ...(subjectId && { subjects: { some: { subjectId } } }),
-    ...(search && {
-      OR: [
-        { firstName: { contains: search, mode: "insensitive" as const } },
-        { lastName: { contains: search, mode: "insensitive" as const } },
-        { email: { contains: search, mode: "insensitive" as const } },
-      ],
-    }),
+    ...(search && tutorSearchWhere(search)),
   };
 
   const [tutors, total] = await Promise.all([
@@ -120,7 +128,7 @@ export async function updateTutor(
     phone?: string;
     hourlyRate?: string;
     notes?: string;
-  }
+  },
 ) {
   return prisma.tutor.update({
     where: { id },
@@ -153,7 +161,7 @@ export async function setTutorSubjects(tutorId: string, subjectIds: string[]) {
 export async function getTutorPayrollSessions(
   tutorId: string,
   from: Date,
-  toExclusive: Date
+  toExclusive: Date,
 ) {
   return prisma.session.findMany({
     where: {

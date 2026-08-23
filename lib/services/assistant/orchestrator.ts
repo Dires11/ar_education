@@ -19,6 +19,7 @@ import {
   getAssistantContext,
   getAssistantSummarySource,
   getAssistantThread,
+  getAssistantThreadMessageCount,
   getAssistantToolRunForDecision,
   pauseAssistantRun,
   recordAssistantModelStep,
@@ -43,6 +44,7 @@ import {
 import {
   executeAssistantTool,
   getAssistantConfirmationCard,
+  resolveAssistantConfirmationArguments,
 } from "@/lib/services/assistant/executor";
 import { ASSISTANT_MODEL } from "@/lib/services/assistant/config";
 
@@ -65,7 +67,12 @@ const ATTACHMENT_SCHEDULE_WRITES = new Set([
 ]);
 
 export type AssistantStreamEvent =
-  | { type: "thread_created"; threadId: string; title: string }
+  | {
+      type: "thread_created";
+      threadId: string;
+      title: string;
+      messageCount: number;
+    }
   | { type: "assistant_delta"; delta: string }
   | {
       type: "tool_started";
@@ -91,8 +98,10 @@ export type AssistantStreamEvent =
   | {
       type: "assistant_completed";
       runId: string;
+      threadId: string;
       messageId: string;
       content: string;
+      messageCount: number;
     }
   | { type: "error"; message: string };
 
@@ -559,7 +568,7 @@ async function runModelLoop(input: {
         const content =
           assistantContent.trim() ||
           "I completed the request, but no summary was generated.";
-        const message = await completeAssistantRun({
+        const completed = await completeAssistantRun({
           runId: input.runId,
           threadId: input.threadId,
           content,
@@ -573,8 +582,10 @@ async function runModelLoop(input: {
         input.emit({
           type: "assistant_completed",
           runId: input.runId,
-          messageId: message.id,
+          threadId: input.threadId,
+          messageId: completed.message.id,
           content,
+          messageCount: completed.messageCount,
         });
         return;
       }
@@ -621,6 +632,11 @@ async function runModelLoop(input: {
           })
         | undefined;
       if (requiresConfirmation) {
+        argumentsValue = await resolveAssistantConfirmationArguments({
+          namespace,
+          name: call.name,
+          argumentsValue,
+        });
         const card = await getAssistantConfirmationCard({
           namespace,
           name: call.name,
@@ -724,6 +740,7 @@ async function runModelLoop(input: {
 function replayDuplicate(
   created: Awaited<ReturnType<typeof createAssistantTurn>>,
   emit: EventSink,
+  messageCount: number,
 ) {
   if (created.run.status === "COMPLETED") {
     const message = created.run.messages.find(
@@ -733,8 +750,10 @@ function replayDuplicate(
       emit({
         type: "assistant_completed",
         runId: created.run.id,
+        threadId: created.thread.id,
         messageId: message.id,
         content: message.content,
+        messageCount,
       });
       return true;
     }
@@ -796,13 +815,15 @@ export async function processAssistantTurn(
     hasAttachments: attachments.length > 0,
     model: ASSISTANT_MODEL,
   });
+  const messageCount = created.messageCount;
   emit({
     type: "thread_created",
     threadId: created.thread.id,
     title: created.thread.title,
+    messageCount,
   });
 
-  if (created.duplicate && replayDuplicate(created, emit)) return;
+  if (created.duplicate && replayDuplicate(created, emit, messageCount)) return;
   if (created.duplicate) {
     throw new Error("This request is already being processed");
   }
@@ -860,8 +881,13 @@ export async function processAssistantDecision(
       emit({
         type: "assistant_completed",
         runId: existing.run.id,
+        threadId: existing.run.threadId,
         messageId: message.id,
         content: message.content,
+        messageCount: await getAssistantThreadMessageCount(
+          admin.id,
+          existing.run.threadId,
+        ),
       });
       return;
     }

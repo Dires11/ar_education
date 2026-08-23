@@ -98,6 +98,13 @@ type ChatMessage = {
   createdAt: string;
   attachments: AssistantAttachmentMetadata[];
   tools: ToolItem[];
+  failure: {
+    clientTurnId: string;
+    error: string;
+    hasAttachments: boolean;
+    outcomeUnknown: boolean;
+    retryable: boolean;
+  } | null;
 };
 
 type PendingAttachment = Omit<AssistantAttachmentMetadata, "kind"> & {
@@ -111,6 +118,9 @@ type FailedTurn = {
   attachments: PendingAttachment[];
   error: string;
   outcomeUnknown: boolean;
+  requiresReattachment: boolean;
+  retryable: boolean;
+  editing: boolean;
 };
 
 type SelectedThread = {
@@ -127,7 +137,12 @@ type ConversationTurn = {
 };
 
 type StreamEvent =
-  | { type: "thread_created"; threadId: string; title: string }
+  | {
+      type: "thread_created";
+      threadId: string;
+      title: string;
+      messageCount: number;
+    }
   | { type: "assistant_delta"; delta: string }
   | {
       type: "tool_started";
@@ -153,8 +168,10 @@ type StreamEvent =
   | {
       type: "assistant_completed";
       runId: string;
+      threadId: string;
       messageId: string;
       content: string;
+      messageCount: number;
     }
   | { type: "error"; message: string };
 
@@ -356,6 +373,26 @@ function buildConversationTurns(messages: ChatMessage[]) {
   }
 
   return turns;
+}
+
+function persistedFailedTurn(messages: ChatMessage[]): FailedTurn | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role !== "USER" || !message.failure) continue;
+    return {
+      clientTurnId: message.failure.clientTurnId,
+      optimisticId: message.id,
+      content: message.content,
+      attachments: [],
+      error: message.failure.error,
+      outcomeUnknown: message.failure.outcomeUnknown,
+      requiresReattachment:
+        message.failure.retryable && message.failure.hasAttachments,
+      retryable: message.failure.retryable,
+      editing: false,
+    };
+  }
+  return null;
 }
 
 function resultHref(result: unknown) {
@@ -804,7 +841,9 @@ export function AssistantShell({
   const [streamingText, setStreamingText] = useState("");
   const [busy, setBusy] = useState(false);
   const [decisionToolId, setDecisionToolId] = useState<string | null>(null);
-  const [failedTurn, setFailedTurn] = useState<FailedTurn | null>(null);
+  const [failedTurn, setFailedTurn] = useState<FailedTurn | null>(() =>
+    persistedFailedTurn(initialThread?.messages ?? []),
+  );
   const [threadSheetOpen, setThreadSheetOpen] = useState(false);
   const [threadRailOpen, setThreadRailOpen] = useState(true);
   const [confirmationNow, setConfirmationNow] = useState(() => Date.now());
@@ -819,7 +858,7 @@ export function AssistantShell({
     setMessages(initialThread?.messages ?? []);
     setAttachments([]);
     setStreamingText("");
-    setFailedTurn(null);
+    setFailedTurn(persistedFailedTurn(initialThread?.messages ?? []));
     stickToBottomRef.current = true;
   }, [initialThread]);
 
@@ -989,7 +1028,11 @@ export function AssistantShell({
           );
           if (existing) {
             return [
-              { ...existing, updatedAt: new Date().toISOString() },
+              {
+                ...existing,
+                updatedAt: new Date().toISOString(),
+                messageCount: event.messageCount,
+              },
               ...current.filter((thread) => thread.id !== event.threadId),
             ];
           }
@@ -998,7 +1041,7 @@ export function AssistantShell({
               id: event.threadId,
               title: event.title,
               updatedAt: new Date().toISOString(),
-              messageCount: 1,
+              messageCount: event.messageCount,
             },
             ...current,
           ];
@@ -1056,8 +1099,20 @@ export function AssistantShell({
             createdAt: new Date().toISOString(),
             attachments: [],
             tools: [],
+            failure: null,
           },
         ]);
+        setThreads((current) =>
+          current.map((thread) =>
+            thread.id === event.threadId
+              ? {
+                  ...thread,
+                  messageCount: event.messageCount,
+                  updatedAt: new Date().toISOString(),
+                }
+              : thread,
+          ),
+        );
         setStreamingText("");
         setFailedTurn(null);
         setAnnouncement("Assistant response complete.");
@@ -1069,6 +1124,10 @@ export function AssistantShell({
 
   async function sendMessage(message: string, retry?: FailedTurn) {
     const outgoingAttachments = retry?.attachments ?? attachments;
+    if (retry?.requiresReattachment && outgoingAttachments.length === 0) {
+      toast.error("Attach the original files again before retrying.");
+      return;
+    }
     if (
       (!message.trim() && outgoingAttachments.length === 0) ||
       busy ||
@@ -1088,9 +1147,9 @@ export function AssistantShell({
       }));
     const optimisticId = retry?.optimisticId ?? `local-${crypto.randomUUID()}`;
     const clientTurnId = retry?.clientTurnId ?? crypto.randomUUID();
-    if (!retry) {
+    if (!retry || retry.editing) {
       setMessages((current) => [
-        ...current,
+        ...current.filter((item) => item.id !== optimisticId),
         {
           id: optimisticId,
           role: "USER",
@@ -1098,6 +1157,7 @@ export function AssistantShell({
           createdAt: new Date().toISOString(),
           attachments: attachmentMetadata,
           tools: [],
+          failure: null,
         },
       ]);
     }
@@ -1137,6 +1197,9 @@ export function AssistantShell({
         attachments: outgoingAttachments,
         error: message,
         outcomeUnknown,
+        requiresReattachment: false,
+        retryable: !outcomeUnknown,
+        editing: false,
       });
       setAnnouncement(
         outcomeUnknown
@@ -1150,7 +1213,14 @@ export function AssistantShell({
 
   function handleSubmit(event: FormEvent) {
     event.preventDefault();
-    void sendMessage(input);
+    const retry = failedTurn?.editing
+      ? {
+          ...failedTurn,
+          content: input.trim(),
+          attachments,
+        }
+      : undefined;
+    void sendMessage(input, retry);
   }
 
   async function decide(toolRunId: string, decision: "APPROVE" | "REJECT") {
@@ -1480,6 +1550,13 @@ export function AssistantShell({
                         <p className="text-xs leading-5 text-destructive">
                           {failedTurn.error}
                         </p>
+                        {failedTurn.requiresReattachment ? (
+                          <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                            Attach the original files again below before
+                            retrying. File contents are not retained after the
+                            request ends.
+                          </p>
+                        ) : null}
                         <div className="mt-2 flex flex-wrap justify-end gap-2">
                           {failedTurn.outcomeUnknown ? (
                             <Button
@@ -1491,21 +1568,43 @@ export function AssistantShell({
                             >
                               Reload status
                             </Button>
+                          ) : !failedTurn.retryable ? (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              disabled={busy}
+                              onClick={() => {
+                                const content = failedTurn.content;
+                                newConversation();
+                                setInput(content);
+                              }}
+                            >
+                              Start a new request
+                            </Button>
                           ) : (
                             <>
                               <Button
                                 type="button"
                                 variant="outline"
                                 size="sm"
-                                disabled={busy}
+                                disabled={
+                                  busy ||
+                                  (failedTurn.requiresReattachment &&
+                                    attachments.length === 0)
+                                }
                                 onClick={() =>
                                   void sendMessage(
                                     failedTurn.content,
-                                    failedTurn,
+                                    failedTurn.requiresReattachment
+                                      ? { ...failedTurn, attachments }
+                                      : failedTurn,
                                   )
                                 }
                               >
-                                Retry safely
+                                {failedTurn.requiresReattachment
+                                  ? "Retry with attachments"
+                                  : "Retry safely"}
                               </Button>
                               <Button
                                 type="button"
@@ -1521,7 +1620,10 @@ export function AssistantShell({
                                         message.id !== failedTurn.optimisticId,
                                     ),
                                   );
-                                  setFailedTurn(null);
+                                  setFailedTurn({
+                                    ...failedTurn,
+                                    editing: true,
+                                  });
                                 }}
                               >
                                 Edit request

@@ -172,7 +172,10 @@ export async function getAssistantThread(adminId: string, threadId: string) {
           run: {
             select: {
               id: true,
+              clientTurnId: true,
               status: true,
+              hasAttachments: true,
+              error: true,
               toolRuns: {
                 orderBy: { createdAt: "asc" },
                 select: {
@@ -221,6 +224,18 @@ export async function getAssistantContext(
     summary: thread.contextSummary,
     messages: thread.messages.reverse(),
   };
+}
+
+export async function getAssistantThreadMessageCount(
+  adminId: string,
+  threadId: string,
+) {
+  const thread = await prisma.assistantThread.findFirst({
+    where: { id: threadId, adminId },
+    select: { _count: { select: { messages: true } } },
+  });
+  if (!thread) throw new Error("Assistant thread not found");
+  return thread._count.messages;
 }
 
 export async function setAssistantThreadSummary(
@@ -319,11 +334,19 @@ export async function createAssistantTurn(input: {
             refreshed.status === "FAILED" &&
             refreshed.toolRuns.length === 0
           ) {
+            await tx.assistantMessage.updateMany({
+              where: { runId: refreshed.id, role: "USER" },
+              data: {
+                content: input.message,
+                attachments: input.attachments ?? Prisma.JsonNull,
+              },
+            });
             const restarted = await tx.assistantRun.update({
               where: { id: refreshed.id },
               data: {
                 status: "RUNNING",
                 error: null,
+                hasAttachments: Boolean(input.hasAttachments),
                 completedAt: null,
               },
               include: {
@@ -336,12 +359,18 @@ export async function createAssistantTurn(input: {
               thread: restarted.thread,
               run: restarted,
               duplicate: false,
+              messageCount: await tx.assistantMessage.count({
+                where: { threadId: restarted.threadId },
+              }),
             };
           }
           return {
             thread: refreshed.thread,
             run: refreshed,
             duplicate: true,
+            messageCount: await tx.assistantMessage.count({
+              where: { threadId: refreshed.threadId },
+            }),
           };
         }
 
@@ -411,7 +440,14 @@ export async function createAssistantTurn(input: {
           data: { updatedAt: new Date() },
         });
 
-        return { thread, run, duplicate: false };
+        return {
+          thread,
+          run,
+          duplicate: false,
+          messageCount: await tx.assistantMessage.count({
+            where: { threadId: thread.id },
+          }),
+        };
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
     );
@@ -726,11 +762,12 @@ export async function completeAssistantRun(input: {
         completedAt: new Date(),
       },
     });
-    await tx.assistantThread.update({
+    const thread = await tx.assistantThread.update({
       where: { id: input.threadId },
       data: { updatedAt: new Date() },
+      select: { _count: { select: { messages: true } } },
     });
-    return message;
+    return { message, messageCount: thread._count.messages };
   });
 }
 

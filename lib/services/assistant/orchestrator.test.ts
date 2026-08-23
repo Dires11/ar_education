@@ -10,7 +10,10 @@ const responses = vi.hoisted(() => ({
 }));
 
 const dataMocks = vi.hoisted(() => ({
-  completeAssistantRun: vi.fn(async () => ({ id: "message-assistant" })),
+  completeAssistantRun: vi.fn(async () => ({
+    message: { id: "message-assistant" },
+    messageCount: 2,
+  })),
   completeAssistantToolRun: vi.fn(async () => undefined),
   createAssistantTurn: vi.fn(),
   createOrGetAssistantToolRun: vi.fn(),
@@ -20,6 +23,7 @@ const dataMocks = vi.hoisted(() => ({
   getAssistantContext: vi.fn(),
   getAssistantSummarySource: vi.fn(async () => null),
   getAssistantThread: vi.fn(),
+  getAssistantThreadMessageCount: vi.fn(async () => 2),
   getAssistantToolRunForDecision: vi.fn(),
   pauseAssistantRun: vi.fn(),
   recordAssistantModelStep: vi.fn(async () => ({
@@ -34,6 +38,12 @@ const dataMocks = vi.hoisted(() => ({
 
 const executeMock = vi.hoisted(() => vi.fn());
 const confirmationCardMock = vi.hoisted(() => vi.fn());
+const confirmationArgumentsMock = vi.hoisted(() =>
+  vi.fn(
+    async (input: { argumentsValue: Record<string, unknown> }) =>
+      input.argumentsValue,
+  ),
+);
 
 vi.mock("openai", () => ({
   default: class FakeOpenAI {
@@ -63,6 +73,7 @@ vi.mock("@/lib/data/assistant", () => dataMocks);
 vi.mock("@/lib/services/assistant/executor", () => ({
   executeAssistantTool: executeMock,
   getAssistantConfirmationCard: confirmationCardMock,
+  resolveAssistantConfirmationArguments: confirmationArgumentsMock,
 }));
 
 vi.mock("@/lib/services/assistant/tools", async () => {
@@ -98,10 +109,14 @@ describe("assistant orchestration", () => {
     responses.options.length = 0;
     process.env.OPENAI_API_KEY = "test-key";
     confirmationCardMock.mockResolvedValue(undefined);
+    confirmationArgumentsMock.mockImplementation(
+      async (input) => input.argumentsValue,
+    );
     dataMocks.createAssistantTurn.mockResolvedValue({
       thread: { id: "thread-1", title: "Test request" },
       run: { id: "run-1", messages: [], toolRuns: [], status: "RUNNING" },
       duplicate: false,
+      messageCount: 1,
     });
     dataMocks.getAssistantContext.mockResolvedValue({
       summary: null,
@@ -144,6 +159,16 @@ describe("assistant orchestration", () => {
       "assistant_delta",
       "assistant_completed",
     ]);
+    expect(events[0]).toEqual(
+      expect.objectContaining({ type: "thread_created", messageCount: 1 }),
+    );
+    expect(events.at(-1)).toEqual(
+      expect.objectContaining({
+        type: "assistant_completed",
+        threadId: "thread-1",
+        messageCount: 2,
+      }),
+    );
     expect(dataMocks.completeAssistantRun).toHaveBeenCalledWith(
       expect.objectContaining({
         runId: "run-1",
@@ -1131,6 +1156,7 @@ describe("assistant orchestration", () => {
         toolRuns: [],
       },
       duplicate: true,
+      messageCount: 2,
     });
     const events: Array<Record<string, unknown>> = [];
 

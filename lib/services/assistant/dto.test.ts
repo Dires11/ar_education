@@ -110,4 +110,16 @@ describe("assistant DTO minimization", () => {
       monthlyRevenue: [{ month: "Jul", revenue: 1200 }],
     });
   });
+
+  it("preserves operational warnings returned by successful tools", () => {
+    expect(
+      minimizeAssistantDto({
+        rulesCreated: 1,
+        warnings: ["Upcoming sessions will be retried by maintenance."],
+      }),
+    ).toEqual({
+      rulesCreated: 1,
+      warnings: ["Upcoming sessions will be retried by maintenance."],
+    });
+  });
 });

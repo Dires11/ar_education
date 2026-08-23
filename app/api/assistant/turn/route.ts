@@ -11,6 +11,12 @@ export async function POST(request: Request) {
     const input = assistantTurnSchema.parse(await request.json());
     return streamAssistantTurn(admin, input, request.signal);
   } catch (error) {
+    if (error instanceof SyntaxError) {
+      return Response.json(
+        { error: "Invalid assistant request: malformed JSON" },
+        { status: 400 },
+      );
+    }
     if (error instanceof z.ZodError) {
       return Response.json(
         { error: "Invalid assistant request", issues: error.issues },

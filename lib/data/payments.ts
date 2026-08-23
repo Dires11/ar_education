@@ -156,6 +156,7 @@ export function createOutstandingPaymentForPeriod(input: {
   enrollmentId: string;
   coversMonth: string;
   amountDue: Prisma.Decimal;
+  expectedOutstandingAmount: string;
   idempotencyKey?: string;
 }) {
   return prisma.$transaction(
@@ -185,6 +186,14 @@ export function createOutstandingPaymentForPeriod(input: {
       );
       if (outstanding.isZero()) {
         throw new Error("This billing period is already paid");
+      }
+      const expectedOutstanding = new Prisma.Decimal(
+        input.expectedOutstandingAmount,
+      );
+      if (!outstanding.equals(expectedOutstanding)) {
+        throw new Error(
+          `The outstanding amount changed from $${expectedOutstanding.toFixed(2)} to $${outstanding.toFixed(2)}. Review the updated amount and approve it again.`,
+        );
       }
       return tx.payment.create({
         data: {
@@ -300,6 +309,20 @@ export function getEnrollmentPaymentDue(id: string) {
     include: {
       package: true,
       discounts: true,
+    },
+  });
+}
+
+export function getEnrollmentPaymentDueQuote(id: string, coversMonth: string) {
+  return prisma.enrollment.findUnique({
+    where: { id },
+    include: {
+      package: true,
+      discounts: true,
+      payments: {
+        where: { coversMonth },
+        select: { amount: true },
+      },
     },
   });
 }
