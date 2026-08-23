@@ -16,7 +16,7 @@ async function main() {
       const response = await client.responses.create({
         model: ASSISTANT_MODEL,
         instructions:
-          "You are evaluating tool routing. Search for and call the exact first CRM tool needed to perform the request. Do not invent IDs. When an explicit write already includes every required field and a known target ID, call that write directly rather than inspecting history first.",
+          "You are evaluating requested-operation tool routing, not the prerequisite lookup phase. Assume every ID in the prompt was already returned by one unambiguous trusted lookup in this simulated run. Call the exact CRM tool needed for the requested operation and do not invent IDs.",
         input: item.prompt,
         tools,
         tool_choice: "required",

@@ -103,6 +103,25 @@ describe("assistant persistence guarantees", () => {
     );
   });
 
+  it("retains attachment provenance when only the assistant reply remains in the context window", async () => {
+    prismaMock.assistantThread.findFirst.mockResolvedValue({
+      contextSummary: null,
+      messages: [
+        {
+          role: "ASSISTANT",
+          content: "I extracted the calendar.",
+          attachments: null,
+          createdAt: new Date(),
+          run: { hasAttachments: true, _count: { toolRuns: 0 } },
+        },
+      ],
+    });
+
+    await expect(
+      getAssistantContext("admin-1", "thread-1", 1),
+    ).resolves.toMatchObject({ hasUntrustedHistory: true });
+  });
+
   it("checks active runs inside a serializable transaction", async () => {
     const tx = {
       assistantThread: {
@@ -363,6 +382,18 @@ describe("assistant persistence guarantees", () => {
         data: expect.objectContaining({ status: "UNKNOWN" }),
       }),
     );
+    expect(tx.assistantToolRun.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          status: "PENDING_CONFIRMATION",
+          run: {
+            status: "FAILED",
+            thread: { adminId: "admin-1", id: "thread-1" },
+          },
+        },
+        data: expect.objectContaining({ status: "FAILED" }),
+      }),
+    );
     expect(tx.assistantRun.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
@@ -409,6 +440,13 @@ describe("assistant persistence guarantees", () => {
       data: expect.objectContaining({
         status: "UNKNOWN",
         error: expect.stringContaining("Verify the CRM state"),
+      }),
+    });
+    expect(tx.assistantToolRun.updateMany).toHaveBeenCalledWith({
+      where: { runId: "run-1", status: "PENDING_CONFIRMATION" },
+      data: expect.objectContaining({
+        status: "FAILED",
+        error: expect.stringContaining("could not be activated"),
       }),
     });
     expect(tx.assistantRun.update).toHaveBeenCalledWith(

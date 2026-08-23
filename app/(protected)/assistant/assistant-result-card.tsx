@@ -28,7 +28,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import {
-  assistantResultCardSchema,
+  normalizeAssistantResultCard,
   type AssistantResultCard,
 } from "@/lib/validators/assistant";
 
@@ -71,9 +71,7 @@ export function parseAssistantResultCard(
 export function parseAssistantResultCardValue(
   value: unknown,
 ): AssistantResultCard | null {
-  const card = value;
-  const parsed = assistantResultCardSchema.safeParse(card);
-  return parsed.success ? parsed.data : null;
+  return normalizeAssistantResultCard(value);
 }
 
 function ResultAvatar({ card }: { card: AssistantResultCard }) {

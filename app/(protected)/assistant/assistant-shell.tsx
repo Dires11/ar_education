@@ -42,6 +42,7 @@ import {
   getToolCompletionStatus,
   isAssistantOutcomeUnknown,
   isVisibleConfirmationArgument,
+  redactAssistantIdentifiers,
   type AssistantClientToolStatus,
 } from "./assistant-stream-client";
 import {
@@ -524,7 +525,9 @@ function formatPreviewValue(value: unknown): string {
 
 function confirmationContent(tool: ToolItem) {
   const preview = isRecord(tool.preview) ? tool.preview : {};
-  const argumentsValue = isRecord(preview.arguments) ? preview.arguments : {};
+  const argumentsValue = isRecord(preview.arguments)
+    ? redactAssistantIdentifiers(preview.arguments)
+    : {};
   const card = parseAssistantResultCardValue(preview.card);
 
   return {
@@ -537,7 +540,7 @@ function confirmationContent(tool: ToolItem) {
         ? preview.warning
         : "This action will change CRM data after approval.",
     card,
-    details: Object.entries(argumentsValue)
+    details: Object.entries(isRecord(argumentsValue) ? argumentsValue : {})
       .filter(([key]) => isVisibleConfirmationArgument(key))
       .map(([key, value]) => ({
         label: humanizeKey(key),

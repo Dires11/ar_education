@@ -5,6 +5,7 @@ import {
   IncompleteAssistantStreamError,
   isAssistantOutcomeUnknown,
   isVisibleConfirmationArgument,
+  redactAssistantIdentifiers,
 } from "./assistant-stream-client";
 
 function eventStream(frames: string[]) {
@@ -55,6 +56,30 @@ describe("assistant stream client", () => {
     expect(isAssistantOutcomeUnknown(new Error("Validation failed"))).toBe(
       false,
     );
+    expect(isAssistantOutcomeUnknown(new TypeError("Failed to fetch"))).toBe(
+      true,
+    );
+  });
+
+  it("treats server failures as ambiguous but validation failures as safe", async () => {
+    await expect(
+      consumeAssistantEventStream(
+        new Response(JSON.stringify({ error: "Gateway failed" }), {
+          status: 502,
+          headers: { "Content-Type": "application/json" },
+        }),
+        vi.fn(),
+      ),
+    ).rejects.toBeInstanceOf(IncompleteAssistantStreamError);
+    await expect(
+      consumeAssistantEventStream(
+        new Response(JSON.stringify({ error: "Invalid request" }), {
+          status: 400,
+          headers: { "Content-Type": "application/json" },
+        }),
+        vi.fn(),
+      ),
+    ).rejects.toThrow("Invalid request");
   });
 
   it("hides internal confirmation metadata and database IDs", () => {
@@ -63,5 +88,15 @@ describe("assistant stream client", () => {
     );
     expect(isVisibleConfirmationArgument("studentId")).toBe(false);
     expect(isVisibleConfirmationArgument("messagePreview")).toBe(true);
+    expect(
+      redactAssistantIdentifiers({
+        sessionId: "session-1",
+        attendances: [
+          { studentId: "student-1", status: "COMPLETED", billable: true },
+        ],
+      }),
+    ).toEqual({
+      attendances: [{ status: "COMPLETED", billable: true }],
+    });
   });
 });

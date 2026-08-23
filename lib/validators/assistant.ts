@@ -202,3 +202,95 @@ export type AssistantAttachmentMetadata = z.infer<
   typeof assistantAttachmentMetadataSchema
 >;
 export type AssistantResultCard = z.infer<typeof assistantResultCardSchema>;
+
+function clampCardText(value: unknown, max: number) {
+  if (typeof value !== "string") return value;
+  const text = value.trim();
+  if (text.length <= max) return text;
+  return `${text.slice(0, Math.max(0, max - 1)).trimEnd()}…`;
+}
+
+/**
+ * Keeps cards renderable even when CRM-owned names or generated summaries are
+ * longer than the presentation limits. Structural errors still fail closed.
+ */
+export function normalizeAssistantResultCard(
+  value: unknown,
+): AssistantResultCard | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const card = value as Record<string, unknown>;
+  const avatar: unknown =
+    card.avatar && typeof card.avatar === "object" && !Array.isArray(card.avatar)
+      ? (card.avatar as Record<string, unknown>)
+      : card.avatar;
+  const normalized = {
+    ...card,
+    entityKey: clampCardText(card.entityKey, 160),
+    title: clampCardText(card.title, 160),
+    subtitle: clampCardText(card.subtitle, 240),
+    actionLabel: clampCardText(card.actionLabel, 100),
+    avatar:
+      avatar && typeof avatar === "object"
+        ? {
+            ...(avatar as Record<string, unknown>),
+            firstName: clampCardText(
+              (avatar as Record<string, unknown>).firstName,
+              100,
+            ),
+            lastName: clampCardText(
+              (avatar as Record<string, unknown>).lastName,
+              100,
+            ),
+          }
+        : avatar,
+    badges: Array.isArray(card.badges)
+      ? card.badges.slice(0, 4).map((badge) =>
+          badge && typeof badge === "object" && !Array.isArray(badge)
+            ? {
+                ...badge,
+                label: clampCardText(
+                  (badge as Record<string, unknown>).label,
+                  80,
+                ),
+              }
+            : badge,
+        )
+      : card.badges,
+    fields: Array.isArray(card.fields)
+      ? card.fields.slice(0, 6).map((field) =>
+          field && typeof field === "object" && !Array.isArray(field)
+            ? {
+                ...field,
+                label: clampCardText(
+                  (field as Record<string, unknown>).label,
+                  80,
+                ),
+                value: clampCardText(
+                  (field as Record<string, unknown>).value,
+                  240,
+                ),
+              }
+            : field,
+        )
+      : card.fields,
+    suggestedActions: Array.isArray(card.suggestedActions)
+      ? card.suggestedActions.slice(0, 3).map((action) =>
+          action && typeof action === "object" && !Array.isArray(action)
+            ? {
+                ...action,
+                label: clampCardText(
+                  (action as Record<string, unknown>).label,
+                  100,
+                ),
+                prompt: clampCardText(
+                  (action as Record<string, unknown>).prompt,
+                  500,
+                ),
+              }
+            : action,
+        )
+      : card.suggestedActions,
+  };
+  const parsed = assistantResultCardSchema.safeParse(normalized);
+  return parsed.success ? parsed.data : null;
+}

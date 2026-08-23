@@ -55,6 +55,21 @@ function deliveryDigest(deliveries: PreparedStudentEmail[]) {
     .digest("hex");
 }
 
+function personalizedDeliveryPreview(deliveries: PreparedStudentEmail[]) {
+  const visible = deliveries.slice(0, 3).map(
+    (delivery) =>
+      `${delivery.studentName} — ${delivery.email}\nSubject: ${delivery.subject}\n${delivery.body}`,
+  );
+  if (deliveries.length > visible.length) {
+    const remaining = deliveries.length - visible.length;
+    visible.push(`…and ${remaining} more recipient${remaining === 1 ? "" : "s"}.`);
+  }
+  const preview = visible.join("\n\n");
+  return preview.length <= 2_000
+    ? preview
+    : `${preview.slice(0, 1_999).trimEnd()}…`;
+}
+
 async function prepareStudentEmails(input: {
   studentIds: string[];
   subject: string;
@@ -122,6 +137,7 @@ export async function getEmailDeliveryConfirmation(input: {
   }
   return {
     digest: prepared.digest,
+    bodyPreview: personalizedDeliveryPreview(prepared.deliveries),
     recipients: prepared.deliveries.map((delivery) => ({
       studentId: delivery.studentId,
       name: delivery.studentName,

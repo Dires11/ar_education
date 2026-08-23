@@ -28,6 +28,13 @@ const emailServiceMocks = vi.hoisted(() => ({
   getEmailDeliveryConfirmation: vi.fn(),
   sendEmailToStudents: vi.fn(),
 }));
+const referenceDataMocks = vi.hoisted(() => ({
+  getTutor: vi.fn(),
+  getSubject: vi.fn(),
+  getPackage: vi.fn(),
+  getEnrollment: vi.fn(),
+  listGroups: vi.fn(),
+}));
 
 vi.mock("@/lib/data/students", () => ({
   getStudent: studentMocks.getStudent,
@@ -35,6 +42,26 @@ vi.mock("@/lib/data/students", () => ({
 }));
 vi.mock("@/lib/data/payments", () => paymentDataMocks);
 vi.mock("@/lib/data/sessions", () => sessionDataMocks);
+vi.mock("@/lib/data/tutors", () => ({
+  getTutor: referenceDataMocks.getTutor,
+  listTutors: vi.fn(),
+}));
+vi.mock("@/lib/data/subjects", () => ({
+  getSubject: referenceDataMocks.getSubject,
+  listSubjects: vi.fn(),
+}));
+vi.mock("@/lib/data/packages", () => ({
+  getPackage: referenceDataMocks.getPackage,
+  listPackages: vi.fn(),
+}));
+vi.mock("@/lib/data/enrollments", () => ({
+  getDiscountWithEnrollment: vi.fn(),
+  getEnrollment: referenceDataMocks.getEnrollment,
+  searchEnrollmentsForAssistant: vi.fn(),
+}));
+vi.mock("@/lib/data/groups", () => ({
+  listGroups: referenceDataMocks.listGroups,
+}));
 
 vi.mock("@/lib/services/students", () => ({
   addGuardianToStudent: vi.fn(),
@@ -217,8 +244,8 @@ describe("assistant tool result cards", () => {
     });
   });
 
-  it("builds a readable draft card when an untrusted create has no record yet", () => {
-    const card = getAssistantMutationDraftCard(
+  it("builds a readable draft card when an untrusted create has no record yet", async () => {
+    const card = await getAssistantMutationDraftCard(
       {
         namespace: "students",
         name: "create_student",
@@ -271,6 +298,8 @@ describe("assistant tool result cards", () => {
   it("binds an outbound email approval to resolved recipient addresses", async () => {
     emailServiceMocks.getEmailDeliveryConfirmation.mockResolvedValue({
       digest: "a".repeat(64),
+      bodyPreview:
+        "Maya Chen — guardian@example.com\nSubject: Schedule\nHello Ana",
       recipients: [
         {
           studentId: "student-1",
@@ -291,6 +320,8 @@ describe("assistant tool result cards", () => {
     });
 
     expect(resolved).toMatchObject({
+      messagePreview:
+        "Maya Chen — guardian@example.com\nSubject: Schedule\nHello Ana",
       __assistantConfirmation: {
         digest: "a".repeat(64),
         recipientSummary: "Maya Chen — guardian@example.com",
@@ -310,8 +341,92 @@ describe("assistant tool result cards", () => {
           label: "Recipients",
           value: "Maya Chen — guardian@example.com",
         }),
+        expect.objectContaining({
+          label: "Message",
+          value: expect.stringContaining("Hello Ana"),
+        }),
       ]),
     });
+  });
+
+  it("resolves referenced people in an untrusted draft and refuses generic existing-target fallbacks", async () => {
+    studentMocks.getStudent.mockResolvedValue({
+      id: "student-1",
+      firstName: "Maya",
+      lastName: "Chen",
+    });
+    const card = await getAssistantMutationDraftCard(
+      {
+        namespace: "guardians",
+        name: "add_guardian",
+        description: "Add a guardian.",
+      },
+      {
+        studentId: "student-1",
+        firstName: "Ana",
+        lastName: "Chen",
+      },
+    );
+    expect(card?.fields).toContainEqual({
+      label: "Student",
+      value: "Maya Chen",
+      icon: "USER",
+    });
+    await expect(
+      getAssistantMutationDraftCard(
+        {
+          namespace: "students",
+          name: "update_student",
+          description: "Update a student.",
+        },
+        { id: "student-1", school: "North High" },
+      ),
+    ).resolves.toBeUndefined();
+  });
+
+  it("shows every resolved enrollment target before an evidence-derived create", async () => {
+    studentMocks.getStudent.mockResolvedValue({
+      id: "student-1",
+      firstName: "Maya",
+      lastName: "Chen",
+    });
+    referenceDataMocks.getTutor.mockResolvedValue({
+      id: "tutor-1",
+      firstName: "Theo",
+      lastName: "Grant",
+    });
+    referenceDataMocks.getSubject.mockResolvedValue({
+      id: "subject-1",
+      name: "Mathematics",
+    });
+    referenceDataMocks.getPackage.mockResolvedValue({
+      id: "package-1",
+      name: "Private Math",
+    });
+
+    const card = await getAssistantMutationDraftCard(
+      {
+        namespace: "enrollments",
+        name: "create_enrollment",
+        description: "Create an enrollment.",
+      },
+      {
+        studentId: "student-1",
+        tutorId: "tutor-1",
+        subjectId: "subject-1",
+        packageId: "package-1",
+        startDate: "2026-09-01",
+      },
+    );
+
+    expect(card?.fields).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ label: "Student", value: "Maya Chen" }),
+        expect.objectContaining({ label: "Tutor", value: "Theo Grant" }),
+        expect.objectContaining({ label: "Subject", value: "Mathematics" }),
+        expect.objectContaining({ label: "Package", value: "Private Math" }),
+      ]),
+    );
   });
 
   it("shows the rendered payment-reminder body before approval", async () => {
@@ -464,6 +579,7 @@ describe("assistant tool result cards", () => {
       context: {
         admin: { id: "admin-1", role: "STAFF" },
         idempotencyKey: "tool-run-1",
+        provenanceValidated: true,
       },
     });
 
@@ -655,6 +771,7 @@ describe("assistant tool result cards", () => {
       context: {
         admin: { id: "admin-1", role: "STAFF" },
         idempotencyKey: "tool-run-1",
+        provenanceValidated: true,
       },
     });
 

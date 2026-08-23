@@ -109,6 +109,7 @@ import {
 } from "@/lib/services/team";
 import { getDashboardStats } from "@/lib/services/dashboard";
 import {
+  assistantToolMutatesData,
   getAssistantToolSpec,
   type AssistantToolSpec,
 } from "@/lib/services/assistant/tools";
@@ -116,7 +117,10 @@ import { minimizeAssistantDto } from "@/lib/services/assistant/dto";
 import { getConfiguredCenterTimeZone } from "@/lib/services/session-dates";
 import { formatCalendarDate, formatDateTime } from "@/lib/utils/dates";
 import { getInstantCalendarDateKey } from "@/lib/utils/time-zone";
-import type { AssistantResultCard } from "@/lib/validators/assistant";
+import {
+  normalizeAssistantResultCard,
+  type AssistantResultCard,
+} from "@/lib/validators/assistant";
 
 type ToolArguments = Record<string, unknown>;
 
@@ -132,7 +136,33 @@ const assistantConfirmationSnapshotSchema = z.object({
 export type AssistantToolExecutionContext = {
   admin: Pick<Admin, "id" | "role">;
   idempotencyKey?: string;
+  provenanceValidated?: boolean;
 };
+
+export function collectAssistantIdentifierValues(value: unknown): string[] {
+  const identifiers = new Set<string>();
+  const visit = (item: unknown, key?: string) => {
+    if (Array.isArray(item)) {
+      item.forEach((entry) => visit(entry, key));
+      return;
+    }
+    if (!item || typeof item !== "object") {
+      if (
+        typeof item === "string" &&
+        key &&
+        /(?:^id$|Id$|Ids$)/.test(key)
+      ) {
+        identifiers.add(item);
+      }
+      return;
+    }
+    Object.entries(item as Record<string, unknown>).forEach(([childKey, child]) =>
+      visit(child, childKey),
+    );
+  };
+  visit(value);
+  return [...identifiers];
+}
 
 export async function resolveAssistantConfirmationArguments(input: {
   namespace: string;
@@ -187,7 +217,9 @@ export async function resolveAssistantConfirmationArguments(input: {
             ? recipients.join(", ")
             : `${recipients.slice(0, 3).join(", ")} and ${recipients.length - 3} more`,
         subject: parsed.subject,
+        bodyPreview: confirmation.bodyPreview,
       },
+      messagePreview: confirmation.bodyPreview,
     };
   }
   return input.argumentsValue;
@@ -198,11 +230,17 @@ function safeJson<T>(value: T) {
 }
 
 function toolResult(data: unknown, href?: string, card?: AssistantResultCard) {
+  const normalizedCard = card
+    ? normalizeAssistantResultCard(card)
+    : undefined;
+  if (card && !normalizedCard) {
+    throw new Error("Assistant result card could not be rendered safely");
+  }
   return safeJson({
     ok: true,
     data: minimizeAssistantDto(safeJson(data)),
     href,
-    card,
+    card: normalizedCard,
   });
 }
 
@@ -992,10 +1030,145 @@ function groupResultCard(
   };
 }
 
-export function getAssistantMutationDraftCard(
+const ASSISTANT_DRAFT_CARD_TOOLS = new Set([
+  "students.create_student",
+  "guardians.add_guardian",
+  "tutors.create_tutor",
+  "catalog.create_subject",
+  "catalog.create_package",
+  "enrollments.create_enrollment",
+  "enrollments.rename_group",
+  "schedule.create_one_time_session",
+  "recurrence.create_recurring_schedule",
+  "communications.create_email_template",
+]);
+
+type AssistantCardField = AssistantResultCard["fields"][number];
+
+async function resolveAssistantReferenceFields(
+  argumentsValue: Record<string, unknown>,
+): Promise<AssistantCardField[]> {
+  const fields: AssistantCardField[] = [];
+  const stringId = (key: string) =>
+    typeof argumentsValue[key] === "string" && argumentsValue[key]
+      ? (argumentsValue[key] as string)
+      : undefined;
+  const stringIds = (key: string) =>
+    Array.isArray(argumentsValue[key])
+      ? (argumentsValue[key] as unknown[]).filter(
+          (item): item is string => typeof item === "string" && item.length > 0,
+        )
+      : [];
+  const attendanceStudentIds = Array.isArray(argumentsValue.attendances)
+    ? argumentsValue.attendances.flatMap((attendance) =>
+        attendance && typeof attendance === "object" && !Array.isArray(attendance)
+          ? [
+              (attendance as Record<string, unknown>).studentId,
+            ].filter((item): item is string => typeof item === "string")
+          : [],
+      )
+    : [];
+  const studentIds = [
+    ...new Set([
+      ...(stringId("studentId") ? [stringId("studentId")!] : []),
+      ...stringIds("studentIds"),
+      ...attendanceStudentIds,
+    ]),
+  ];
+  if (studentIds.length > 0) {
+    const students = await Promise.all(studentIds.map(getStudentData));
+    if (students.some((student) => !student)) {
+      throw new Error("A referenced student no longer exists");
+    }
+    fields.push({
+      label: studentIds.length === 1 ? "Student" : "Students",
+      value: students
+        .map((student) => `${student!.firstName} ${student!.lastName}`)
+        .join(", "),
+      icon: "USER",
+    });
+  }
+
+  const tutorId = stringId("tutorId");
+  if (tutorId) {
+    const tutor = await getTutorData(tutorId);
+    if (!tutor) throw new Error("The referenced tutor no longer exists");
+    fields.push({
+      label: "Tutor",
+      value: `${tutor.firstName} ${tutor.lastName}`,
+      icon: "USER",
+    });
+  }
+
+  const subjectIds = [
+    ...new Set([
+      ...(stringId("subjectId") ? [stringId("subjectId")!] : []),
+      ...stringIds("subjectIds"),
+    ]),
+  ];
+  if (subjectIds.length > 0) {
+    const subjects = await Promise.all(subjectIds.map(getSubject));
+    if (subjects.some((subject) => !subject)) {
+      throw new Error("A referenced subject no longer exists");
+    }
+    fields.push({
+      label: subjectIds.length === 1 ? "Subject" : "Subjects",
+      value: subjects.map((subject) => subject!.name).join(", "),
+      icon: "BOOK",
+    });
+  }
+
+  const packageId = stringId("packageId");
+  if (packageId) {
+    const pkg = await getPackage(packageId);
+    if (!pkg) throw new Error("The referenced package no longer exists");
+    fields.push({ label: "Package", value: pkg.name, icon: "PACKAGE" });
+  }
+
+  const enrollmentId = stringId("enrollmentId");
+  if (enrollmentId) {
+    const enrollment = await getEnrollment(enrollmentId);
+    if (!enrollment) {
+      throw new Error("The referenced enrollment no longer exists");
+    }
+    fields.push({
+      label: "Enrollment",
+      value: `${enrollment.student.firstName} ${enrollment.student.lastName} — ${enrollment.subject.name}`,
+      icon: "BOOK",
+    });
+  }
+
+  const groupId = stringId("groupId");
+  if (groupId) {
+    const group = (await listGroups()).find((item) => item.id === groupId);
+    if (!group) throw new Error("The referenced group no longer exists");
+    fields.push({ label: "Group", value: group.name, icon: "USER" });
+  }
+  return fields;
+}
+
+export async function enrichAssistantConfirmationCard(
+  card: AssistantResultCard,
+  argumentsValue: Record<string, unknown>,
+): Promise<AssistantResultCard> {
+  const resolvedFields = await resolveAssistantReferenceFields(argumentsValue);
+  const existingLabels = new Set(card.fields.map((field) => field.label));
+  return {
+    ...card,
+    fields: [
+      ...card.fields,
+      ...resolvedFields.filter((field) => !existingLabels.has(field.label)),
+    ],
+  };
+}
+
+export async function getAssistantMutationDraftCard(
   spec: Pick<AssistantToolSpec, "namespace" | "name" | "description">,
   argumentsValue: Record<string, unknown>,
-): AssistantResultCard {
+): Promise<AssistantResultCard | undefined> {
+  if (!ASSISTANT_DRAFT_CARD_TOOLS.has(`${spec.namespace}.${spec.name}`)) {
+    return undefined;
+  }
   const text = (key: string) =>
     typeof argumentsValue[key] === "string"
       ? (argumentsValue[key] as string)
@@ -1046,7 +1219,7 @@ export function getAssistantMutationDraftCard(
       : null,
   ];
 
-  return {
+  return enrichAssistantConfirmationCard({
     kind: presentation.kind,
     entityKey: `draft:${spec.namespace}:${spec.name}`,
     title:
@@ -1062,7 +1235,7 @@ export function getAssistantMutationDraftCard(
     href: presentation.href,
     actionLabel: "Open manual workspace",
     suggestedActions: [],
-  };
+  }, argumentsValue);
 }
 
 export async function getAssistantConfirmationCard(input: {
@@ -1119,10 +1292,15 @@ export async function getAssistantConfirmationCard(input: {
   if (namespace === "catalog") {
     const id = value("id");
     if (!id) return undefined;
-    if (name === "delete_subject") {
+    if (name === "delete_subject" || name === "update_subject") {
       const subject = await getSubject(id);
       return subject
-        ? subjectResultCard(subject, "Subject selected for permanent deletion")
+        ? subjectResultCard(
+            subject,
+            name === "delete_subject"
+              ? "Subject selected for permanent deletion"
+              : "Subject affected by this change",
+          )
         : undefined;
     }
     const pkg = await getPackage(id);
@@ -1263,7 +1441,7 @@ export async function getAssistantConfirmationCard(input: {
   }
 
   if (namespace === "communications") {
-    if (name === "delete_email_template") {
+    if (name === "delete_email_template" || name === "update_email_template") {
       const templateId = value("id");
       if (!templateId) return undefined;
       const template = await getEmailTemplate(templateId);
@@ -1271,7 +1449,10 @@ export async function getAssistantConfirmationCard(input: {
         ? emailResultCard({
             entityKey: `email-template:${template.id}`,
             title: template.name,
-            subtitle: "Template selected for permanent deletion",
+            subtitle:
+              name === "delete_email_template"
+                ? "Template selected for permanent deletion"
+                : "Template affected by this change",
             subject: template.subject,
           })
         : undefined;
@@ -1295,6 +1476,7 @@ export async function getAssistantConfirmationCard(input: {
       subtitle: "Outbound message awaiting approval",
       subject: confirmation.data.subject,
       recipientSummary: confirmation.data.recipientSummary,
+      messagePreview: confirmation.data.bodyPreview,
     });
   }
 
@@ -2251,6 +2433,15 @@ export async function executeAssistantTool(input: {
   );
   if (!spec) throw new Error("Tool is not available for this administrator");
   const args = parsedArguments(spec, input.argumentsValue);
+  if (
+    assistantToolMutatesData(spec) &&
+    collectAssistantIdentifierValues(args).length > 0 &&
+    !input.context.provenanceValidated
+  ) {
+    throw new Error(
+      "Mutation identifiers must be validated by the assistant orchestrator before execution",
+    );
+  }
 
   switch (input.namespace) {
     case "students":

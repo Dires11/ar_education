@@ -49,6 +49,7 @@ export function getToolCompletionStatus(
 
 export function isAssistantOutcomeUnknown(error: unknown) {
   if (error instanceof IncompleteAssistantStreamError) return true;
+  if (error instanceof TypeError) return true;
   const message = error instanceof Error ? error.message : String(error);
   return (
     message.includes("may have completed") ||
@@ -62,6 +63,16 @@ export function isVisibleConfirmationArgument(key: string) {
   return !key.startsWith("__") && !/(?:^id$|Id$|Ids$)/.test(key);
 }
 
+export function redactAssistantIdentifiers(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(redactAssistantIdentifiers);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([key]) => isVisibleConfirmationArgument(key))
+      .map(([key, item]) => [key, redactAssistantIdentifiers(item)]),
+  );
+}
+
 export async function consumeAssistantEventStream<
   Event extends { type: string },
 >(response: Response, onEvent: (event: Event) => void) {
@@ -69,7 +80,13 @@ export async function consumeAssistantEventStream<
     const body = (await response.json().catch(() => null)) as {
       error?: string;
     } | null;
-    throw new Error(body?.error ?? "Assistant request failed");
+    const message = body?.error ?? "Assistant request failed";
+    if (response.status >= 500) {
+      throw new IncompleteAssistantStreamError(
+        `${message} The request outcome is unknown; reload before retrying.`,
+      );
+    }
+    throw new Error(message);
   }
   if (!response.body) throw new Error("Assistant stream was unavailable");
 

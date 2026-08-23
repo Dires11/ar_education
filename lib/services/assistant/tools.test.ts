@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   assistantResultCardSchema,
   assistantTurnSchema,
+  normalizeAssistantResultCard,
 } from "@/lib/validators/assistant";
 import {
   assistantToolMutatesData,
@@ -329,5 +330,41 @@ describe("assistant request validation", () => {
         href: "https://example.com/students/student-1",
       }),
     ).toThrow();
+  });
+
+  it("normalizes oversized CRM text while preserving structural safety", () => {
+    const normalized = normalizeAssistantResultCard({
+      kind: "STUDENT",
+      entityKey: `student:${"x".repeat(300)}`,
+      title: "M".repeat(300),
+      subtitle: "S".repeat(500),
+      badges: Array.from({ length: 8 }, () => ({
+        label: "B".repeat(120),
+        tone: "NEUTRAL",
+      })),
+      fields: Array.from({ length: 9 }, () => ({
+        label: "L".repeat(120),
+        value: "V".repeat(400),
+        icon: "USER",
+      })),
+      href: "/students",
+      actionLabel: "A".repeat(200),
+      suggestedActions: [],
+    });
+
+    expect(normalized).not.toBeNull();
+    expect(normalized!.title).toHaveLength(160);
+    expect(normalized!.fields).toHaveLength(6);
+    expect(normalized!.fields[0].value).toHaveLength(240);
+    expect(normalized!.badges).toHaveLength(4);
+    expect(
+      normalizeAssistantResultCard({
+        kind: "STUDENT",
+        entityKey: "student:1",
+        title: "Maya",
+        href: "https://example.com",
+        actionLabel: "View",
+      }),
+    ).toBeNull();
   });
 });

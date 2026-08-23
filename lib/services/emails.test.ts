@@ -52,6 +52,12 @@ describe("email approval integrity", () => {
     };
     const confirmation = await getEmailDeliveryConfirmation(input);
 
+    expect(confirmation.bodyPreview).toContain(
+      "Maya Chen — approved@example.com",
+    );
+    expect(confirmation.bodyPreview).toContain("Subject: Schedule");
+    expect(confirmation.bodyPreview).toContain("Hello Ana");
+
     await expect(
       sendEmailToStudents({
         ...input,

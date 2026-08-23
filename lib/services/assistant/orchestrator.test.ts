@@ -39,6 +39,9 @@ const dataMocks = vi.hoisted(() => ({
 
 const executeMock = vi.hoisted(() => vi.fn());
 const confirmationCardMock = vi.hoisted(() => vi.fn());
+const enrichConfirmationCardMock = vi.hoisted(() =>
+  vi.fn(async (card) => card),
+);
 const mutationDraftCardMock = vi.hoisted(() =>
   vi.fn(() => ({
     kind: "STUDENT",
@@ -86,6 +89,20 @@ vi.mock("@/lib/data/assistant", () => dataMocks);
 
 vi.mock("@/lib/services/assistant/executor", () => ({
   executeAssistantTool: executeMock,
+  collectAssistantIdentifierValues: (value: unknown) => {
+    const ids = new Set<string>();
+    const visit = (item: unknown, key?: string) => {
+      if (Array.isArray(item)) return item.forEach((child) => visit(child, key));
+      if (item && typeof item === "object") {
+        Object.entries(item).forEach(([childKey, child]) => visit(child, childKey));
+      } else if (typeof item === "string" && key && /(?:^id$|Id$|Ids$)/.test(key)) {
+        ids.add(item);
+      }
+    };
+    visit(value);
+    return [...ids];
+  },
+  enrichAssistantConfirmationCard: enrichConfirmationCardMock,
   getAssistantConfirmationCard: confirmationCardMock,
   getAssistantMutationDraftCard: mutationDraftCardMock,
   resolveAssistantConfirmationArguments: confirmationArgumentsMock,
@@ -123,6 +140,7 @@ describe("assistant orchestration", () => {
     dataMocks.createOrGetAssistantToolRun.mockReset();
     executeMock.mockReset();
     confirmationCardMock.mockReset();
+    enrichConfirmationCardMock.mockClear();
     mutationDraftCardMock.mockClear();
     confirmationArgumentsMock.mockReset();
     responses.queue.length = 0;
@@ -219,6 +237,9 @@ describe("assistant orchestration", () => {
     );
     expect(responses.requests[0].instructions).toEqual(
       expect.stringContaining("structured card"),
+    );
+    expect(responses.requests[0].instructions).toEqual(
+      expect.stringContaining("verify each target with a lookup"),
     );
   });
 
@@ -630,33 +651,59 @@ describe("assistant orchestration", () => {
       id: "student-1",
       school: "North High",
     };
-    responses.queue.push({
-      events: [],
-      final: {
-        output_text: "",
-        output: [
-          {
+    responses.queue.push(
+      {
+        events: [],
+        final: {
+          output_text: "",
+          output: [{
+            type: "function_call",
+            namespace: "students",
+            name: "get_student",
+            call_id: "call-get-student",
+            arguments: JSON.stringify({ id: "student-1" }),
+          }],
+          usage,
+        },
+      },
+      {
+        events: [],
+        final: {
+          output_text: "",
+          output: [{
             type: "function_call",
             namespace: "students",
             name: "update_student",
             call_id: "call-update-student",
             arguments: JSON.stringify(mutationArguments),
-          },
-        ],
-        usage,
+          }],
+          usage,
+        },
       },
-    });
-    dataMocks.createOrGetAssistantToolRun.mockResolvedValue({
-      id: "tool-update-student",
-      runId: "run-1",
-      callId: "call-update-student",
-      namespace: "students",
-      toolName: "update_student",
-      arguments: mutationArguments,
-      status: "PENDING_CONFIRMATION",
-      requiresConfirmation: true,
-      expiresAt: new Date("2026-08-24T00:00:00.000Z"),
-    });
+    );
+    dataMocks.createOrGetAssistantToolRun
+      .mockResolvedValueOnce({
+        id: "tool-get-student",
+        runId: "run-1",
+        callId: "call-get-student",
+        namespace: "students",
+        toolName: "get_student",
+        arguments: { id: "student-1" },
+        status: "RUNNING",
+        requiresConfirmation: false,
+      })
+      .mockResolvedValueOnce({
+        id: "tool-update-student",
+        runId: "run-1",
+        callId: "call-update-student",
+        namespace: "students",
+        toolName: "update_student",
+        arguments: mutationArguments,
+        status: "PENDING_CONFIRMATION",
+        requiresConfirmation: true,
+        expiresAt: new Date("2026-08-24T00:00:00.000Z"),
+      });
+    executeMock.mockResolvedValueOnce({ ok: true, data: { id: "student-1" } });
     confirmationCardMock.mockResolvedValue({
       kind: "STUDENT",
       entityKey: "student:student-1",
@@ -687,7 +734,7 @@ describe("assistant orchestration", () => {
       (event) => events.push(event),
     );
 
-    expect(executeMock).not.toHaveBeenCalled();
+    expect(executeMock).toHaveBeenCalledTimes(1);
     expect(dataMocks.pauseAssistantRun).toHaveBeenCalledTimes(1);
     expect(events.at(-1)).toMatchObject({
       type: "confirmation_required",
@@ -849,10 +896,10 @@ describe("assistant orchestration", () => {
           output: [
             {
               type: "function_call",
-              namespace: "enrollments",
-              name: "create_enrollment",
-              call_id: "call-enrollment",
-              arguments: JSON.stringify(createEnrollmentArguments),
+              namespace: "catalog",
+              name: "get_package",
+              call_id: "call-package",
+              arguments: JSON.stringify({ id: "package-1" }),
             },
           ],
           usage,
@@ -861,8 +908,28 @@ describe("assistant orchestration", () => {
       {
         events: [],
         final: {
-          output_text: "Maya was created and enrolled.",
-          output: [],
+          output_text: "",
+          output: [{
+            type: "function_call",
+            namespace: "tutors",
+            name: "get_tutor",
+            call_id: "call-tutor",
+            arguments: JSON.stringify({ id: "tutor-1" }),
+          }],
+          usage,
+        },
+      },
+      {
+        events: [],
+        final: {
+          output_text: "",
+          output: [{
+            type: "function_call",
+            namespace: "enrollments",
+            name: "create_enrollment",
+            call_id: "call-enrollment",
+            arguments: JSON.stringify(createEnrollmentArguments),
+          }],
           usage,
         },
       },
@@ -879,6 +946,26 @@ describe("assistant orchestration", () => {
         requiresConfirmation: false,
       })
       .mockResolvedValueOnce({
+        id: "tool-package",
+        runId: "run-1",
+        callId: "call-package",
+        namespace: "catalog",
+        toolName: "get_package",
+        arguments: { id: "package-1" },
+        status: "RUNNING",
+        requiresConfirmation: false,
+      })
+      .mockResolvedValueOnce({
+        id: "tool-tutor",
+        runId: "run-1",
+        callId: "call-tutor",
+        namespace: "tutors",
+        toolName: "get_tutor",
+        arguments: { id: "tutor-1" },
+        status: "RUNNING",
+        requiresConfirmation: false,
+      })
+      .mockResolvedValueOnce({
         id: "tool-enrollment",
         runId: "run-1",
         callId: "call-enrollment",
@@ -889,10 +976,13 @@ describe("assistant orchestration", () => {
         requiresConfirmation: true,
         expiresAt: new Date("2026-08-24T00:00:00.000Z"),
       });
-    executeMock.mockResolvedValueOnce({
-      ok: true,
-      data: { id: "student-1" },
-    });
+    executeMock
+      .mockResolvedValueOnce({ ok: true, data: { id: "student-1" } })
+      .mockResolvedValueOnce({
+        ok: true,
+        data: { id: "package-1", subjectId: "subject-1" },
+      })
+      .mockResolvedValueOnce({ ok: true, data: { id: "tutor-1" } });
     confirmationCardMock.mockResolvedValue({
       kind: "ENROLLMENT",
       entityKey: "enrollment:enrollment-1",
@@ -915,7 +1005,7 @@ describe("assistant orchestration", () => {
       (event) => events.push(event),
     );
 
-    expect(executeMock).toHaveBeenCalledTimes(1);
+    expect(executeMock).toHaveBeenCalledTimes(3);
     expect(dataMocks.createOrGetAssistantToolRun).toHaveBeenLastCalledWith(
       expect.objectContaining({
         namespace: "enrollments",
@@ -998,6 +1088,235 @@ describe("assistant orchestration", () => {
     );
   });
 
+  it("rejects a mutation ID that was not established by a lookup", async () => {
+    responses.queue.push(
+      {
+        events: [],
+        final: {
+          output_text: "",
+          output: [{
+            type: "function_call",
+            namespace: "students",
+            name: "archive_student",
+            call_id: "call-unverified-archive",
+            arguments: JSON.stringify({ id: "student-unverified" }),
+          }],
+          usage,
+        },
+      },
+      {
+        events: [],
+        final: {
+          output_text: "I need to look up the exact student first.",
+          output: [],
+          usage,
+        },
+      },
+    );
+
+    await processAssistantTurn(
+      { id: "admin-1", role: "STAFF" },
+      {
+        clientTurnId: "c7bcb6f9-41e7-4c17-bf0d-3e1b04c8e0d4",
+        message: "Archive that student",
+      },
+      () => undefined,
+    );
+
+    expect(dataMocks.createOrGetAssistantToolRun).not.toHaveBeenCalled();
+    expect(executeMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps ambiguous candidates blocked even if the model inspects one", async () => {
+    responses.queue.push(
+      {
+        events: [],
+        final: {
+          output_text: "",
+          output: [{
+            type: "function_call",
+            namespace: "students",
+            name: "search_students",
+            call_id: "call-search-mayas",
+            arguments: JSON.stringify({ query: "Maya", limit: 10 }),
+          }],
+          usage,
+        },
+      },
+      {
+        events: [],
+        final: {
+          output_text: "",
+          output: [{
+            type: "function_call",
+            namespace: "students",
+            name: "get_student",
+            call_id: "call-pick-maya",
+            arguments: JSON.stringify({ id: "student-1" }),
+          }],
+          usage,
+        },
+      },
+      {
+        events: [],
+        final: {
+          output_text: "",
+          output: [{
+            type: "function_call",
+            namespace: "students",
+            name: "archive_student",
+            call_id: "call-archive-picked-maya",
+            arguments: JSON.stringify({ id: "student-1" }),
+          }],
+          usage,
+        },
+      },
+      {
+        events: [],
+        final: {
+          output_text: "I found two Maya records. Which one do you mean?",
+          output: [],
+          usage,
+        },
+      },
+    );
+    dataMocks.createOrGetAssistantToolRun
+      .mockResolvedValueOnce({
+        id: "tool-search-mayas",
+        runId: "run-1",
+        callId: "call-search-mayas",
+        namespace: "students",
+        toolName: "search_students",
+        arguments: { query: "Maya", limit: 10 },
+        status: "RUNNING",
+        requiresConfirmation: false,
+      })
+      .mockResolvedValueOnce({
+        id: "tool-pick-maya",
+        runId: "run-1",
+        callId: "call-pick-maya",
+        namespace: "students",
+        toolName: "get_student",
+        arguments: { id: "student-1" },
+        status: "RUNNING",
+        requiresConfirmation: false,
+      });
+    executeMock
+      .mockResolvedValueOnce({
+        ok: true,
+        data: {
+          students: [
+            { id: "student-1", name: "Maya Chen" },
+            { id: "student-2", name: "Maya Thompson" },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        data: { id: "student-1", name: "Maya Chen" },
+      });
+
+    await processAssistantTurn(
+      { id: "admin-1", role: "STAFF" },
+      {
+        clientTurnId: "c7bcb6f9-41e7-4c17-bf0d-3e1b04c8e0d4",
+        message: "Archive Maya",
+      },
+      () => undefined,
+    );
+
+    expect(executeMock).toHaveBeenCalledTimes(2);
+    expect(dataMocks.createOrGetAssistantToolRun).toHaveBeenCalledTimes(2);
+    expect(dataMocks.pauseAssistantRun).not.toHaveBeenCalled();
+  });
+
+  it("allows a mutation after one unambiguous search result", async () => {
+    responses.queue.push(
+      {
+        events: [],
+        final: {
+          output_text: "",
+          output: [{
+            type: "function_call",
+            namespace: "students",
+            name: "search_students",
+            call_id: "call-search-one-maya",
+            arguments: JSON.stringify({ query: "Maya Chen", limit: 10 }),
+          }],
+          usage,
+        },
+      },
+      {
+        events: [],
+        final: {
+          output_text: "",
+          output: [{
+            type: "function_call",
+            namespace: "students",
+            name: "archive_student",
+            call_id: "call-archive-one-maya",
+            arguments: JSON.stringify({ id: "student-1" }),
+          }],
+          usage,
+        },
+      },
+    );
+    dataMocks.createOrGetAssistantToolRun
+      .mockResolvedValueOnce({
+        id: "tool-search-one-maya",
+        runId: "run-1",
+        callId: "call-search-one-maya",
+        namespace: "students",
+        toolName: "search_students",
+        arguments: { query: "Maya Chen", limit: 10 },
+        status: "RUNNING",
+        requiresConfirmation: false,
+      })
+      .mockResolvedValueOnce({
+        id: "tool-archive-one-maya",
+        runId: "run-1",
+        callId: "call-archive-one-maya",
+        namespace: "students",
+        toolName: "archive_student",
+        arguments: { id: "student-1" },
+        status: "PENDING_CONFIRMATION",
+        requiresConfirmation: true,
+        expiresAt: new Date("2026-08-24T00:00:00.000Z"),
+      });
+    executeMock.mockResolvedValueOnce({
+      ok: true,
+      data: {
+        students: [{
+          id: "student-1",
+          name: "Maya Chen",
+          primaryGuardian: { id: "guardian-1", name: "Ana Chen" },
+        }],
+      },
+    });
+    confirmationCardMock.mockResolvedValue({
+      kind: "STUDENT",
+      entityKey: "student:student-1",
+      title: "Maya Chen",
+      badges: [],
+      fields: [],
+      href: "/students?student=student-1",
+      actionLabel: "View student",
+      suggestedActions: [],
+    });
+
+    await processAssistantTurn(
+      { id: "admin-1", role: "STAFF" },
+      {
+        clientTurnId: "c7bcb6f9-41e7-4c17-bf0d-3e1b04c8e0d4",
+        message: "Archive Maya Chen",
+      },
+      () => undefined,
+    );
+
+    expect(executeMock).toHaveBeenCalledTimes(1);
+    expect(dataMocks.pauseAssistantRun).toHaveBeenCalledTimes(1);
+  });
+
   it("pauses a risky mutation and emits a deterministic confirmation", async () => {
     const paymentArguments = {
       studentId: "student-1",
@@ -1005,32 +1324,58 @@ describe("assistant orchestration", () => {
       method: "CARD",
       paidAt: "2026-07-26",
     };
-    responses.queue.push({
-      events: [],
-      final: {
-        output_text: "",
-        output: [
-          {
+    responses.queue.push(
+      {
+        events: [],
+        final: {
+          output_text: "",
+          output: [{
+            type: "function_call",
+            namespace: "students",
+            name: "get_student",
+            call_id: "call-payment-student",
+            arguments: JSON.stringify({ id: "student-1" }),
+          }],
+          usage,
+        },
+      },
+      {
+        events: [],
+        final: {
+          output_text: "",
+          output: [{
             type: "function_call",
             namespace: "billing",
             name: "record_payment",
             call_id: "call-payment",
             arguments: JSON.stringify(paymentArguments),
-          },
-        ],
-        usage,
+          }],
+          usage,
+        },
       },
-    });
-    dataMocks.createOrGetAssistantToolRun.mockResolvedValue({
-      id: "tool-payment",
-      runId: "run-1",
-      callId: "call-payment",
-      namespace: "billing",
-      toolName: "record_payment",
-      arguments: paymentArguments,
-      status: "PENDING_CONFIRMATION",
-      requiresConfirmation: true,
-    });
+    );
+    dataMocks.createOrGetAssistantToolRun
+      .mockResolvedValueOnce({
+        id: "tool-payment-student",
+        runId: "run-1",
+        callId: "call-payment-student",
+        namespace: "students",
+        toolName: "get_student",
+        arguments: { id: "student-1" },
+        status: "RUNNING",
+        requiresConfirmation: false,
+      })
+      .mockResolvedValueOnce({
+        id: "tool-payment",
+        runId: "run-1",
+        callId: "call-payment",
+        namespace: "billing",
+        toolName: "record_payment",
+        arguments: paymentArguments,
+        status: "PENDING_CONFIRMATION",
+        requiresConfirmation: true,
+      });
+    executeMock.mockResolvedValueOnce({ ok: true, data: { id: "student-1" } });
     const card = {
       kind: "STUDENT",
       entityKey: "student:student-1",
@@ -1053,7 +1398,7 @@ describe("assistant orchestration", () => {
       (event) => events.push(event),
     );
 
-    expect(executeMock).not.toHaveBeenCalled();
+    expect(executeMock).toHaveBeenCalledTimes(1);
     expect(dataMocks.pauseAssistantRun).toHaveBeenCalledTimes(1);
     expect(dataMocks.createOrGetAssistantToolRun).toHaveBeenCalledWith(
       expect.objectContaining({
