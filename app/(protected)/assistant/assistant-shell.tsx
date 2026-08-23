@@ -24,6 +24,8 @@ import {
   Loader2,
   MessageSquare,
   PanelLeft,
+  PanelLeftClose,
+  PanelLeftOpen,
   Paperclip,
   Plus,
   Send,
@@ -804,6 +806,7 @@ export function AssistantShell({
   const [decisionToolId, setDecisionToolId] = useState<string | null>(null);
   const [failedTurn, setFailedTurn] = useState<FailedTurn | null>(null);
   const [threadSheetOpen, setThreadSheetOpen] = useState(false);
+  const [threadRailOpen, setThreadRailOpen] = useState(true);
   const [confirmationNow, setConfirmationNow] = useState(() => Date.now());
   const [announcement, setAnnouncement] = useState("");
   const [isArchiving, startArchiving] = useTransition();
@@ -1238,14 +1241,56 @@ export function AssistantShell({
   );
 
   return (
-    <div className="grid h-[calc(100dvh-5.5rem)] min-h-0 overflow-hidden rounded-xl border bg-background shadow-sm lg:grid-cols-[16rem_minmax(0,1fr)]">
-      <aside className="hidden min-h-0 flex-col border-r bg-muted/15 lg:flex">
-        <div className="border-b p-3">
-          <Button className="w-full gap-2" onClick={newConversation}>
-            <Plus /> New thread
-          </Button>
+    <div
+      className={cn(
+        "grid h-[calc(100dvh-5.5rem)] min-h-0 overflow-hidden rounded-xl border bg-background shadow-sm transition-[grid-template-columns] duration-200 ease-out motion-reduce:transition-none",
+        threadRailOpen
+          ? "lg:grid-cols-[16rem_minmax(0,1fr)]"
+          : "lg:grid-cols-[0rem_minmax(0,1fr)]",
+      )}
+    >
+      <aside
+        id="assistant-thread-rail"
+        aria-hidden={!threadRailOpen}
+        inert={!threadRailOpen}
+        className={cn(
+          "hidden min-h-0 min-w-0 overflow-hidden border-r bg-muted/15 transition-[border-color] duration-200 ease-out motion-reduce:transition-none lg:block",
+          !threadRailOpen && "border-transparent",
+        )}
+      >
+        <div
+          className={cn(
+            "flex h-full w-64 min-w-64 flex-col transition-[opacity,transform] duration-200 ease-out motion-reduce:transition-none",
+            threadRailOpen
+              ? "translate-x-0 opacity-100"
+              : "-translate-x-2 opacity-0",
+          )}
+        >
+          <div className="border-b p-3">
+            <div className="flex items-center gap-2">
+              <Button
+                className="min-w-0 flex-1 gap-2"
+                onClick={newConversation}
+              >
+                <Plus /> New thread
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="shrink-0"
+                aria-label="Close conversations"
+                aria-controls="assistant-thread-rail"
+                aria-expanded="true"
+                title="Close conversations"
+                onClick={() => setThreadRailOpen(false)}
+              >
+                <PanelLeftClose />
+              </Button>
+            </div>
+          </div>
+          {threadList}
         </div>
-        {threadList}
       </aside>
 
       <section className="relative flex min-h-0 min-w-0 flex-col bg-background">
@@ -1253,6 +1298,21 @@ export function AssistantShell({
           {announcement}
         </span>
         <header className="flex h-14 shrink-0 items-center gap-3 border-b bg-background/95 px-4 backdrop-blur sm:px-6">
+          {!threadRailOpen ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              className="hidden lg:inline-flex"
+              aria-label="Open conversations"
+              aria-controls="assistant-thread-rail"
+              aria-expanded="false"
+              title="Open conversations"
+              onClick={() => setThreadRailOpen(true)}
+            >
+              <PanelLeftOpen />
+            </Button>
+          ) : null}
           <Sheet open={threadSheetOpen} onOpenChange={setThreadSheetOpen}>
             <SheetTrigger asChild>
               <Button variant="ghost" size="icon-sm" className="lg:hidden">
@@ -1536,7 +1596,7 @@ export function AssistantShell({
           )}
         </div>
 
-        <div className="shrink-0 border-t bg-background/95 p-3 backdrop-blur sm:p-4">
+        <div className="shrink-0 bg-background/95 p-3 backdrop-blur sm:p-4">
           <form
             onSubmit={handleSubmit}
             className="mx-auto max-w-[48rem] overflow-hidden rounded-2xl border bg-card shadow-sm transition-shadow focus-within:border-primary/30 focus-within:ring-2 focus-within:ring-primary/10"
