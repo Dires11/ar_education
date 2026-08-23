@@ -22,6 +22,7 @@ const dataMocks = vi.hoisted(() => ({
   failAssistantToolRun: vi.fn(async () => undefined),
   markAssistantToolRunUnknown: vi.fn(async () => undefined),
   getAssistantContext: vi.fn(),
+  getAssistantRunForRetry: vi.fn(),
   getAssistantSummarySource: vi.fn(async () => null),
   getAssistantThread: vi.fn(),
   getAssistantThreadMessageCount: vi.fn(async () => 2),
@@ -240,6 +241,40 @@ describe("assistant orchestration", () => {
     );
     expect(responses.requests[0].instructions).toEqual(
       expect.stringContaining("verify each target with a lookup"),
+    );
+  });
+
+  it("supersedes a failed read-only turn when retrying with a fresh ID", async () => {
+    dataMocks.getAssistantRunForRetry.mockResolvedValue({
+      id: "failed-run-1",
+      threadId: "thread-1",
+      hasAttachments: false,
+      toolRuns: [
+        {
+          namespace: "students",
+          toolName: "search_students",
+          status: "COMPLETED",
+        },
+      ],
+    });
+    responses.queue.push({
+      events: [],
+      final: { output_text: "Found Maya.", output: [], usage },
+    });
+
+    await processAssistantTurn(
+      { id: "admin-1", role: "STAFF" },
+      {
+        threadId: "thread-1",
+        clientTurnId: "71d7231b-8501-4ff4-8a32-a496b5b32310",
+        retryOfClientTurnId: "af701ca4-41eb-43e7-bb60-818de3082bb4",
+        message: "Find Maya",
+      },
+      () => undefined,
+    );
+
+    expect(dataMocks.createAssistantTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ supersedesRunId: "failed-run-1" }),
     );
   });
 
@@ -925,6 +960,20 @@ describe("assistant orchestration", () => {
           output_text: "",
           output: [{
             type: "function_call",
+            namespace: "catalog",
+            name: "list_subjects",
+            call_id: "call-subject",
+            arguments: JSON.stringify({ id: "subject-1", limit: 1 }),
+          }],
+          usage,
+        },
+      },
+      {
+        events: [],
+        final: {
+          output_text: "",
+          output: [{
+            type: "function_call",
             namespace: "enrollments",
             name: "create_enrollment",
             call_id: "call-enrollment",
@@ -974,6 +1023,16 @@ describe("assistant orchestration", () => {
         requiresConfirmation: false,
       })
       .mockResolvedValueOnce({
+        id: "tool-subject",
+        runId: "run-1",
+        callId: "call-subject",
+        namespace: "catalog",
+        toolName: "list_subjects",
+        arguments: { id: "subject-1", limit: 1 },
+        status: "RUNNING",
+        requiresConfirmation: false,
+      })
+      .mockResolvedValueOnce({
         id: "tool-enrollment",
         runId: "run-1",
         callId: "call-enrollment",
@@ -992,6 +1051,14 @@ describe("assistant orchestration", () => {
       .mockResolvedValueOnce({ ok: true, data: { id: "tutor-1" } })
       .mockResolvedValueOnce({
         ok: true,
+        data: {
+          total: 1,
+          hasMore: false,
+          subjects: [{ id: "subject-1", name: "Mathematics" }],
+        },
+      })
+      .mockResolvedValueOnce({
+        ok: true,
         data: { id: "enrollment-1" },
       });
     const events: Array<Record<string, unknown>> = [];
@@ -1005,7 +1072,7 @@ describe("assistant orchestration", () => {
       (event) => events.push(event),
     );
 
-    expect(executeMock).toHaveBeenCalledTimes(4);
+    expect(executeMock).toHaveBeenCalledTimes(5);
     expect(dataMocks.createOrGetAssistantToolRun).toHaveBeenLastCalledWith(
       expect.objectContaining({
         namespace: "enrollments",
@@ -1083,6 +1150,85 @@ describe("assistant orchestration", () => {
       expect.objectContaining({
         content: expect.stringContaining("Which student"),
       }),
+    );
+  });
+
+  it("does not authorize nested records returned by an exact-detail lookup", async () => {
+    responses.queue.push(
+      {
+        events: [],
+        final: {
+          output_text: "",
+          output: [{
+            type: "function_call",
+            namespace: "tutors",
+            name: "get_tutor",
+            call_id: "call-tutor-detail",
+            arguments: JSON.stringify({ id: "tutor-1" }),
+          }],
+          usage,
+        },
+      },
+      {
+        events: [],
+        final: {
+          output_text: "",
+          output: [{
+            type: "function_call",
+            namespace: "students",
+            name: "update_student",
+            call_id: "call-wrong-student",
+            arguments: JSON.stringify({
+              id: "student-nested",
+              school: "North High",
+            }),
+          }],
+          usage,
+        },
+      },
+      {
+        events: [],
+        final: {
+          output_text: "I need to look up that student directly first.",
+          output: [],
+          usage,
+        },
+      },
+    );
+    dataMocks.createOrGetAssistantToolRun.mockResolvedValue({
+      id: "tool-tutor-detail",
+      runId: "run-1",
+      callId: "call-tutor-detail",
+      namespace: "tutors",
+      toolName: "get_tutor",
+      arguments: { id: "tutor-1" },
+      status: "RUNNING",
+      requiresConfirmation: false,
+    });
+    executeMock.mockResolvedValue({
+      ok: true,
+      data: {
+        id: "tutor-1",
+        enrollments: [
+          { id: "enrollment-1", student: { id: "student-nested" } },
+        ],
+      },
+    });
+
+    await processAssistantTurn(
+      { id: "admin-1", role: "STAFF" },
+      {
+        clientTurnId: "dcb4852a-3ff7-482c-ad04-04519f967310",
+        message: "Update a student from this tutor record",
+      },
+      () => undefined,
+    );
+
+    expect(executeMock).toHaveBeenCalledTimes(1);
+    expect(dataMocks.createOrGetAssistantToolRun).toHaveBeenCalledTimes(1);
+    const finalInput = responses.requests.at(-1)?.input;
+    expect(JSON.stringify(finalInput)).toContain(
+      "mutation targets were not established",
     );
   });
 
@@ -1589,6 +1735,20 @@ describe("assistant orchestration", () => {
             arguments: { id: "tutor-1" },
             status: "COMPLETED",
             result: { ok: true, data: { id: "tutor-1" } },
+          },
+          {
+            namespace: "catalog",
+            toolName: "list_subjects",
+            arguments: { id: "subject-1", limit: 1 },
+            status: "COMPLETED",
+            result: {
+              ok: true,
+              data: {
+                total: 1,
+                hasMore: false,
+                subjects: [{ id: "subject-1", name: "Mathematics" }],
+              },
+            },
           },
         ],
       },

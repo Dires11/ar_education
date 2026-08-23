@@ -3,17 +3,21 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const studentMocks = vi.hoisted(() => ({
   createStudentWithGuardian: vi.fn(),
   getStudent: vi.fn(),
+  getStudentForAssistant: vi.fn(),
 }));
 const paymentDataMocks = vi.hoisted(() => ({
   getPaymentForAssistantConfirmation: vi.fn(),
   listPaymentsForAssistant: vi.fn(),
 }));
 const sessionDataMocks = vi.hoisted(() => ({
+  getRecurrenceRuleForAssistant: vi.fn(),
   getRecurrenceRuleWithParticipants: vi.fn(),
   getSession: vi.fn(),
+  getSessionForAssistant: vi.fn(),
 }));
 const sessionServiceMocks = vi.hoisted(() => ({
   getEnrollmentMonthSummary: vi.fn(),
+  getMonthScheduleForAssistant: vi.fn(),
   getRecurringSchedulePreview: vi.fn(),
   listRecurrenceRulesForAssistant: vi.fn(),
 }));
@@ -28,22 +32,33 @@ const emailServiceMocks = vi.hoisted(() => ({
   getEmailDeliveryConfirmation: vi.fn(),
   sendEmailToStudents: vi.fn(),
 }));
+const emailDataMocks = vi.hoisted(() => ({
+  getEmailTemplate: vi.fn(),
+  listEmailTemplatesForAssistant: vi.fn(),
+}));
+const dashboardMocks = vi.hoisted(() => ({
+  getDashboardStats: vi.fn(),
+}));
 const referenceDataMocks = vi.hoisted(() => ({
   getTutor: vi.fn(),
+  getTutorForAssistant: vi.fn(),
   getSubject: vi.fn(),
   getPackage: vi.fn(),
   getEnrollment: vi.fn(),
+  getEnrollmentForAssistant: vi.fn(),
   listGroups: vi.fn(),
 }));
 
 vi.mock("@/lib/data/students", () => ({
   getStudent: studentMocks.getStudent,
+  getStudentForAssistant: studentMocks.getStudentForAssistant,
   listStudents: vi.fn(),
 }));
 vi.mock("@/lib/data/payments", () => paymentDataMocks);
 vi.mock("@/lib/data/sessions", () => sessionDataMocks);
 vi.mock("@/lib/data/tutors", () => ({
   getTutor: referenceDataMocks.getTutor,
+  getTutorForAssistant: referenceDataMocks.getTutorForAssistant,
   listTutors: vi.fn(),
 }));
 vi.mock("@/lib/data/subjects", () => ({
@@ -55,13 +70,16 @@ vi.mock("@/lib/data/packages", () => ({
   listPackages: vi.fn(),
 }));
 vi.mock("@/lib/data/enrollments", () => ({
+  getDiscountForAssistant: vi.fn(),
   getDiscountWithEnrollment: vi.fn(),
   getEnrollment: referenceDataMocks.getEnrollment,
+  getEnrollmentForAssistant: referenceDataMocks.getEnrollmentForAssistant,
   searchEnrollmentsForAssistant: vi.fn(),
 }));
 vi.mock("@/lib/data/groups", () => ({
   listGroups: referenceDataMocks.listGroups,
 }));
+vi.mock("@/lib/data/emails", () => emailDataMocks);
 
 vi.mock("@/lib/services/students", () => ({
   addGuardianToStudent: vi.fn(),
@@ -84,10 +102,11 @@ vi.mock("@/lib/services/sessions", () => ({
   deleteSessionById: vi.fn(),
   endRecurrenceFromDate: vi.fn(),
   getEnrollmentMonthSummary: sessionServiceMocks.getEnrollmentMonthSummary,
+  getMonthScheduleForAssistant:
+    sessionServiceMocks.getMonthScheduleForAssistant,
   getRecurringSchedulePreview: sessionServiceMocks.getRecurringSchedulePreview,
   listRecurrenceRulesForAssistant:
     sessionServiceMocks.listRecurrenceRulesForAssistant,
-  getMonthSchedule: vi.fn(),
   markSessionAttendance: vi.fn(),
   rescheduleVirtualOccurrence: vi.fn(),
   splitRecurrenceRule: vi.fn(),
@@ -117,6 +136,7 @@ vi.mock("@/lib/services/emails", () => ({
   sendEmailToStudents: emailServiceMocks.sendEmailToStudents,
   updateTemplate: vi.fn(),
 }));
+vi.mock("@/lib/services/dashboard", () => dashboardMocks);
 
 import {
   collectAssistantIdentifierValues,
@@ -770,15 +790,42 @@ describe("assistant tool result cards", () => {
       title: "Maya Chen payment",
       subtitle: "Payment selected for permanent deletion",
       badges: [{ label: "Permanent action", tone: "DESTRUCTIVE" }],
+      href: "/payments?tab=history&studentId=student-1",
+    });
+  });
+
+  it("deep-links exact email-template cards to the selected editor", async () => {
+    emailDataMocks.getEmailTemplate.mockResolvedValue({
+      id: "template-1",
+      name: "Payment Reminder",
+      type: "PAYMENT_REMINDER",
+      subject: "Payment due",
+      body: "Hello",
+    });
+
+    await expect(
+      executeAssistantTool({
+        namespace: "communications",
+        name: "get_email_template",
+        argumentsValue: { id: "template-1" },
+        context: { admin: { id: "admin-1", role: "STAFF" } },
+      }),
+    ).resolves.toMatchObject({
+      card: {
+        entityKey: "email-template:template-1",
+        href: "/emails?tab=templates&template=template-1",
+      },
     });
   });
 
   it("supports exact session and payment lookups needed before mutations", async () => {
-    sessionDataMocks.getSession.mockResolvedValue({
+    sessionDataMocks.getSessionForAssistant.mockResolvedValue({
       id: "session-1",
       scheduledFor: new Date("2026-08-24T18:00:00.000Z"),
       durationMinutes: 60,
       room: "A",
+      attendance: [],
+      _count: { attendance: 0 },
     });
     paymentDataMocks.listPaymentsForAssistant.mockResolvedValue({
       payments: [{ id: "payment-1", amount: "120" }],
@@ -816,6 +863,44 @@ describe("assistant tool result cards", () => {
     expect(paymentDataMocks.listPaymentsForAssistant).toHaveBeenCalledWith(
       expect.objectContaining({ paymentId: "payment-1" }),
     );
+  });
+
+  it("uses pure bounded schedule and dashboard reads", async () => {
+    sessionServiceMocks.getMonthScheduleForAssistant.mockResolvedValue({
+      month: "2026-08",
+      realSessions: { total: 0, hasMore: false, results: [] },
+      virtualSessions: { total: 0, hasMore: false, results: [] },
+    });
+    dashboardMocks.getDashboardStats.mockResolvedValue({
+      activeStudentCount: 0,
+      todaySessions: [],
+      tomorrowSessions: [],
+      upcomingEndings: [],
+      tutorCounts: [],
+      unpaidStudents: [],
+      weeklySessionsByDay: [],
+      monthlyRevenue: [],
+    });
+
+    await executeAssistantTool({
+      namespace: "schedule",
+      name: "get_schedule",
+      argumentsValue: { month: "2026-08", limit: 25 },
+      context: { admin: { id: "admin-1", role: "STAFF" } },
+    });
+    await executeAssistantTool({
+      namespace: "reporting",
+      name: "get_dashboard_summary",
+      argumentsValue: {},
+      context: { admin: { id: "admin-1", role: "STAFF" } },
+    });
+
+    expect(
+      sessionServiceMocks.getMonthScheduleForAssistant,
+    ).toHaveBeenCalledWith("2026-08", 25);
+    expect(dashboardMocks.getDashboardStats).toHaveBeenCalledWith({
+      materialize: false,
+    });
   });
 
   it("passes a deterministic idempotency key to outbound email", async () => {
@@ -903,7 +988,7 @@ describe("assistant tool result cards", () => {
       },
       group: null,
     };
-    sessionDataMocks.getRecurrenceRuleWithParticipants.mockResolvedValue(rule);
+    sessionDataMocks.getRecurrenceRuleForAssistant.mockResolvedValue(rule);
 
     const listResult = await executeAssistantTool({
       namespace: "recurrence",

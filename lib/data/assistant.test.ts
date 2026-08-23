@@ -63,7 +63,17 @@ describe("assistant persistence guarantees", () => {
     ).resolves.toBe(7);
     expect(prismaMock.assistantThread.findFirst).toHaveBeenCalledWith({
       where: { id: "thread-1", adminId: "admin-1" },
-      select: { _count: { select: { messages: true } } },
+      select: {
+        _count: {
+          select: {
+            messages: {
+              where: {
+                OR: [{ runId: null }, { run: { supersededAt: null } }],
+              },
+            },
+          },
+        },
+      },
     });
   });
 
@@ -262,6 +272,82 @@ describe("assistant persistence guarantees", () => {
         attachments: expect.anything(),
       },
     });
+  });
+
+  it("atomically records retry lineage and hides the superseded run", async () => {
+    const thread = {
+      id: "thread-1",
+      adminId: "admin-1",
+      archivedAt: null,
+    };
+    const run = {
+      id: "run-new",
+      threadId: thread.id,
+      status: "RUNNING",
+      messages: [],
+      toolRuns: [],
+    };
+    const tx = {
+      assistantThread: {
+        findFirst: vi.fn().mockResolvedValue(thread),
+        update: vi.fn().mockResolvedValue(thread),
+      },
+      assistantMessage: { count: vi.fn().mockResolvedValue(1) },
+      assistantRun: {
+        findUnique: vi.fn().mockResolvedValue(null),
+        findFirst: vi.fn().mockResolvedValue(null),
+        findMany: vi.fn().mockResolvedValue([]),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        create: vi.fn().mockResolvedValue(run),
+      },
+      assistantToolRun: {
+        findMany: vi.fn().mockResolvedValue([]),
+        updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+      },
+    };
+    prismaMock.$transaction.mockImplementation(
+      (callback: (client: typeof tx) => unknown) => callback(tx),
+    );
+
+    await createAssistantTurn({
+      adminId: "admin-1",
+      threadId: "thread-1",
+      clientTurnId: "turn-new",
+      message: "Edited request",
+      supersedesRunId: "run-old",
+      model: "gpt-5.6-luna",
+    });
+
+    expect(tx.assistantRun.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: "run-old",
+        threadId: "thread-1",
+        status: "FAILED",
+        supersededAt: null,
+        thread: { adminId: "admin-1", archivedAt: null },
+      },
+      data: { supersededAt: expect.any(Date) },
+    });
+    expect(tx.assistantRun.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ supersedesRunId: "run-old" }),
+      }),
+    );
+    expect(tx.assistantThread.update).toHaveBeenCalledWith({
+      where: { id: "thread-1" },
+      data: {
+        updatedAt: expect.any(Date),
+        contextSummary: null,
+        summarizedMessageCount: 0,
+      },
+    });
+    expect(tx.assistantMessage.count).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          OR: [{ runId: null }, { run: { supersededAt: null } }],
+        }),
+      }),
+    );
   });
 
   it("atomically claims a pending, unexpired confirmation", async () => {

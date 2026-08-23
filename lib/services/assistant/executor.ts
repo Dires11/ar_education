@@ -4,9 +4,14 @@ import { z } from "zod";
 import type { Admin } from "@/generated/prisma";
 import {
   getStudent as getStudentData,
+  getStudentForAssistant,
   listStudents,
 } from "@/lib/data/students";
-import { listTutors, getTutor as getTutorData } from "@/lib/data/tutors";
+import {
+  getTutor as getTutorData,
+  getTutorForAssistant,
+  listTutors,
+} from "@/lib/data/tutors";
 import {
   getSubject,
   listSubjects,
@@ -17,8 +22,10 @@ import {
   listPackagesForAssistant,
 } from "@/lib/data/packages";
 import {
+  getDiscountForAssistant,
   getDiscountWithEnrollment,
   getEnrollment,
+  getEnrollmentForAssistant,
   searchEnrollmentsForAssistant,
 } from "@/lib/data/enrollments";
 import { listGroups, listGroupsForAssistant } from "@/lib/data/groups";
@@ -27,8 +34,10 @@ import {
   listPaymentsForAssistant,
 } from "@/lib/data/payments";
 import {
+  getRecurrenceRuleForAssistant,
   getRecurrenceRuleWithParticipants,
   getSession as getSessionData,
+  getSessionForAssistant,
 } from "@/lib/data/sessions";
 import {
   getEmailTemplate,
@@ -74,7 +83,7 @@ import {
 import {
   createAdHocSession,
   createRecurringSchedule,
-  getMonthSchedule,
+  getMonthScheduleForAssistant,
   markSessionAttendance,
   updateScheduledSession,
   updateSessionStatus,
@@ -677,9 +686,21 @@ function packageResultCard(
   };
 }
 
-type EnrollmentCardSource = NonNullable<
-  Awaited<ReturnType<typeof getEnrollment>>
->;
+type EnrollmentCardSource = {
+  id: string;
+  status: string;
+  startDate: Date;
+  priceAtEnrollment: { toString(): string } | string | number;
+  customPriceOverride?: { toString(): string } | string | number | null;
+  student: {
+    firstName: string;
+    lastName: string;
+    avatarUrl?: string | null;
+  };
+  tutor: { firstName: string; lastName: string };
+  subject: { name: string };
+  package: { name: string; lessonType: string };
+};
 
 function enrollmentResultCard(
   enrollment: EnrollmentCardSource,
@@ -695,7 +716,7 @@ function enrollmentResultCard(
       kind: "STUDENT",
       firstName: enrollment.student.firstName,
       lastName: enrollment.student.lastName,
-      avatarUrl: enrollment.student.avatarUrl,
+      avatarUrl: enrollment.student.avatarUrl ?? null,
     },
     badges: [
       {
@@ -906,8 +927,8 @@ function paymentResultCard(
           ]
         : []),
     ],
-    href: "/payments",
-    actionLabel: "View payments",
+    href: `/payments?tab=history&studentId=${encodeURIComponent(student.id)}`,
+    actionLabel: `View ${student.firstName}'s payment history`,
     suggestedActions: [{ kind: "DISMISS", label: "Done for now" }],
   };
 }
@@ -969,9 +990,18 @@ function subjectResultCard(
 }
 
 function recurrenceResultCard(
-  rule: NonNullable<
-    Awaited<ReturnType<typeof getRecurrenceRuleWithParticipants>>
-  >,
+  rule: {
+    id: string;
+    dayOfWeek: number;
+    startTime: string;
+    durationMinutes: number;
+    startsOn: Date;
+    enrollment?: {
+      student: { firstName: string; lastName: string };
+      subject: { name: string };
+    } | null;
+    group?: { name: string; subject: { name: string } } | null;
+  },
   subtitle: string,
 ): AssistantResultCard {
   const dayName = new Intl.DateTimeFormat("en-US", {
@@ -1073,8 +1103,8 @@ function emailTemplateResultCard(
     subtitle,
     badges: [{ label: titleCase(template.type), tone: "NEUTRAL" }],
     fields: [{ label: "Subject", value: template.subject, icon: "MAIL" }],
-    href: "/emails",
-    actionLabel: "View email templates",
+    href: `/emails?tab=templates&template=${encodeURIComponent(template.id)}`,
+    actionLabel: `Open ${template.name}`,
     suggestedActions: [],
   };
 }
@@ -1723,10 +1753,17 @@ async function executeStudents(name: string, args: ToolArguments) {
     }
     case "get_student": {
       const id = stringValue(args, "id");
-      const student = await getStudentData(id);
-      if (!student) throw new Error("Student not found");
+      const result = await getStudentForAssistant(id);
+      if (!result) throw new Error("Student not found");
+      const { _count, ...student } = result;
       return toolResult(
-        student,
+        {
+          ...student,
+          guardianTotal: _count.guardians,
+          enrollmentTotal: _count.enrollments,
+          hasMoreGuardians: _count.guardians > student.guardians.length,
+          hasMoreEnrollments: _count.enrollments > student.enrollments.length,
+        },
         `/students?student=${id}`,
         studentResultCard(student, "Student record"),
       );
@@ -1906,10 +1943,17 @@ async function executeTutors(name: string, args: ToolArguments) {
     }
     case "get_tutor": {
       const id = stringValue(args, "id");
-      const tutor = await getTutorData(id);
-      if (!tutor) throw new Error("Tutor not found");
+      const result = await getTutorForAssistant(id);
+      if (!result) throw new Error("Tutor not found");
+      const { _count, ...tutor } = result;
       return toolResult(
-        tutor,
+        {
+          ...tutor,
+          subjectTotal: _count.subjects,
+          enrollmentTotal: _count.enrollments,
+          hasMoreSubjects: _count.subjects > tutor.subjects.length,
+          hasMoreEnrollments: _count.enrollments > tutor.enrollments.length,
+        },
         `/tutors/${id}`,
         tutorResultCard(tutor, "Tutor record"),
       );
@@ -2172,22 +2216,42 @@ async function executeEnrollments(name: string, args: ToolArguments) {
     case "get_enrollment": {
       const discountId = args.discountId as string | undefined;
       if (discountId) {
-        const discount = await getDiscountWithEnrollment(discountId);
-        if (!discount?.enrollment) throw new Error("Discount not found");
+        const discount = await getDiscountForAssistant(discountId);
+        if (!discount?.enrollmentId) throw new Error("Discount not found");
+        const result = await getEnrollmentForAssistant(discount.enrollmentId);
+        if (!result) throw new Error("Enrollment not found");
+        const { _count, ...enrollment } = result;
         return toolResult(
-          { discount, enrollment: discount.enrollment },
-          `/enrollments?enrollment=${discount.enrollment.id}`,
+          {
+            discount,
+            enrollment: {
+              ...enrollment,
+              discountTotal: _count.discounts,
+              sessionTotal: _count.sessions,
+              paymentTotal: _count.payments,
+              hasMoreDiscounts:
+                _count.discounts > enrollment.discounts.length,
+            },
+          },
+          `/enrollments?enrollment=${enrollment.id}`,
           enrollmentResultCard(
-            discount.enrollment,
+            enrollment,
             "Enrollment and discount details",
           ),
         );
       }
       const id = stringValue(args, "id");
-      const enrollment = await getEnrollment(id);
-      if (!enrollment) throw new Error("Enrollment not found");
+      const result = await getEnrollmentForAssistant(id);
+      if (!result) throw new Error("Enrollment not found");
+      const { _count, ...enrollment } = result;
       return toolResult(
-        enrollment,
+        {
+          ...enrollment,
+          discountTotal: _count.discounts,
+          sessionTotal: _count.sessions,
+          paymentTotal: _count.payments,
+          hasMoreDiscounts: _count.discounts > enrollment.discounts.length,
+        },
         `/enrollments?enrollment=${id}`,
         enrollmentResultCard(enrollment, "Enrollment details"),
       );
@@ -2285,16 +2349,24 @@ async function executeSchedule(name: string, args: ToolArguments) {
     case "get_schedule": {
       const sessionId = args.sessionId as string | undefined;
       if (sessionId) {
-        const session = await getSessionData(sessionId);
-        if (!session) throw new Error("Session not found");
+        const result = await getSessionForAssistant(sessionId);
+        if (!result) throw new Error("Session not found");
+        const { _count, ...session } = result;
         return toolResult(
-          session,
+          {
+            ...session,
+            attendanceTotal: _count.attendance,
+            hasMoreAttendance: _count.attendance > session.attendance.length,
+          },
           "/schedule",
           sessionResultCard(session, "Session details"),
         );
       }
       return toolResult(
-        await getMonthSchedule(stringValue(args, "month")),
+        await getMonthScheduleForAssistant(
+          stringValue(args, "month"),
+          Number(args.limit),
+        ),
         "/schedule",
       );
     }
@@ -2412,12 +2484,20 @@ async function executeRecurrence(name: string, args: ToolArguments) {
       return toolResult(rules, "/schedule");
     }
     case "get_recurring_schedule": {
-      const rule = await getRecurrenceRuleWithParticipants(
+      const rule = await getRecurrenceRuleForAssistant(
         stringValue(args, "ruleId"),
       );
       if (!rule) throw new Error("Recurring schedule not found");
+      const group = rule.group
+        ? {
+            ...rule.group,
+            enrollmentTotal: rule.group._count.enrollments,
+            hasMoreEnrollments:
+              rule.group._count.enrollments > rule.group.enrollments.length,
+          }
+        : null;
       return toolResult(
-        rule,
+        { ...rule, group },
         "/schedule",
         recurrenceResultCard(rule, "Recurring schedule details"),
       );
@@ -2937,7 +3017,7 @@ export async function executeAssistantTool(input: {
     case "team":
       return executeTeam(input.name, args, input.context);
     case "reporting": {
-      const dashboard = await getDashboardStats();
+      const dashboard = await getDashboardStats({ materialize: false });
       const sessionSummary = (session: (typeof dashboard.todaySessions)[number]) => ({
         id: session.id,
         scheduledFor: session.scheduledFor,

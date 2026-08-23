@@ -14,7 +14,11 @@ describe("assistant failed-run recovery", () => {
         ],
         "STAFF",
       ),
-    ).toEqual({ outcomeUnknown: false, retryable: true });
+    ).toEqual({
+      outcomeUnknown: false,
+      retryable: true,
+      reuseClientTurnId: false,
+    });
   });
 
   it("never offers one-click replay after a mutation was attempted", () => {
@@ -29,7 +33,11 @@ describe("assistant failed-run recovery", () => {
         ],
         "STAFF",
       ),
-    ).toEqual({ outcomeUnknown: false, retryable: false });
+    ).toEqual({
+      outcomeUnknown: false,
+      retryable: false,
+      reuseClientTurnId: false,
+    });
   });
 
   it("marks an interrupted mutation as outcome-unknown", () => {
@@ -44,6 +52,18 @@ describe("assistant failed-run recovery", () => {
         ],
         "STAFF",
       ),
-    ).toEqual({ outcomeUnknown: true, retryable: false });
+    ).toEqual({
+      outcomeUnknown: true,
+      retryable: false,
+      reuseClientTurnId: false,
+    });
+  });
+
+  it("reuses the existing run only when failure happened before any tool", () => {
+    expect(classifyFailedAssistantRun([], "STAFF")).toEqual({
+      outcomeUnknown: false,
+      retryable: true,
+      reuseClientTurnId: true,
+    });
   });
 });

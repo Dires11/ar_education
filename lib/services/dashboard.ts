@@ -26,7 +26,7 @@ import {
   getConfiguredCenterTimeZone,
 } from "@/lib/services/session-dates";
 
-export async function getDashboardStats() {
+export async function getDashboardStats(options?: { materialize?: boolean }) {
   const now = new Date();
   const timeZone = getConfiguredCenterTimeZone();
   const today = getCalendarDateInTimeZone(now, timeZone);
@@ -65,16 +65,18 @@ export async function getDashboardStats() {
 
   // Materialize today's + tomorrow's recurring sessions before querying,
   // so the dashboard is accurate even without a prior schedule-page visit.
-  await Promise.all([
-    materializeSessions(
-      todayStart,
-      new Date(dayAfterTomorrowStart.getTime() - 1),
-    ),
-    materializeGroupSessions(
-      todayStart,
-      new Date(dayAfterTomorrowStart.getTime() - 1),
-    ),
-  ]);
+  if (options?.materialize !== false) {
+    await Promise.all([
+      materializeSessions(
+        todayStart,
+        new Date(dayAfterTomorrowStart.getTime() - 1),
+      ),
+      materializeGroupSessions(
+        todayStart,
+        new Date(dayAfterTomorrowStart.getTime() - 1),
+      ),
+    ]);
+  }
 
   const [
     todaySessions,

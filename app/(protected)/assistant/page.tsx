@@ -47,6 +47,8 @@ export default async function AssistantPage({
                     hasAttachments: message.run.hasAttachments,
                     outcomeUnknown: recovery?.outcomeUnknown ?? true,
                     retryable: recovery?.retryable ?? false,
+                    reuseClientTurnId:
+                      recovery?.reuseClientTurnId ?? false,
                   }
                 : null,
             tools:

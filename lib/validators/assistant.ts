@@ -72,6 +72,7 @@ export const assistantTurnSchema = z
   .object({
     threadId: idSchema.optional(),
     clientTurnId: z.uuid(),
+    retryOfClientTurnId: z.uuid().optional(),
     message: z.string().trim().max(10_000),
     attachments: z
       .array(assistantAttachmentSchema)
@@ -79,6 +80,13 @@ export const assistantTurnSchema = z
       .default([]),
   })
   .superRefine((turn, context) => {
+    if (turn.retryOfClientTurnId === turn.clientTurnId) {
+      context.addIssue({
+        code: "custom",
+        path: ["retryOfClientTurnId"],
+        message: "A replacement retry must use a new request identifier",
+      });
+    }
     if (!turn.message && turn.attachments.length === 0) {
       context.addIssue({
         code: "custom",

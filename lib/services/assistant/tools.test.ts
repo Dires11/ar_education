@@ -12,8 +12,35 @@ import {
   getAssistantToolSpec,
   getAssistantToolSpecs,
 } from "@/lib/services/assistant/tools";
+import { createAdHocSessionSchema } from "@/lib/validators/sessions";
 
 describe("assistant tool registry", () => {
+  it("does not require redundant participant IDs for enrollment or group sessions", () => {
+    expect(
+      createAdHocSessionSchema.safeParse({
+        enrollmentId: "enrollment-1",
+        scheduledFor: "2026-08-24T17:00:00.000Z",
+        durationMinutes: "60",
+        studentIds: [],
+      }).success,
+    ).toBe(true);
+    expect(
+      createAdHocSessionSchema.safeParse({
+        groupId: "group-1",
+        scheduledFor: "2026-08-24T17:00:00.000Z",
+        durationMinutes: "60",
+        studentIds: [],
+      }).success,
+    ).toBe(true);
+    expect(
+      createAdHocSessionSchema.safeParse({
+        scheduledFor: "2026-08-24T17:00:00.000Z",
+        durationMinutes: "60",
+        studentIds: [],
+      }).success,
+    ).toBe(false);
+  });
+
   it("keeps namespaces small and every function deferred", () => {
     const counts = getAssistantNamespaceCounts("OWNER");
     expect(Object.values(counts).every((count) => count < 10)).toBe(true);
@@ -220,6 +247,7 @@ describe("assistant tool registry", () => {
     )!;
     expect(scheduleLookup.schema.parse({ sessionId: "session-1" })).toEqual({
       sessionId: "session-1",
+      limit: 100,
     });
     expect(() => scheduleLookup.schema.parse({})).toThrow();
 

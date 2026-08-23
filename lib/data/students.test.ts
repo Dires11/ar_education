@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const prismaMock = vi.hoisted(() => ({
   student: {
     findMany: vi.fn(),
+    findUnique: vi.fn(),
     count: vi.fn(),
   },
   $transaction: vi.fn(),
@@ -11,6 +12,7 @@ const prismaMock = vi.hoisted(() => ({
 vi.mock("@/lib/prisma", () => ({ prisma: prismaMock }));
 
 import {
+  getStudentForAssistant,
   queryStudentDirectoryData,
   updateLinkedGuardian,
 } from "@/lib/data/students";
@@ -18,6 +20,24 @@ import {
 describe("student directory data queries", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it("bounds nested guardians and enrollments in exact assistant detail", async () => {
+    prismaMock.student.findUnique.mockResolvedValue(null);
+
+    await getStudentForAssistant("student-1", 12);
+
+    expect(prismaMock.student.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "student-1" },
+        select: expect.objectContaining({
+          guardians: expect.objectContaining({ take: 12 }),
+          enrollments: expect.objectContaining({ take: 12 }),
+        }),
+      }),
+    );
+    const select = prismaMock.student.findUnique.mock.calls[0][0].select;
+    expect(select.enrollments.select.student).toBeUndefined();
   });
 
   it("answers youngest-student rankings in one bounded query", async () => {

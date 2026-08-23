@@ -136,7 +136,7 @@ export function OneTimeSessionFields({
                         value: tutor.id,
                         label: tutor.name,
                       }))}
-                      value={field.value}
+                      value={field.value ?? ""}
                       onChange={field.onChange}
                       placeholder="Select tutor"
                       emptyText="No tutors found."
@@ -152,7 +152,10 @@ export function OneTimeSessionFields({
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>Subject</FormLabel>
-                  <Select onValueChange={field.onChange} value={field.value}>
+                  <Select
+                    onValueChange={field.onChange}
+                    value={field.value ?? ""}
+                  >
                     <FormControl>
                       <SelectTrigger>
                         <SelectValue placeholder="Select subject" />

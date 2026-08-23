@@ -66,6 +66,52 @@ export async function getTutor(id: string) {
   });
 }
 
+export async function getTutorForAssistant(id: string, limit = 20) {
+  return prisma.tutor.findUnique({
+    where: { id },
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      avatarUrl: true,
+      email: true,
+      phone: true,
+      hourlyRate: true,
+      notes: true,
+      status: true,
+      createdAt: true,
+      updatedAt: true,
+      subjects: {
+        select: { subject: { select: { id: true, name: true } } },
+        orderBy: { subject: { name: "asc" } },
+        take: limit,
+      },
+      _count: {
+        select: {
+          subjects: true,
+          enrollments: { where: { status: "ACTIVE" } },
+        },
+      },
+      enrollments: {
+        where: { status: "ACTIVE" },
+        select: {
+          id: true,
+          status: true,
+          startDate: true,
+          endDate: true,
+          student: {
+            select: { id: true, firstName: true, lastName: true },
+          },
+          subject: { select: { id: true, name: true } },
+          package: { select: { id: true, name: true } },
+        },
+        orderBy: { createdAt: "desc" },
+        take: limit,
+      },
+    },
+  });
+}
+
 export async function createTutor(data: {
   firstName: string;
   lastName: string;

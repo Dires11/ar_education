@@ -172,6 +172,61 @@ export async function getStudent(id: string) {
   });
 }
 
+export async function getStudentForAssistant(id: string, limit = 20) {
+  return prisma.student.findUnique({
+    where: { id },
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      avatarUrl: true,
+      dob: true,
+      email: true,
+      phone: true,
+      school: true,
+      gradeLevel: true,
+      notes: true,
+      status: true,
+      createdAt: true,
+      updatedAt: true,
+      _count: { select: { guardians: true, enrollments: true } },
+      guardians: {
+        select: {
+          guardianId: true,
+          isPrimary: true,
+          guardian: {
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+              email: true,
+              phone: true,
+              relationship: true,
+            },
+          },
+        },
+        orderBy: { isPrimary: "desc" },
+        take: limit,
+      },
+      enrollments: {
+        select: {
+          id: true,
+          status: true,
+          startDate: true,
+          endDate: true,
+          package: { select: { id: true, name: true } },
+          tutor: {
+            select: { id: true, firstName: true, lastName: true },
+          },
+          subject: { select: { id: true, name: true } },
+        },
+        orderBy: { createdAt: "desc" },
+        take: limit,
+      },
+    },
+  });
+}
+
 export async function createStudent(data: {
   firstName: string;
   lastName: string;

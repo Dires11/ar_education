@@ -95,6 +95,61 @@ export async function getEnrollment(id: string) {
   });
 }
 
+export async function getEnrollmentForAssistant(id: string) {
+  return prisma.enrollment.findUnique({
+    where: { id },
+    select: {
+      id: true,
+      studentId: true,
+      tutorId: true,
+      subjectId: true,
+      packageId: true,
+      groupId: true,
+      status: true,
+      startDate: true,
+      endDate: true,
+      priceAtEnrollment: true,
+      customPriceOverride: true,
+      createdAt: true,
+      updatedAt: true,
+      student: {
+        select: { id: true, firstName: true, lastName: true },
+      },
+      tutor: {
+        select: { id: true, firstName: true, lastName: true },
+      },
+      subject: { select: { id: true, name: true } },
+      package: {
+        select: {
+          id: true,
+          name: true,
+          type: true,
+          billingPeriod: true,
+          lessonType: true,
+          basePrice: true,
+          sessionsPerWeek: true,
+          durationMinutes: true,
+        },
+      },
+      group: { select: { id: true, name: true } },
+      discounts: {
+        select: {
+          id: true,
+          kind: true,
+          value: true,
+          temporary: true,
+          validFrom: true,
+          validUntil: true,
+          usesRemaining: true,
+        },
+        orderBy: { createdAt: "desc" },
+        take: 20,
+      },
+      _count: { select: { discounts: true, sessions: true, payments: true } },
+    },
+  });
+}
+
 export async function createEnrollment(data: {
   studentId: string;
   packageId: string;
@@ -234,6 +289,22 @@ export async function getDiscountWithEnrollment(id: string) {
           },
         },
       },
+    },
+  });
+}
+
+export function getDiscountForAssistant(id: string) {
+  return prisma.discount.findUnique({
+    where: { id },
+    select: {
+      id: true,
+      enrollmentId: true,
+      kind: true,
+      value: true,
+      temporary: true,
+      validFrom: true,
+      validUntil: true,
+      usesRemaining: true,
     },
   });
 }

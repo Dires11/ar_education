@@ -45,6 +45,95 @@ export async function getSessionsByMonth(
   });
 }
 
+export async function getSessionsForAssistantMonth(
+  rangeStart: Date,
+  rangeEndExclusive: Date,
+  limit: number,
+) {
+  const where = {
+    scheduledFor: { gte: rangeStart, lt: rangeEndExclusive },
+  };
+  const [total, sessions, slots] = await prisma.$transaction([
+    prisma.session.count({ where }),
+    prisma.session.findMany({
+      where,
+      select: {
+        id: true,
+        enrollmentId: true,
+        tutorId: true,
+        subjectId: true,
+        recurrenceRuleId: true,
+        recurrenceOccurrenceFor: true,
+        scheduledFor: true,
+        durationMinutes: true,
+        status: true,
+        room: true,
+        tutor: {
+          select: { id: true, firstName: true, lastName: true },
+        },
+        subject: { select: { id: true, name: true } },
+        _count: { select: { attendance: true } },
+        attendance: {
+          select: {
+            status: true,
+            billable: true,
+            student: {
+              select: { id: true, firstName: true, lastName: true },
+            },
+          },
+          take: 20,
+        },
+      },
+      orderBy: { scheduledFor: "asc" },
+      take: limit,
+    }),
+    prisma.session.findMany({
+      where,
+      select: {
+        enrollmentId: true,
+        scheduledFor: true,
+        status: true,
+        recurrenceRuleId: true,
+        recurrenceOccurrenceFor: true,
+      },
+      orderBy: { scheduledFor: "asc" },
+    }),
+  ]);
+  return { total, hasMore: total > sessions.length, sessions, slots };
+}
+
+export async function getSessionForAssistant(id: string) {
+  return prisma.session.findUnique({
+    where: { id },
+    select: {
+      id: true,
+      enrollmentId: true,
+      tutorId: true,
+      subjectId: true,
+      recurrenceRuleId: true,
+      recurrenceOccurrenceFor: true,
+      scheduledFor: true,
+      durationMinutes: true,
+      status: true,
+      room: true,
+      tutor: { select: { id: true, firstName: true, lastName: true } },
+      subject: { select: { id: true, name: true } },
+      _count: { select: { attendance: true } },
+      attendance: {
+        select: {
+          enrollmentId: true,
+          status: true,
+          billable: true,
+          student: {
+            select: { id: true, firstName: true, lastName: true },
+          },
+        },
+        take: 50,
+      },
+    },
+  });
+}
+
 export async function getSession(id: string) {
   return prisma.session.findUnique({
     where: { id },
@@ -88,6 +177,67 @@ export async function getRecurrenceRuleWithParticipants(id: string) {
           enrollments: {
             where: { status: { in: ["ACTIVE", "PAUSED"] } },
             include: { student: true },
+          },
+        },
+      },
+    },
+  });
+}
+
+export async function getRecurrenceRuleForAssistant(id: string) {
+  return prisma.recurrenceRule.findUnique({
+    where: { id },
+    select: {
+      id: true,
+      enrollmentId: true,
+      groupId: true,
+      dayOfWeek: true,
+      startTime: true,
+      timeZone: true,
+      durationMinutes: true,
+      intervalWeeks: true,
+      room: true,
+      color: true,
+      startsOn: true,
+      endsOn: true,
+      enrollment: {
+        select: {
+          id: true,
+          status: true,
+          student: {
+            select: { id: true, firstName: true, lastName: true },
+          },
+          tutor: {
+            select: { id: true, firstName: true, lastName: true },
+          },
+          subject: { select: { id: true, name: true } },
+          package: { select: { id: true, name: true } },
+        },
+      },
+      group: {
+        select: {
+          id: true,
+          name: true,
+          tutor: {
+            select: { id: true, firstName: true, lastName: true },
+          },
+          subject: { select: { id: true, name: true } },
+          _count: {
+            select: {
+              enrollments: {
+                where: { status: { in: ["ACTIVE", "PAUSED"] } },
+              },
+            },
+          },
+          enrollments: {
+            where: { status: { in: ["ACTIVE", "PAUSED"] } },
+            select: {
+              id: true,
+              student: {
+                select: { id: true, firstName: true, lastName: true },
+              },
+            },
+            take: 50,
           },
         },
       },

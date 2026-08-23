@@ -17,6 +17,7 @@ import {
   createOrGetAssistantToolRun,
   expireAssistantRuns,
   failAssistantRun,
+  getAssistantRunForRetry,
   failAssistantToolRun,
   getAssistantContext,
   getAssistantSummarySource,
@@ -54,6 +55,7 @@ import {
   resolveAssistantConfirmationArguments,
 } from "@/lib/services/assistant/executor";
 import { ASSISTANT_MODEL } from "@/lib/services/assistant/config";
+import { classifyFailedAssistantRun } from "@/lib/services/assistant/recovery";
 import { DeliveryOutcomeUnknownError } from "@/lib/utils/email-errors";
 import { normalizeAssistantResultCard } from "@/lib/validators/assistant";
 
@@ -343,6 +345,26 @@ function toolOutput(callId: string, output: unknown): ResponseInputItem {
   };
 }
 
+function collectPrimaryToolResultIdentifiers(result: unknown) {
+  if (!result || typeof result !== "object" || Array.isArray(result)) return [];
+  const wrappedData = (result as Record<string, unknown>).data;
+  if (!wrappedData || typeof wrappedData !== "object" || Array.isArray(wrappedData)) {
+    return [];
+  }
+  const data = wrappedData as Record<string, unknown>;
+  return collectAssistantIdentifierValues({
+    id: data.id,
+    guardianId: data.guardianId,
+    paymentId: data.paymentId,
+    discountId: data.discountId,
+    sessionId: data.sessionId,
+    recurrenceRuleId: data.recurrenceRuleId,
+    recurrenceRuleIds: data.recurrenceRuleIds,
+    invitationId: data.invitationId,
+    adminId: data.adminId,
+  });
+}
+
 async function refreshAssistantSummary(
   client: OpenAI,
   admin: AdminContext,
@@ -553,13 +575,17 @@ async function runModelLoop(input: {
           return undefined;
         }
         const schedule = data as Record<string, unknown>;
+        const sectionResults = (section: unknown) => {
+          if (Array.isArray(section)) return section;
+          return section && typeof section === "object"
+            ? Array.isArray((section as Record<string, unknown>).results)
+              ? ((section as Record<string, unknown>).results as unknown[])
+              : []
+            : [];
+        };
         return [
-          ...(Array.isArray(schedule.realSessions)
-            ? schedule.realSessions
-            : []),
-          ...(Array.isArray(schedule.virtualSessions)
-            ? schedule.virtualSessions
-            : []),
+          ...sectionResults(schedule.realSessions),
+          ...sectionResults(schedule.virtualSessions),
         ];
       }
       if (key === "reporting.get_dashboard_summary") {
@@ -626,10 +652,52 @@ async function runModelLoop(input: {
       return;
     }
     const previouslyAuthorized = new Set(authorizedMutationIds);
-    collectAssistantIdentifierValues(result).forEach((id) =>
-      authorizedMutationIds.add(id),
-    );
     const key = `${namespace}.${name}`;
+    const resultRecord = result as Record<string, unknown>;
+    const data =
+      resultRecord.data &&
+      typeof resultRecord.data === "object" &&
+      !Array.isArray(resultRecord.data)
+        ? (resultRecord.data as Record<string, unknown>)
+        : undefined;
+    const exactIdentifiers = (() => {
+      const exactArgumentKeys: Record<string, string[]> = {
+        "students.get_student": ["id"],
+        "tutors.get_tutor": ["id"],
+        "tutors.get_tutor_payroll": ["id"],
+        "catalog.get_package": ["id"],
+        "schedule.get_enrollment_capacity": ["enrollmentId"],
+        "recurrence.get_recurring_schedule": ["ruleId"],
+        "billing.get_student_balance": ["studentId"],
+        "communications.get_email_template": ["id"],
+      };
+      if (key === "schedule.get_schedule" && argumentsValue.sessionId) {
+        return collectAssistantIdentifierValues({
+          sessionId: argumentsValue.sessionId,
+        });
+      }
+      if (key === "enrollments.get_enrollment") {
+        return collectAssistantIdentifierValues({
+          id: data?.id ??
+            (data?.enrollment as Record<string, unknown> | undefined)?.id,
+          discountId: argumentsValue.discountId,
+        });
+      }
+      const keys = exactArgumentKeys[key] ?? [];
+      return collectAssistantIdentifierValues(
+        Object.fromEntries(keys.map((argumentKey) => [
+          argumentKey,
+          argumentsValue[argumentKey],
+        ])),
+      );
+    })();
+    const mutationIdentifiers = assistantToolMutatesData({ namespace, name })
+      ? collectPrimaryToolResultIdentifiers(result)
+      : [];
+    [...exactIdentifiers, ...mutationIdentifiers].forEach((id) => {
+      authorizedMutationIds.add(id);
+      ambiguousCandidateIds.delete(id);
+    });
     const candidates = candidateResultForTool(
       namespace,
       name,
@@ -643,13 +711,7 @@ async function runModelLoop(input: {
           })
         : [],
     );
-    if (candidates.records.length > 0) {
-      const primaryIdSet = new Set(primaryCandidateIds);
-      candidates.records
-        .flatMap(collectAssistantIdentifierValues)
-        .filter((id) => !primaryIdSet.has(id) && !previouslyAuthorized.has(id))
-        .forEach((id) => authorizedMutationIds.delete(id));
-    }
+    primaryCandidateIds.forEach((id) => authorizedMutationIds.add(id));
     let ambiguousRecords: unknown[] = [];
     if (
       key === "students.search_students" ||
@@ -722,7 +784,10 @@ async function runModelLoop(input: {
               })
             : [],
         )
-        .forEach((id) => ambiguousCandidateIds.add(id));
+        .forEach((id) => {
+          ambiguousCandidateIds.add(id);
+          if (!previouslyAuthorized.has(id)) authorizedMutationIds.delete(id);
+        });
     }
   };
 
@@ -1097,6 +1162,29 @@ export async function processAssistantTurn(
 ) {
   signal?.throwIfAborted();
   const attachments = turn.attachments ?? [];
+  let supersedesRunId: string | undefined;
+  if (turn.retryOfClientTurnId) {
+    const failedRun = await getAssistantRunForRetry(
+      admin.id,
+      turn.retryOfClientTurnId,
+    );
+    if (!failedRun || failedRun.threadId !== turn.threadId) {
+      throw new Error("The failed request is no longer available to retry");
+    }
+    const recovery = classifyFailedAssistantRun(
+      failedRun.toolRuns,
+      admin.role,
+    );
+    if (!recovery.retryable) {
+      throw new Error(
+        "This request cannot be retried automatically because it attempted a CRM change",
+      );
+    }
+    if (failedRun.hasAttachments && attachments.length === 0) {
+      throw new Error("Attach the original files again before retrying");
+    }
+    supersedesRunId = failedRun.id;
+  }
   const created = await createAssistantTurn({
     adminId: admin.id,
     threadId: turn.threadId,
@@ -1107,6 +1195,7 @@ export async function processAssistantTurn(
         ? safeJson(getStoredAttachmentMetadata(attachments))
         : undefined,
     hasAttachments: attachments.length > 0,
+    supersedesRunId,
     model: ASSISTANT_MODEL,
   });
   const messageCount = created.messageCount;
@@ -1245,7 +1334,7 @@ export async function processAssistantDecision(
       hasHistoricalUntrustedContext:
         context?.hasUntrustedHistory ?? existing.run.hasAttachments,
       initialMutationUsed: decision === "APPROVE",
-      initialAuthorizedIds: collectAssistantIdentifierValues(result),
+      initialAuthorizedIds: collectPrimaryToolResultIdentifiers(result),
       initialToolHistory: [
         ...((existing.run.toolRuns ?? [])
           .filter((toolRun) => toolRun.status === "COMPLETED" && toolRun.result)

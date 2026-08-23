@@ -9,6 +9,7 @@ import {
   cancelSession,
   deleteSession,
   getSessionsByMonth,
+  getSessionsForAssistantMonth,
   getRecurrenceRuleById,
   getRecurrenceRuleWithParticipants,
   getEnrollmentForSession,
@@ -175,6 +176,12 @@ export async function createAdHocSession(input: CreateAdHocSessionInput) {
     subjectId = enrollment.subjectId;
     studentIds = [enrollment.studentId];
     await assertEnrollmentHasMonthlyCapacity(sessionEnrollmentId, scheduledFor);
+  }
+
+  if (!tutorId || !subjectId || studentIds.length === 0) {
+    throw new Error(
+      "Tutor, subject, and at least one student are required for this session",
+    );
   }
 
   await assertNoScheduleConflict({
@@ -921,6 +928,68 @@ export async function getMonthSchedule(monthKey: string) {
     summaries,
     paidMonths,
     subscriptionEnrollmentIds,
+  };
+}
+
+export async function getMonthScheduleForAssistant(
+  monthKey: string,
+  limit = 100,
+) {
+  const centerTimeZone = getConfiguredCenterTimeZone();
+  const range = getCalendarMonthRange(monthKey, centerTimeZone);
+  const [real, rules] = await Promise.all([
+    getSessionsForAssistantMonth(range.start, range.endExclusive, limit),
+    getRecurrenceRulesForMonth(range.calendarStart, range.calendarEnd),
+  ]);
+  const virtual = await getVirtualSessionsForMonth(
+    range.calendarStart,
+    real.slots,
+    rules,
+  );
+  const summarizeSession = (session: (typeof real.sessions)[number]) => ({
+    id: session.id,
+    enrollmentId: session.enrollmentId,
+    tutorId: session.tutorId,
+    subjectId: session.subjectId,
+    recurrenceRuleId: session.recurrenceRuleId,
+    recurrenceOccurrenceFor: session.recurrenceOccurrenceFor,
+    scheduledFor: session.scheduledFor,
+    durationMinutes: session.durationMinutes,
+    status: session.status,
+    room: session.room,
+    tutor: session.tutor,
+    subject: session.subject,
+    attendanceTotal: session._count.attendance,
+    attendance: session.attendance,
+  });
+  const summarizeVirtual = (session: VirtualSession) => ({
+    id: session.id,
+    enrollmentId: session.enrollmentId,
+    groupId: session.groupId,
+    groupName: session.groupName,
+    ruleId: session.ruleId,
+    scheduledFor: session.scheduledFor,
+    durationMinutes: session.durationMinutes,
+    status: session.status,
+    room: session.room,
+    tutor: session.tutor,
+    subject: session.subject,
+    attendanceTotal: session.attendance.length,
+    attendance: session.attendance.slice(0, 20),
+    virtual: true as const,
+  });
+  return {
+    month: monthKey,
+    realSessions: {
+      total: real.total,
+      hasMore: real.hasMore,
+      results: real.sessions.map(summarizeSession),
+    },
+    virtualSessions: {
+      total: virtual.length,
+      hasMore: virtual.length > limit,
+      results: virtual.slice(0, limit).map(summarizeVirtual),
+    },
   };
 }
 

@@ -112,6 +112,7 @@ type ChatMessage = {
     hasAttachments: boolean;
     outcomeUnknown: boolean;
     retryable: boolean;
+    reuseClientTurnId: boolean;
   } | null;
 };
 
@@ -128,6 +129,7 @@ type FailedTurn = {
   outcomeUnknown: boolean;
   requiresReattachment: boolean;
   retryable: boolean;
+  reuseClientTurnId: boolean;
   editing: boolean;
 };
 
@@ -399,6 +401,7 @@ function persistedFailedTurn(messages: ChatMessage[]): FailedTurn | null {
       latestUserMessage.failure.retryable &&
       latestUserMessage.failure.hasAttachments,
     retryable: latestUserMessage.failure.retryable,
+    reuseClientTurnId: latestUserMessage.failure.reuseClientTurnId,
     editing: false,
   };
 }
@@ -1123,16 +1126,22 @@ export function AssistantShell({
         sizeBytes: attachment.sizeBytes,
         kind: attachment.mimeType.startsWith("image/") ? "IMAGE" : "DOCUMENT",
       }));
-    const retryingSafely = Boolean(retry?.retryable);
-    const optimisticId = retryingSafely
+    const retryingAsNewTurn = Boolean(
+      retry?.retryable && !retry.reuseClientTurnId,
+    );
+    const optimisticId = retryingAsNewTurn
       ? `local-${crypto.randomUUID()}`
       : (retry?.optimisticId ?? `local-${crypto.randomUUID()}`);
-    const clientTurnId = retryingSafely
+    const clientTurnId = retryingAsNewTurn
       ? crypto.randomUUID()
       : (retry?.clientTurnId ?? crypto.randomUUID());
-    if (!retry || retry.editing || retryingSafely) {
+    if (!retry || retry.editing || retryingAsNewTurn) {
       setMessages((current) => [
-        ...current.filter((item) => item.id !== optimisticId),
+        ...current.filter(
+          (item) =>
+            item.id !== optimisticId &&
+            (!retryingAsNewTurn || item.id !== retry?.optimisticId),
+        ),
         {
           id: optimisticId,
           role: "USER",
@@ -1158,6 +1167,9 @@ export function AssistantShell({
         body: JSON.stringify({
           threadId: threadId ?? undefined,
           clientTurnId,
+          retryOfClientTurnId: retryingAsNewTurn
+            ? retry?.clientTurnId
+            : undefined,
           message: content,
           attachments: outgoingAttachments,
         }),
@@ -1178,6 +1190,7 @@ export function AssistantShell({
         outcomeUnknown,
         requiresReattachment: false,
         retryable: !outcomeUnknown,
+        reuseClientTurnId: false,
         editing: false,
       });
       setAnnouncement(

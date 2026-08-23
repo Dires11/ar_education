@@ -4,12 +4,13 @@ const prismaMock = vi.hoisted(() => ({
   tutor: {
     count: vi.fn(),
     findMany: vi.fn(),
+    findUnique: vi.fn(),
   },
 }));
 
 vi.mock("@/lib/prisma", () => ({ prisma: prismaMock }));
 
-import { listTutors } from "@/lib/data/tutors";
+import { getTutorForAssistant, listTutors } from "@/lib/data/tutors";
 
 describe("tutor search", () => {
   beforeEach(() => {
@@ -44,6 +45,22 @@ describe("tutor search", () => {
           ],
         },
       }),
+    );
+  });
+
+  it("caps exact-detail enrollments and selects only student identity", async () => {
+    prismaMock.tutor.findUnique.mockResolvedValue(null);
+
+    await getTutorForAssistant("tutor-1", 15);
+
+    const query = prismaMock.tutor.findUnique.mock.calls[0][0];
+    expect(query.where).toEqual({ id: "tutor-1" });
+    expect(query.select.enrollments.take).toBe(15);
+    expect(query.select.enrollments.select.student).toEqual({
+      select: { id: true, firstName: true, lastName: true },
+    });
+    expect(query.select.enrollments.select.student.select).not.toHaveProperty(
+      "email",
     );
   });
 });

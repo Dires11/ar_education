@@ -26,5 +26,6 @@ export function classifyFailedAssistantRun(
     // Completed reads can be repeated; mutation failures require inspection or
     // an explicitly revised request rather than a one-click replay.
     retryable: mutationRuns.length === 0,
+    reuseClientTurnId: toolRuns.length === 0,
   };
 }

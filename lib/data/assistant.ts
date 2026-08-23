@@ -193,7 +193,15 @@ export async function listAssistantThreads(adminId: string) {
       id: true,
       title: true,
       updatedAt: true,
-      _count: { select: { messages: true } },
+      _count: {
+        select: {
+          messages: {
+            where: {
+              OR: [{ runId: null }, { run: { supersededAt: null } }],
+            },
+          },
+        },
+      },
     },
   });
 }
@@ -203,6 +211,9 @@ export async function getAssistantThread(adminId: string, threadId: string) {
     where: { id: threadId, adminId },
     include: {
       messages: {
+        where: {
+          OR: [{ runId: null }, { run: { supersededAt: null } }],
+        },
         orderBy: { createdAt: "asc" },
         include: {
           run: {
@@ -247,6 +258,9 @@ export async function getAssistantContext(
         select: { runs: { where: { hasAttachments: true } } },
       },
       messages: {
+        where: {
+          OR: [{ runId: null }, { run: { supersededAt: null } }],
+        },
         orderBy: { createdAt: "desc" },
         take,
         select: {
@@ -291,7 +305,17 @@ export async function getAssistantThreadMessageCount(
 ) {
   const thread = await prisma.assistantThread.findFirst({
     where: { id: threadId, adminId },
-    select: { _count: { select: { messages: true } } },
+    select: {
+      _count: {
+        select: {
+          messages: {
+            where: {
+              OR: [{ runId: null }, { run: { supersededAt: null } }],
+            },
+          },
+        },
+      },
+    },
   });
   if (!thread) throw new Error("Assistant thread not found");
   return thread._count.messages;
@@ -335,11 +359,17 @@ export async function getAssistantSummarySource(
     orderBy: { createdAt: "asc" },
     skip: thread.summarizedMessageCount,
     take: summarizeThrough - thread.summarizedMessageCount,
-    select: { role: true, content: true },
+    select: {
+      role: true,
+      content: true,
+      run: { select: { supersededAt: true } },
+    },
   });
   return {
     previousSummary: thread.contextSummary,
-    messages,
+    messages: messages
+      .filter((message) => !message.run?.supersededAt)
+      .map(({ role, content }) => ({ role, content })),
     summarizeThrough,
   };
 }
@@ -356,6 +386,7 @@ export async function createAssistantTurn(input: {
   message: string;
   attachments?: Prisma.InputJsonValue;
   hasAttachments?: boolean;
+  supersedesRunId?: string;
   model: string;
 }) {
   try {
@@ -420,7 +451,10 @@ export async function createAssistantTurn(input: {
               run: restarted,
               duplicate: false,
               messageCount: await tx.assistantMessage.count({
-                where: { threadId: restarted.threadId },
+                where: {
+                  threadId: restarted.threadId,
+                  OR: [{ runId: null }, { run: { supersededAt: null } }],
+                },
               }),
             };
           }
@@ -429,7 +463,10 @@ export async function createAssistantTurn(input: {
             run: refreshed,
             duplicate: true,
             messageCount: await tx.assistantMessage.count({
-              where: { threadId: refreshed.threadId },
+              where: {
+                threadId: refreshed.threadId,
+                OR: [{ runId: null }, { run: { supersededAt: null } }],
+              },
             }),
           };
         }
@@ -477,12 +514,29 @@ export async function createAssistantTurn(input: {
           throw new Error("This conversation already has an active request");
         }
 
+        if (input.supersedesRunId) {
+          const superseded = await tx.assistantRun.updateMany({
+            where: {
+              id: input.supersedesRunId,
+              threadId: thread.id,
+              status: "FAILED",
+              supersededAt: null,
+              thread: { adminId: input.adminId, archivedAt: null },
+            },
+            data: { supersededAt: new Date() },
+          });
+          if (superseded.count !== 1) {
+            throw new Error("The failed request is no longer retryable");
+          }
+        }
+
         const run = await tx.assistantRun.create({
           data: {
             threadId: thread.id,
             clientTurnId: input.clientTurnId,
             model: input.model,
             hasAttachments: Boolean(input.hasAttachments),
+            supersedesRunId: input.supersedesRunId,
             messages: {
               create: {
                 threadId: thread.id,
@@ -497,7 +551,12 @@ export async function createAssistantTurn(input: {
 
         await tx.assistantThread.update({
           where: { id: thread.id },
-          data: { updatedAt: new Date() },
+          data: {
+            updatedAt: new Date(),
+            ...(input.supersedesRunId
+              ? { contextSummary: null, summarizedMessageCount: 0 }
+              : {}),
+          },
         });
 
         return {
@@ -505,7 +564,10 @@ export async function createAssistantTurn(input: {
           run,
           duplicate: false,
           messageCount: await tx.assistantMessage.count({
-            where: { threadId: thread.id },
+            where: {
+              threadId: thread.id,
+              OR: [{ runId: null }, { run: { supersededAt: null } }],
+            },
           }),
         };
       },
@@ -520,6 +582,28 @@ export async function createAssistantTurn(input: {
     }
     throw error;
   }
+}
+
+export function getAssistantRunForRetry(
+  adminId: string,
+  clientTurnId: string,
+) {
+  return prisma.assistantRun.findFirst({
+    where: {
+      clientTurnId,
+      status: "FAILED",
+      supersededAt: null,
+      thread: { adminId, archivedAt: null },
+    },
+    select: {
+      id: true,
+      threadId: true,
+      hasAttachments: true,
+      toolRuns: {
+        select: { namespace: true, toolName: true, status: true },
+      },
+    },
+  });
 }
 
 export async function createOrGetAssistantToolRun(input: {
@@ -837,7 +921,17 @@ export async function completeAssistantRun(input: {
     const thread = await tx.assistantThread.update({
       where: { id: input.threadId },
       data: { updatedAt: new Date() },
-      select: { _count: { select: { messages: true } } },
+      select: {
+        _count: {
+          select: {
+            messages: {
+              where: {
+                OR: [{ runId: null }, { run: { supersededAt: null } }],
+              },
+            },
+          },
+        },
+      },
     });
     return { message, messageCount: thread._count.messages };
   });

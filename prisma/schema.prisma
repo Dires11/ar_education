@@ -484,6 +484,8 @@ model AssistantRun {
   cachedInputTokens Int?
   cacheWriteTokens  Int?
   error             String?
+  supersededAt      DateTime?
+  supersedesRunId   String?            @unique
   createdAt         DateTime           @default(now())
   updatedAt         DateTime           @updatedAt
   completedAt       DateTime?
@@ -491,6 +493,8 @@ model AssistantRun {
   thread   AssistantThread    @relation(fields: [threadId], references: [id], onDelete: Cascade)
   messages AssistantMessage[]
   toolRuns AssistantToolRun[]
+  supersedesRun AssistantRun? @relation("AssistantRunSupersession", fields: [supersedesRunId], references: [id], onDelete: SetNull)
+  supersededBy  AssistantRun? @relation("AssistantRunSupersession")
 
   @@index([threadId, status])
 }

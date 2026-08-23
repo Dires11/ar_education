@@ -94,6 +94,7 @@ export const ASSISTANT_ROUTING_EVAL_CASES: AssistantRoutingEvalCase[] = [
     expectedTool: "mark_attendance",
     requiredLookupGroups: [
       ["schedule.get_schedule"],
+      ["students.get_student", "students.search_students"],
     ],
     expectedConfirmation: false,
   },
