@@ -13,13 +13,24 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
   },
   $transaction: vi.fn(
-    async (callback: (tx: typeof txMock) => Promise<unknown>) => callback(txMock),
+    async (
+      callbackOrQueries:
+        | ((tx: typeof txMock) => Promise<unknown>)
+        | Promise<unknown>[],
+    ) =>
+      typeof callbackOrQueries === "function"
+        ? callbackOrQueries(txMock)
+        : Promise.all(callbackOrQueries),
   ),
 }));
 
 vi.mock("@/lib/prisma", () => ({ prisma: prismaMock }));
 
-import { disableAdminSafely, listAdmins } from "@/lib/data/team";
+import {
+  disableAdminSafely,
+  listAdmins,
+  listAdminsForAssistant,
+} from "@/lib/data/team";
 
 describe("team access persistence", () => {
   beforeEach(() => vi.clearAllMocks());
@@ -30,6 +41,29 @@ describe("team access persistence", () => {
     expect(prismaMock.admin.findMany).toHaveBeenCalledWith({
       where: { disabledAt: null },
       orderBy: { createdAt: "asc" },
+    });
+  });
+
+  it("filters and pages compact administrator lookups", async () => {
+    prismaMock.admin.count.mockResolvedValue(11);
+    prismaMock.admin.findMany.mockResolvedValue([{ id: "admin-11" }]);
+
+    await expect(
+      listAdminsForAssistant({
+        email: "owner@example.com",
+        page: 2,
+        limit: 10,
+      }),
+    ).resolves.toMatchObject({ total: 11, page: 2, hasMore: false });
+    expect(prismaMock.admin.findMany).toHaveBeenCalledWith({
+      where: {
+        disabledAt: null,
+        email: { equals: "owner@example.com", mode: "insensitive" },
+      },
+      select: { id: true, name: true, email: true, role: true },
+      orderBy: { createdAt: "asc" },
+      skip: 10,
+      take: 10,
     });
   });
 

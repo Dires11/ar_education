@@ -17,6 +17,7 @@ import {
   getLinkedGuardianForAssistant,
   getStudentForAssistant,
   queryStudentDirectoryData,
+  resolveStudentCommunicationRecipientsData,
   updateLinkedGuardian,
 } from "@/lib/data/students";
 
@@ -190,6 +191,60 @@ describe("student directory data queries", () => {
           { firstName: { contains: "Student", mode: "insensitive" } },
           { lastName: { contains: "Student", mode: "insensitive" } },
         ]),
+      }),
+    );
+  });
+
+  it("resolves a large communication cohort with bounded contact data", async () => {
+    prismaMock.student.count.mockResolvedValue(120);
+    prismaMock.student.findMany.mockResolvedValue([
+      {
+        id: "student-101",
+        firstName: "Maya",
+        lastName: "Chen",
+        status: "ACTIVE",
+        email: null,
+        guardians: [{
+          guardian: {
+            firstName: "Ana",
+            lastName: "Chen",
+            email: "ana@example.com",
+          },
+        }],
+      },
+    ]);
+    prismaMock.$transaction.mockImplementation((queries: Promise<unknown>[]) =>
+      Promise.all(queries),
+    );
+
+    await expect(
+      resolveStudentCommunicationRecipientsData({
+        status: "ACTIVE",
+        school: "Lincoln",
+        page: 2,
+        limit: 100,
+      }),
+    ).resolves.toMatchObject({
+      total: 120,
+      page: 2,
+      hasMore: false,
+      recipients: [{
+        studentId: "student-101",
+        recipientEmail: "ana@example.com",
+        deliverable: true,
+      }],
+    });
+    expect(prismaMock.student.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          status: "ACTIVE",
+          school: { contains: "Lincoln", mode: "insensitive" },
+        },
+        skip: 100,
+        take: 100,
+        select: expect.objectContaining({
+          guardians: expect.objectContaining({ take: 1 }),
+        }),
       }),
     );
   });

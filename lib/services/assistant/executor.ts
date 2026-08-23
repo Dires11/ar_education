@@ -1,5 +1,6 @@
 import "server-only";
 
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { Admin } from "@/generated/prisma";
 import {
@@ -7,6 +8,7 @@ import {
   getStudentForAssistant,
   getLinkedGuardianForAssistant,
   listStudents,
+  resolveStudentCommunicationRecipientsData,
 } from "@/lib/data/students";
 import {
   getTutor as getTutorData,
@@ -106,7 +108,7 @@ import {
   recordPayment,
   recordPaymentForDue,
   deletePaymentById,
-  getUpcomingPaymentDues,
+  getPaymentDuesForAssistant,
   getPaymentStats,
   sendPaymentReminderEmail,
   getStudentBalance,
@@ -122,12 +124,17 @@ import {
 } from "@/lib/services/emails";
 import {
   getTeamPageData,
+  getPendingTeamInvitation,
+  getTeamPageForAssistant,
   inviteTeamMember,
   revokeTeamInvitation,
   updateTeamMemberRole,
   removeTeamMember,
 } from "@/lib/services/team";
-import { getDashboardStats } from "@/lib/services/dashboard";
+import {
+  getDashboardReportPageForAssistant,
+  getDashboardStats,
+} from "@/lib/services/dashboard";
 import {
   assistantToolMutatesData,
   getAssistantToolSpec,
@@ -135,7 +142,10 @@ import {
 } from "@/lib/services/assistant/tools";
 import { minimizeAssistantDto } from "@/lib/services/assistant/dto";
 import { collectAssistantIdentifierReferences } from "@/lib/services/assistant/provenance";
-import { getConfiguredCenterTimeZone } from "@/lib/services/session-dates";
+import {
+  addCalendarMonths,
+  getConfiguredCenterTimeZone,
+} from "@/lib/services/session-dates";
 import { formatCalendarDate, formatDateTime } from "@/lib/utils/dates";
 import { getInstantCalendarDateKey } from "@/lib/utils/time-zone";
 import {
@@ -152,6 +162,16 @@ const assistantConfirmationSnapshotSchema = z.object({
   amount: z.string().optional(),
   monthLabel: z.string().optional(),
   bodyPreview: z.string().max(2_000).optional(),
+  deliveries: z
+    .array(
+      z.object({
+        enrollmentId: z.string(),
+        month: z.string(),
+        digest: z.string().regex(/^[0-9a-f]{64}$/),
+      }),
+    )
+    .max(100)
+    .optional(),
 });
 
 export type AssistantToolExecutionContext = {
@@ -216,6 +236,64 @@ export async function resolveAssistantConfirmationArguments(input: {
   if (input.namespace === "billing" && input.name === "mark_due_paid") {
     const quote = await getPaymentDueQuote(input.argumentsValue);
     return quote.confirmationArguments as Record<string, unknown>;
+  }
+  if (
+    input.namespace === "billing" &&
+    input.name === "send_payment_reminders"
+  ) {
+    const reminders = z
+      .array(z.object({ enrollmentId: z.string(), month: z.string() }))
+      .min(1)
+      .max(100)
+      .parse(input.argumentsValue.reminders);
+    const confirmations: Awaited<
+      ReturnType<typeof getPaymentReminderConfirmation>
+    >[] = [];
+    for (let offset = 0; offset < reminders.length; offset += 10) {
+      confirmations.push(
+        ...(await Promise.all(
+          reminders.slice(offset, offset + 10).map((reminder) =>
+            getPaymentReminderConfirmation(
+              reminder.enrollmentId,
+              reminder.month,
+            ),
+          ),
+        )),
+      );
+    }
+    const deliveries = reminders.map((reminder, index) => ({
+      ...reminder,
+      digest: confirmations[index].digest,
+    }));
+    const recipientLabels = confirmations.map(
+      (confirmation) =>
+        `${confirmation.recipientName} — ${confirmation.recipientEmail}`,
+    );
+    const preview = confirmations
+      .slice(0, 3)
+      .map(
+        (confirmation) =>
+          `${confirmation.recipientName}: ${confirmation.amount} due for ${confirmation.monthLabel}`,
+      )
+      .join("\n");
+    return {
+      ...input.argumentsValue,
+      __assistantConfirmation: {
+        digest: createHash("sha256")
+          .update(JSON.stringify(deliveries))
+          .digest("hex"),
+        recipientSummary:
+          recipientLabels.length <= 3
+            ? recipientLabels.join(", ")
+            : `${recipientLabels.slice(0, 3).join(", ")} and ${recipientLabels.length - 3} more`,
+        subject: `Payment reminders (${reminders.length})`,
+        bodyPreview:
+          confirmations.length <= 3
+            ? preview
+            : `${preview}\n…and ${confirmations.length - 3} more.`,
+        deliveries,
+      },
+    };
   }
   if (
     input.namespace === "billing" &&
@@ -1563,6 +1641,25 @@ export async function getAssistantConfirmationCard(input: {
         actionLabel: "View payments",
       });
     }
+    if (name === "send_payment_reminders") {
+      const reminders = Array.isArray(argumentsValue.reminders)
+        ? argumentsValue.reminders
+        : [];
+      const confirmation = assistantConfirmationSnapshotSchema.safeParse(
+        argumentsValue.__assistantConfirmation,
+      );
+      if (!confirmation.success || reminders.length === 0) return undefined;
+      return emailResultCard({
+        entityKey: `payment-reminder-batch:${confirmation.data.digest}`,
+        title: `Send ${reminders.length} payment reminders`,
+        subtitle: "Outbound reminder batch awaiting approval",
+        recipientSummary: confirmation.data.recipientSummary,
+        subject: confirmation.data.subject,
+        messagePreview: confirmation.data.bodyPreview,
+        href: "/payments",
+        actionLabel: "View payments",
+      });
+    }
     const studentId = value("studentId");
     if (!studentId) return undefined;
     const student = await getStudentData(studentId);
@@ -1657,12 +1754,11 @@ export async function getAssistantConfirmationCard(input: {
           })
         : undefined;
     }
-    const team = await getTeamPageData();
     if (name === "revoke_team_invitation") {
       const invitationId = value("invitationId");
-      const invitation = team.pendingInvitations.find(
-        (item) => item.id === invitationId,
-      );
+      const invitation = invitationId
+        ? await getPendingTeamInvitation({ invitationId })
+        : undefined;
       return invitation
         ? teamResultCard({
             entityKey: `team-invitation:${invitation.id}`,
@@ -1672,6 +1768,7 @@ export async function getAssistantConfirmationCard(input: {
           })
         : undefined;
     }
+    const team = await getTeamPageData();
     const adminId = value("adminId");
     const admin = team.admins.find((item) => item.id === adminId);
     if (!admin) return undefined;
@@ -2395,6 +2492,7 @@ async function executeSchedule(name: string, args: ToolArguments) {
         await getMonthScheduleForAssistant(
           stringValue(args, "month"),
           Number(args.limit),
+          Number(args.page),
         ),
         "/schedule",
       );
@@ -2703,27 +2801,39 @@ async function executeBilling(
           method: args.method as string | undefined,
           from: args.from ? dateValue(args.from) : undefined,
           to: args.to ? dateValue(args.to) : undefined,
+          page: Number(args.page),
           pageSize: Number(args.limit ?? 20),
         }),
         "/payments",
       );
     case "get_upcoming_dues": {
-      const dues = await getUpcomingPaymentDues();
-      const status = String(args.status);
-      const filtered = dues.filter((due) => {
-        if (status === "OVERDUE") return due.isOverdue;
-        if (status === "DUE_THIS_MONTH") return due.isDueThisMonth;
-        if (status === "UPCOMING")
-          return !due.isPaid && !due.isOverdue && !due.isDueThisMonth;
-        if (status === "PAID") return due.isPaid;
-        return true;
+      const currentMonth = getInstantCalendarDateKey(
+        new Date(),
+        getConfiguredCenterTimeZone(),
+      ).slice(0, 7);
+      const currentMonthDate = new Date(`${currentMonth}-01T00:00:00.000Z`);
+      const fromMonth =
+        (args.fromMonth as string | undefined) ??
+        addCalendarMonths(currentMonthDate, -11).toISOString().slice(0, 7);
+      const toMonth =
+        (args.toMonth as string | undefined) ??
+        addCalendarMonths(currentMonthDate, 2).toISOString().slice(0, 7);
+      const result = await getPaymentDuesForAssistant({
+        status: args.status as
+          | "ALL"
+          | "OVERDUE"
+          | "DUE_THIS_MONTH"
+          | "UPCOMING"
+          | "PAID",
+        fromMonth,
+        toMonth,
+        page: Number(args.page),
+        limit: Number(args.limit),
       });
-      const limit = Number(args.limit);
       return toolResult(
         {
-          total: filtered.length,
-          hasMore: filtered.length > limit,
-          dues: filtered.slice(0, limit).map((due) => ({
+          ...result,
+          dues: result.dues.map((due) => ({
             key: due.key,
             enrollmentId: due.enrollmentId,
             studentId: due.studentId,
@@ -2803,6 +2913,55 @@ async function executeBilling(
         }),
       );
     }
+    case "send_payment_reminders": {
+      const reminderConfirmation = confirmationSnapshot(args);
+      const reminders = z
+        .array(z.object({ enrollmentId: z.string(), month: z.string() }))
+        .min(1)
+        .max(100)
+        .parse(args.reminders);
+      const deliveries = reminderConfirmation.deliveries;
+      if (!deliveries || deliveries.length !== reminders.length) {
+        throw new Error("The approved payment reminder batch is incomplete");
+      }
+      const expectedBatchDigest = createHash("sha256")
+        .update(JSON.stringify(deliveries))
+        .digest("hex");
+      if (
+        expectedBatchDigest !== reminderConfirmation.digest ||
+        deliveries.some(
+          (delivery, index) =>
+            delivery.enrollmentId !== reminders[index].enrollmentId ||
+            delivery.month !== reminders[index].month,
+        )
+      ) {
+        throw new Error("The payment reminder batch changed after approval");
+      }
+      for (const [index, reminder] of reminders.entries()) {
+        await sendPaymentReminderEmail(
+          reminder.enrollmentId,
+          reminder.month,
+          context.idempotencyKey
+            ? `${context.idempotencyKey}:${index}`
+            : undefined,
+          deliveries[index].digest,
+        );
+      }
+      return mutationToolResult(
+        { sent: reminders.length },
+        "/payments",
+        emailResultCard({
+          entityKey: `payment-reminder-batch:${reminderConfirmation.digest}`,
+          title: `${reminders.length} payment reminders sent`,
+          subtitle: "Reminder batch completed",
+          recipientSummary: reminderConfirmation.recipientSummary,
+          subject: reminderConfirmation.subject,
+          messagePreview: reminderConfirmation.bodyPreview,
+          href: "/payments",
+          actionLabel: "View payments",
+        }),
+      );
+    }
     default:
       throw new Error(`Unknown billing tool: ${name}`);
   }
@@ -2814,6 +2973,23 @@ async function executeCommunications(
   context: AssistantToolExecutionContext,
 ) {
   switch (name) {
+    case "resolve_recipients":
+      return toolResult(
+        await resolveStudentCommunicationRecipientsData({
+          studentIds: args.studentIds as string[] | undefined,
+          query: args.query as string | undefined,
+          status: args.status as
+            | "ACTIVE"
+            | "PAUSED"
+            | "INACTIVE"
+            | undefined,
+          school: args.school as string | undefined,
+          gradeLevel: args.gradeLevel as string | undefined,
+          page: Number(args.page),
+          limit: Number(args.limit),
+        }),
+        "/students",
+      );
     case "list_email_templates": {
       return toolResult(
         await listEmailTemplatesForAssistant(Number(args.limit)),
@@ -2897,38 +3073,39 @@ async function executeTeam(
   }
   switch (name) {
     case "get_team": {
-      const team = await getTeamPageData();
       const adminId = args.adminId as string | undefined;
       const invitationId = args.invitationId as string | undefined;
-      const email = (args.email as string | undefined)?.toLocaleLowerCase();
+      const email = (args.email as string | undefined)?.toLowerCase();
+      const team = await getTeamPageForAssistant({
+        adminId,
+        invitationId,
+        email,
+        page: Number(args.page),
+        limit: Number(args.limit),
+      });
       return toolResult(
         {
-          admins: team.admins
-            .filter(
-              (admin) =>
-                !invitationId &&
-                (!adminId || admin.id === adminId) &&
-                (!email || admin.email.toLocaleLowerCase() === email),
-            )
-            .map(({ id, name, email: adminEmail, role }) => ({
+          admins: team.admins.admins.map(
+            ({ id, name, email: adminEmail, role }) => ({
               id,
               name,
               email: adminEmail,
               role,
-            })),
-          pendingInvitations: team.pendingInvitations
-            .filter(
-              (invitation) =>
-                !adminId &&
-                (!invitationId || invitation.id === invitationId) &&
-                (!email ||
-                  invitation.emailAddress.toLocaleLowerCase() === email),
-            )
-            .map((invitation) => ({
+            }),
+          ),
+          adminTotal: team.admins.total,
+          hasMoreAdmins: team.admins.hasMore,
+          pendingInvitations: team.pendingInvitations.results.map(
+            (invitation) => ({
               id: invitation.id,
               emailAddress: invitation.emailAddress,
               status: invitation.status,
-            })),
+            }),
+          ),
+          invitationTotal: team.pendingInvitations.total,
+          hasMoreInvitations: team.pendingInvitations.hasMore,
+          page: team.admins.page,
+          limit: team.admins.limit,
         },
         "/team",
       );
@@ -2951,9 +3128,7 @@ async function executeTeam(
       }
     case "revoke_team_invitation": {
       const invitationId = stringValue(args, "invitationId");
-      const invitation = (await getTeamPageData()).pendingInvitations.find(
-        (item) => item.id === invitationId,
-      );
+      const invitation = await getPendingTeamInvitation({ invitationId });
       if (!invitation) throw new Error("Team invitation not found");
       await revokeTeamInvitation(invitationId);
       return mutationToolResult(
@@ -3065,43 +3240,78 @@ export async function executeAssistantTool(input: {
     case "team":
       return executeTeam(input.name, args, input.context);
     case "reporting": {
+      const section = args.section as
+        | "SUMMARY"
+        | "UNPAID_STUDENTS"
+        | "UPCOMING_ENDINGS"
+        | "TUTOR_WORKLOAD";
+      const page = Number(args.page);
+      const limit = Number(args.limit);
+      if (section === "UNPAID_STUDENTS" || section === "UPCOMING_ENDINGS") {
+        return toolResult(
+          {
+            section,
+            ...(await getDashboardReportPageForAssistant({
+              section,
+              page,
+              limit,
+            })),
+          },
+          "/dashboard",
+        );
+      }
       const [dashboard, schedule] = await Promise.all([
         getDashboardStats({
           materialize: false,
           includeSessionDetails: false,
           includeScheduleAggregates: false,
+          includeUnpaidStudents: false,
+          includeUpcomingEndings: false,
         }),
         getDashboardScheduleForAssistant(),
       ]);
       const bounded = <T, R>(
         items: T[],
         summarize: (item: T) => R,
-        limit = 50,
       ) => ({
         total: items.length,
-        hasMore: items.length > limit,
-        results: items.slice(0, limit).map(summarize),
+        page,
+        limit,
+        hasMore: page * limit < items.length,
+        results: items
+          .slice((page - 1) * limit, page * limit)
+          .map(summarize),
       });
+      if (section === "TUTOR_WORKLOAD") {
+        return toolResult(
+          {
+            section,
+            ...bounded(schedule.tutorCounts, (tutor) => tutor),
+          },
+          "/dashboard",
+        );
+      }
+      const [upcomingEndings, unpaidStudents] = await Promise.all([
+        getDashboardReportPageForAssistant({
+          section: "UPCOMING_ENDINGS",
+          page,
+          limit,
+        }),
+        getDashboardReportPageForAssistant({
+          section: "UNPAID_STUDENTS",
+          page,
+          limit,
+        }),
+      ]);
       return toolResult(
         {
+          section,
           activeStudentCount: dashboard.activeStudentCount,
           todaySessions: schedule.todaySessions,
           tomorrowSessions: schedule.tomorrowSessions,
-          upcomingEndings: bounded(
-            dashboard.upcomingEndings,
-            (enrollment) => ({
-              id: enrollment.id,
-              studentName: `${enrollment.student.firstName} ${enrollment.student.lastName}`,
-              packageName: enrollment.package.name,
-              subjectName: enrollment.subject.name,
-              endDate: enrollment.endDate,
-            }),
-          ),
+          upcomingEndings,
           tutorCounts: bounded(schedule.tutorCounts, (tutor) => tutor),
-          unpaidStudents: bounded(
-            dashboard.unpaidStudents,
-            (student) => student,
-          ),
+          unpaidStudents,
           weeklySessionsByDay: schedule.weeklySessionsByDay,
           monthlyRevenue: dashboard.monthlyRevenue,
         },

@@ -4,8 +4,10 @@ import {
   getSessionsForDay,
   getActiveStudentCount,
   getUpcomingPackageEndings,
+  getUpcomingPackageEndingsForAssistant,
   getTutorSessionCountsThisWeek,
   getStudentsWithBalance,
+  getStudentsWithBalanceForAssistant,
   getWeeklySessionsByDay,
   getMonthlyRevenue,
 } from "@/lib/data/dashboard";
@@ -30,6 +32,8 @@ export async function getDashboardStats(options?: {
   materialize?: boolean;
   includeSessionDetails?: boolean;
   includeScheduleAggregates?: boolean;
+  includeUnpaidStudents?: boolean;
+  includeUpcomingEndings?: boolean;
 }) {
   const now = new Date();
   const timeZone = getConfiguredCenterTimeZone();
@@ -102,11 +106,15 @@ export async function getDashboardStats(options?: {
       ? Promise.resolve([])
       : getSessionsForDay(tomorrowStart, dayAfterTomorrowStart),
     getActiveStudentCount(),
-    getUpcomingPackageEndings(today, 14),
+    options?.includeUpcomingEndings === false
+      ? Promise.resolve([])
+      : getUpcomingPackageEndings(today, 14),
     options?.includeScheduleAggregates === false
       ? Promise.resolve([])
       : getTutorSessionCountsThisWeek(week.start, week.endExclusive),
-    getStudentsWithBalance(),
+    options?.includeUnpaidStudents === false
+      ? Promise.resolve([])
+      : getStudentsWithBalance(),
     options?.includeScheduleAggregates === false
       ? Promise.resolve([])
       : getWeeklySessionsByDay(week.start, week.endExclusive, timeZone),
@@ -153,5 +161,90 @@ export async function getDashboardStats(options?: {
     unpaidStudents,
     weeklySessionsByDay,
     monthlyRevenue,
+  };
+}
+
+export async function getDashboardReportPageForAssistant(input: {
+  section: "UNPAID_STUDENTS" | "UPCOMING_ENDINGS";
+  page: number;
+  limit: number;
+}) {
+  const timeZone = getConfiguredCenterTimeZone();
+  const today = getCalendarDateInTimeZone(new Date(), timeZone);
+  if (input.section === "UPCOMING_ENDINGS") {
+    const page = await getUpcomingPackageEndingsForAssistant({
+      today,
+      withinDays: 14,
+      page: input.page,
+      limit: input.limit,
+    });
+    return {
+      ...page,
+      results: page.results.map((enrollment) => ({
+        id: enrollment.id,
+        studentName: `${enrollment.student.firstName} ${enrollment.student.lastName}`,
+        packageName: enrollment.package.name,
+        subjectName: enrollment.subject.name,
+        endDate: enrollment.endDate,
+      })),
+    };
+  }
+
+  const page = await getStudentsWithBalanceForAssistant({
+    page: input.page,
+    limit: input.limit,
+  });
+  const results: Array<{
+    id: string;
+    name: string;
+    balance?: string;
+    calculationComplete: boolean;
+  }> = [];
+  for (const student of page.students) {
+    const calculationComplete =
+      student.payments.length <= 500 &&
+      student.enrollments.length <= 50 &&
+      student.enrollments.every(
+        (enrollment) =>
+          enrollment.sessionAttendance.length <= 500 &&
+          enrollment.discounts.length <= 100,
+      );
+    if (!calculationComplete) {
+      results.push({
+        id: student.id,
+        name: `${student.firstName} ${student.lastName}`,
+        calculationComplete: false,
+      });
+      continue;
+    }
+    let totalCharged = new Prisma.Decimal(0);
+    for (const enrollment of student.enrollments) {
+      totalCharged = totalCharged.add(calculateEnrollmentCharges(enrollment));
+    }
+    const totalPaid = student.payments.reduce(
+      (sum, payment) => sum.add(payment.amount),
+      new Prisma.Decimal(0),
+    );
+    const balance = totalCharged.sub(totalPaid);
+    if (balance.greaterThan(0)) {
+      results.push({
+        id: student.id,
+        name: `${student.firstName} ${student.lastName}`,
+        balance: balance.toFixed(2),
+        calculationComplete: true,
+      });
+    }
+  }
+  return {
+    total: page.total,
+    page: page.page,
+    limit: page.limit,
+    hasMore: page.hasMore,
+    results,
+    warnings: results.some((student) => !student.calculationComplete)
+      ? [
+          "Some high-volume student balances require the exact student balance tool.",
+        ]
+      : [],
   };
 }

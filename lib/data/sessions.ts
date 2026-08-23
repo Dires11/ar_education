@@ -49,6 +49,7 @@ export async function getSessionsForAssistantMonth(
   rangeStart: Date,
   rangeEndExclusive: Date,
   limit: number,
+  page = 1,
 ) {
   const where = {
     scheduledFor: { gte: rangeStart, lt: rangeEndExclusive },
@@ -85,6 +86,7 @@ export async function getSessionsForAssistantMonth(
         },
       },
       orderBy: { scheduledFor: "asc" },
+      skip: (page - 1) * limit,
       take: limit,
     }),
     prisma.session.findMany({
@@ -97,14 +99,24 @@ export async function getSessionsForAssistantMonth(
         recurrenceOccurrenceFor: true,
       },
       orderBy: { scheduledFor: "asc" },
+      take: 5_001,
     }),
   ]);
-  return { total, hasMore: total > sessions.length, sessions, slots };
+  return {
+    total,
+    page,
+    limit,
+    hasMore: page * limit < total,
+    sessions,
+    slots: slots.slice(0, 5_000),
+    slotsTruncated: slots.length > 5_000,
+  };
 }
 
 export function getAssistantSessionSlots(
   rangeStart: Date,
   rangeEndExclusive: Date,
+  limit = 5_000,
 ) {
   return prisma.session.findMany({
     where: { scheduledFor: { gte: rangeStart, lt: rangeEndExclusive } },
@@ -118,6 +130,7 @@ export function getAssistantSessionSlots(
       tutor: { select: { id: true, firstName: true, lastName: true } },
     },
     orderBy: { scheduledFor: "asc" },
+    take: limit + 1,
   });
 }
 

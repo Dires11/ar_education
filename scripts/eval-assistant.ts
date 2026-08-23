@@ -195,6 +195,44 @@ function simulatedLookupResult(
       data: { id: stringArgument(args, "ruleId", "rule_123") },
     };
   }
+  if (namespace === "communications" && name === "resolve_recipients") {
+    return {
+      ok: true,
+      data: {
+        total: 20,
+        page: 1,
+        hasMore: false,
+        recipients: Array.from({ length: 20 }, (_, index) => ({
+          studentId: `student_${index + 1}`,
+          name: `Student ${index + 1}`,
+          recipientEmail: `student-${index + 1}@example.com`,
+          deliverable: true,
+        })),
+      },
+    };
+  }
+  if (namespace === "billing" && name === "get_upcoming_dues") {
+    const singleReminder = targetKey === "billing.send_payment_reminder";
+    return {
+      ok: true,
+      data: {
+        total: singleReminder ? 1 : 20,
+        page: 1,
+        hasMore: false,
+        from: "2025-09",
+        to: "2026-08",
+        dues: Array.from({ length: singleReminder ? 1 : 20 }, (_, index) => ({
+          enrollmentId: singleReminder
+            ? "enrollment_123"
+            : `enrollment_${index + 1}`,
+          studentId: singleReminder ? "student_123" : `student_${index + 1}`,
+          month: "2026-08",
+          amount: "100.00",
+          isOverdue: true,
+        })),
+      },
+    };
+  }
   return { ok: true, data: [] };
 }
 

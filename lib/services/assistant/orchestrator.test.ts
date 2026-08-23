@@ -2053,6 +2053,269 @@ describe("assistant orchestration", () => {
     expect(dataMocks.pauseAssistantRun).toHaveBeenCalledTimes(1);
   });
 
+  it("authorizes an email to more than eleven students from one cohort resolver", async () => {
+    const studentIds = Array.from(
+      { length: 20 },
+      (_, index) => `student-${index + 1}`,
+    );
+    responses.queue.push(
+      {
+        events: [],
+        final: {
+          output_text: "",
+          output: [{
+            type: "function_call",
+            namespace: "communications",
+            name: "resolve_recipients",
+            call_id: "call-resolve-cohort",
+            arguments: JSON.stringify({ status: "ACTIVE", limit: 100 }),
+          }],
+          usage,
+        },
+      },
+      {
+        events: [],
+        final: {
+          output_text: "",
+          output: [{
+            type: "function_call",
+            namespace: "communications",
+            name: "send_email",
+            call_id: "call-send-cohort",
+            arguments: JSON.stringify({
+              studentIds,
+              subject: "Center update",
+              body: "Hello @name",
+            }),
+          }],
+          usage,
+        },
+      },
+    );
+    dataMocks.createOrGetAssistantToolRun
+      .mockResolvedValueOnce({
+        id: "tool-resolve-cohort",
+        runId: "run-1",
+        callId: "call-resolve-cohort",
+        namespace: "communications",
+        toolName: "resolve_recipients",
+        arguments: { status: "ACTIVE", page: 1, limit: 100 },
+        status: "RUNNING",
+        requiresConfirmation: false,
+      })
+      .mockResolvedValueOnce({
+        id: "tool-send-cohort",
+        runId: "run-1",
+        callId: "call-send-cohort",
+        namespace: "communications",
+        toolName: "send_email",
+        arguments: { studentIds, subject: "Center update", body: "Hello @name" },
+        status: "PENDING_CONFIRMATION",
+        requiresConfirmation: true,
+        expiresAt: new Date("2026-08-24T00:00:00.000Z"),
+      });
+    executeMock.mockResolvedValueOnce({
+      ok: true,
+      data: {
+        total: 20,
+        hasMore: false,
+        recipients: studentIds.map((studentId) => ({ studentId })),
+      },
+    });
+    confirmationCardMock.mockResolvedValue({
+      kind: "EMAIL",
+      entityKey: "email:cohort",
+      title: "Email 20 students",
+      badges: [],
+      fields: [],
+      href: "/emails",
+      actionLabel: "View emails",
+      suggestedActions: [],
+    });
+
+    await processAssistantTurn(
+      { id: "admin-1", role: "STAFF" },
+      {
+        clientTurnId: "f7bcb6f9-41e7-4c17-bf0d-3e1b04c8e0d4",
+        message: "Email all active students.",
+      },
+      () => undefined,
+    );
+
+    expect(executeMock).toHaveBeenCalledTimes(1);
+    expect(dataMocks.createOrGetAssistantToolRun).toHaveBeenCalledTimes(2);
+    expect(dataMocks.pauseAssistantRun).toHaveBeenCalledTimes(1);
+    expect(dataMocks.createOrGetAssistantToolRun).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        namespace: "communications",
+        toolName: "send_email",
+      }),
+    );
+  });
+
+  it("does not authorize a student profile mutation from a communication cohort", async () => {
+    responses.queue.push(
+      {
+        events: [],
+        final: {
+          output_text: "",
+          output: [{
+            type: "function_call",
+            namespace: "communications",
+            name: "resolve_recipients",
+            call_id: "call-resolve-email-only",
+            arguments: JSON.stringify({ studentIds: ["student-1"] }),
+          }],
+          usage,
+        },
+      },
+      {
+        events: [],
+        final: {
+          output_text: "",
+          output: [{
+            type: "function_call",
+            namespace: "students",
+            name: "update_student",
+            call_id: "call-update-from-email-cohort",
+            arguments: JSON.stringify({ id: "student-1", school: "North High" }),
+          }],
+          usage,
+        },
+      },
+      {
+        events: [],
+        final: { output_text: "I need to inspect that student first.", output: [], usage },
+      },
+    );
+    dataMocks.createOrGetAssistantToolRun.mockResolvedValue({
+      id: "tool-resolve-email-only",
+      runId: "run-1",
+      callId: "call-resolve-email-only",
+      namespace: "communications",
+      toolName: "resolve_recipients",
+      arguments: { studentIds: ["student-1"], page: 1, limit: 100 },
+      status: "RUNNING",
+      requiresConfirmation: false,
+    });
+    executeMock.mockResolvedValue({
+      ok: true,
+      data: { recipients: [{ studentId: "student-1" }] },
+    });
+
+    await processAssistantTurn(
+      { id: "admin-1", role: "STAFF" },
+      {
+        clientTurnId: "e7bcb6f9-41e7-4c17-bf0d-3e1b04c8e0d4",
+        message: "Resolve this recipient, then edit their school.",
+      },
+      () => undefined,
+    );
+
+    expect(executeMock).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(responses.requests.at(-1)?.input)).toContain(
+      "mutation targets were not established",
+    );
+  });
+
+  it("authorizes more than eleven reminders from one paged due lookup", async () => {
+    const reminders = Array.from({ length: 20 }, (_, index) => ({
+      enrollmentId: `enrollment-${index + 1}`,
+      month: "2026-08",
+    }));
+    responses.queue.push(
+      {
+        events: [],
+        final: {
+          output_text: "",
+          output: [{
+            type: "function_call",
+            namespace: "billing",
+            name: "get_upcoming_dues",
+            call_id: "call-resolve-dues",
+            arguments: JSON.stringify({
+              status: "OVERDUE",
+              fromMonth: "2025-09",
+              toMonth: "2026-08",
+              limit: 25,
+            }),
+          }],
+          usage,
+        },
+      },
+      {
+        events: [],
+        final: {
+          output_text: "",
+          output: [{
+            type: "function_call",
+            namespace: "billing",
+            name: "send_payment_reminders",
+            call_id: "call-send-reminder-batch",
+            arguments: JSON.stringify({ reminders }),
+          }],
+          usage,
+        },
+      },
+    );
+    dataMocks.createOrGetAssistantToolRun
+      .mockResolvedValueOnce({
+        id: "tool-resolve-dues",
+        runId: "run-1",
+        callId: "call-resolve-dues",
+        namespace: "billing",
+        toolName: "get_upcoming_dues",
+        arguments: {},
+        status: "RUNNING",
+        requiresConfirmation: false,
+      })
+      .mockResolvedValueOnce({
+        id: "tool-send-reminder-batch",
+        runId: "run-1",
+        callId: "call-send-reminder-batch",
+        namespace: "billing",
+        toolName: "send_payment_reminders",
+        arguments: { reminders },
+        status: "PENDING_CONFIRMATION",
+        requiresConfirmation: true,
+        expiresAt: new Date("2026-08-24T00:00:00.000Z"),
+      });
+    executeMock.mockResolvedValueOnce({
+      ok: true,
+      data: {
+        total: 20,
+        hasMore: false,
+        dues: reminders.map((reminder) => ({
+          ...reminder,
+          studentId: `student-${reminder.enrollmentId.split("-").at(-1)}`,
+        })),
+      },
+    });
+    confirmationCardMock.mockResolvedValue({
+      kind: "EMAIL",
+      entityKey: "email:payment-reminders",
+      title: "Send 20 payment reminders",
+      badges: [],
+      fields: [],
+      href: "/payments",
+      actionLabel: "View payments",
+      suggestedActions: [],
+    });
+
+    await processAssistantTurn(
+      { id: "admin-1", role: "STAFF" },
+      {
+        clientTurnId: "d7bcb6f9-41e7-4c17-bf0d-3e1b04c8e0d4",
+        message: "Send all overdue payment reminders.",
+      },
+      () => undefined,
+    );
+
+    expect(executeMock).toHaveBeenCalledTimes(1);
+    expect(dataMocks.createOrGetAssistantToolRun).toHaveBeenCalledTimes(2);
+    expect(dataMocks.pauseAssistantRun).toHaveBeenCalledTimes(1);
+  });
+
   it("pauses a risky mutation and emits a deterministic confirmation", async () => {
     const paymentArguments = {
       studentId: "student-1",

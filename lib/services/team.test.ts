@@ -3,10 +3,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const dataMocks = vi.hoisted(() => ({
   disableAdminSafely: vi.fn(),
   listAdmins: vi.fn(),
+  listAdminsForAssistant: vi.fn(),
   setAdminRoleSafely: vi.fn(),
 }));
 const clerkMocks = vi.hoisted(() => ({
   deleteUser: vi.fn(),
+  getInvitationList: vi.fn(),
   clerkClient: vi.fn(),
 }));
 
@@ -15,7 +17,12 @@ vi.mock("@clerk/nextjs/server", () => ({
   clerkClient: clerkMocks.clerkClient,
 }));
 
-import { removeTeamMember } from "@/lib/services/team";
+import {
+  getPendingTeamInvitation,
+  getTeamPageData,
+  getTeamPageForAssistant,
+  removeTeamMember,
+} from "@/lib/services/team";
 
 describe("team removal", () => {
   beforeEach(() => {
@@ -26,6 +33,7 @@ describe("team removal", () => {
     });
     clerkMocks.clerkClient.mockResolvedValue({
       users: { deleteUser: clerkMocks.deleteUser },
+      invitations: { getInvitationList: clerkMocks.getInvitationList },
     });
   });
 
@@ -48,6 +56,77 @@ describe("team removal", () => {
     await expect(removeTeamMember("admin-1", "admin-2")).resolves.toEqual({
       removed: true,
       clerkAccountDeleted: true,
+    });
+  });
+
+  it("loads every pending invitation for the manual team page", async () => {
+    dataMocks.listAdmins.mockResolvedValue([]);
+    const firstPage = Array.from({ length: 100 }, (_, index) => ({
+      id: `invitation-${index + 1}`,
+      emailAddress: `person-${index + 1}@example.com`,
+    }));
+    const secondPage = Array.from({ length: 25 }, (_, index) => ({
+      id: `invitation-${index + 101}`,
+      emailAddress: `person-${index + 101}@example.com`,
+    }));
+    clerkMocks.getInvitationList
+      .mockResolvedValueOnce({ data: firstPage, totalCount: 125 })
+      .mockResolvedValueOnce({ data: secondPage, totalCount: 125 });
+
+    await expect(getTeamPageData()).resolves.toMatchObject({
+      pendingInvitations: expect.arrayContaining([
+        expect.objectContaining({ id: "invitation-125" }),
+      ]),
+    });
+    expect(clerkMocks.getInvitationList).toHaveBeenNthCalledWith(2, {
+      status: "pending",
+      limit: 100,
+      offset: 100,
+    });
+  });
+
+  it("pages invitations and resolves an exact invitation beyond the first ten", async () => {
+    dataMocks.listAdminsForAssistant.mockResolvedValue({
+      total: 0,
+      page: 2,
+      limit: 10,
+      hasMore: false,
+      admins: [],
+    });
+    clerkMocks.getInvitationList.mockResolvedValue({
+      data: [{
+        id: "invitation-11",
+        emailAddress: "eleven@example.com",
+        status: "pending",
+      }],
+      totalCount: 11,
+    });
+
+    await expect(
+      getTeamPageForAssistant({ page: 2, limit: 10 }),
+    ).resolves.toMatchObject({
+      pendingInvitations: {
+        total: 11,
+        page: 2,
+        hasMore: false,
+        results: [expect.objectContaining({ id: "invitation-11" })],
+      },
+    });
+    expect(clerkMocks.getInvitationList).toHaveBeenCalledWith({
+      status: "pending",
+      query: undefined,
+      limit: 10,
+      offset: 10,
+    });
+
+    await expect(
+      getPendingTeamInvitation({ invitationId: "invitation-11" }),
+    ).resolves.toMatchObject({ id: "invitation-11" });
+    expect(clerkMocks.getInvitationList).toHaveBeenLastCalledWith({
+      status: "pending",
+      query: "invitation-11",
+      limit: 100,
+      offset: 0,
     });
   });
 });

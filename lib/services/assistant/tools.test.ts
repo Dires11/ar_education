@@ -309,6 +309,7 @@ describe("assistant tool registry", () => {
     )!;
     expect(scheduleLookup.schema.parse({ sessionId: "session-1" })).toEqual({
       sessionId: "session-1",
+      page: 1,
       limit: 100,
     });
     expect(() => scheduleLookup.schema.parse({})).toThrow();
@@ -388,8 +389,62 @@ describe("assistant tool registry", () => {
 
     const counts = getAssistantNamespaceCounts("OWNER");
     expect(counts.recurrence).toBe(9);
-    expect(counts.billing).toBe(8);
+    expect(counts.billing).toBe(9);
     expect(counts.schedule).toBe(9);
+  });
+
+  it("supports bounded cohort email and payment-reminder batches", () => {
+    const recipients = getAssistantToolSpec(
+      "communications",
+      "resolve_recipients",
+      "STAFF",
+    )!;
+    expect(recipients.schema.parse({ status: "ACTIVE" })).toEqual({
+      status: "ACTIVE",
+      page: 1,
+      limit: 100,
+    });
+    expect(recipients.schema.safeParse({}).success).toBe(false);
+    expect(
+      recipients.schema.safeParse({
+        studentIds: Array.from({ length: 301 }, (_, index) => `student-${index}`),
+      }).success,
+    ).toBe(false);
+    expect(assistantToolMutatesData(recipients)).toBe(false);
+
+    const dues = getAssistantToolSpec(
+      "billing",
+      "get_upcoming_dues",
+      "STAFF",
+    )!;
+    expect(
+      dues.schema.parse({
+        status: "OVERDUE",
+        fromMonth: "2025-09",
+        toMonth: "2026-08",
+        page: 2,
+        limit: 100,
+      }),
+    ).toMatchObject({ page: 2, limit: 100 });
+    expect(
+      dues.schema.safeParse({ fromMonth: "2024-01", toMonth: "2026-08" })
+        .success,
+    ).toBe(false);
+
+    const reminders = getAssistantToolSpec(
+      "billing",
+      "send_payment_reminders",
+      "STAFF",
+    )!;
+    const batch = Array.from({ length: 20 }, (_, index) => ({
+      enrollmentId: `enrollment-${index}`,
+      month: "2026-08",
+    }));
+    expect(reminders.schema.safeParse({ reminders: batch }).success).toBe(true);
+    expect(
+      reminders.schema.safeParse({ reminders: [batch[0], batch[0]] }).success,
+    ).toBe(false);
+    expect(assistantToolRequiresConfirmation(reminders, {})).toBe(true);
   });
 });
 

@@ -139,6 +139,24 @@ export const ASSISTANT_ROUTING_EVAL_CASES: AssistantRoutingEvalCase[] = [
     expectedConfirmation: true,
   },
   {
+    name: "send a cohort email",
+    prompt:
+      "Send all active students an email with subject 'Center update' and body 'Hello @name, classes are open tomorrow.'",
+    expectedNamespace: "communications",
+    expectedTool: "send_email",
+    requiredLookupGroups: [["communications.resolve_recipients"]],
+    expectedConfirmation: true,
+  },
+  {
+    name: "send bulk overdue reminders",
+    prompt:
+      "Find every overdue billing period from September 2025 through August 2026 and send all of those payment reminders.",
+    expectedNamespace: "billing",
+    expectedTool: "send_payment_reminders",
+    requiredLookupGroups: [["billing.get_upcoming_dues"]],
+    expectedConfirmation: true,
+  },
+  {
     name: "invite staff",
     prompt: "Invite new staff member alex@example.com to the CRM team.",
     expectedNamespace: "team",

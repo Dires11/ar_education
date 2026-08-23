@@ -4,6 +4,7 @@ const studentMocks = vi.hoisted(() => ({
   createStudentWithGuardian: vi.fn(),
   getStudent: vi.fn(),
   getStudentForAssistant: vi.fn(),
+  resolveStudentCommunicationRecipientsData: vi.fn(),
 }));
 const paymentDataMocks = vi.hoisted(() => ({
   getPaymentForAssistantConfirmation: vi.fn(),
@@ -32,9 +33,11 @@ const sessionServiceMocks = vi.hoisted(() => ({
 const paymentServiceMocks = vi.hoisted(() => ({
   getPaymentDueQuote: vi.fn(),
   getPaymentReminderConfirmation: vi.fn(),
+  getPaymentDuesForAssistant: vi.fn(),
   getStudentBalance: vi.fn(),
   recordPayment: vi.fn(),
   recordPaymentForDue: vi.fn(),
+  sendPaymentReminderEmail: vi.fn(),
 }));
 const emailServiceMocks = vi.hoisted(() => ({
   getEmailDeliveryConfirmation: vi.fn(),
@@ -45,6 +48,7 @@ const emailDataMocks = vi.hoisted(() => ({
   listEmailTemplatesForAssistant: vi.fn(),
 }));
 const dashboardMocks = vi.hoisted(() => ({
+  getDashboardReportPageForAssistant: vi.fn(),
   getDashboardStats: vi.fn(),
 }));
 const referenceDataMocks = vi.hoisted(() => ({
@@ -61,6 +65,8 @@ vi.mock("@/lib/data/students", () => ({
   getStudent: studentMocks.getStudent,
   getStudentForAssistant: studentMocks.getStudentForAssistant,
   listStudents: vi.fn(),
+  resolveStudentCommunicationRecipientsData:
+    studentMocks.resolveStudentCommunicationRecipientsData,
 }));
 vi.mock("@/lib/data/payments", () => paymentDataMocks);
 vi.mock("@/lib/data/sessions", () => sessionDataMocks);
@@ -132,12 +138,13 @@ vi.mock("@/lib/services/payments", () => ({
   getPaymentDueQuote: paymentServiceMocks.getPaymentDueQuote,
   getPaymentReminderConfirmation:
     paymentServiceMocks.getPaymentReminderConfirmation,
+  getPaymentDuesForAssistant: paymentServiceMocks.getPaymentDuesForAssistant,
   getStudentBalance: paymentServiceMocks.getStudentBalance,
   getPaymentStats: vi.fn(),
   getUpcomingPaymentDues: vi.fn(),
   recordPayment: paymentServiceMocks.recordPayment,
   recordPaymentForDue: paymentServiceMocks.recordPaymentForDue,
-  sendPaymentReminderEmail: vi.fn(),
+  sendPaymentReminderEmail: paymentServiceMocks.sendPaymentReminderEmail,
 }));
 
 vi.mock("@/lib/services/emails", () => ({
@@ -634,6 +641,95 @@ describe("assistant tool result cards", () => {
     });
   });
 
+  it("resolves and executes more than eleven payment reminders as one approved batch", async () => {
+    const reminders = Array.from({ length: 20 }, (_, index) => ({
+      enrollmentId: `enrollment-${index + 1}`,
+      month: "2026-08",
+    }));
+    paymentServiceMocks.getPaymentReminderConfirmation.mockImplementation(
+      async (enrollmentId: string) => {
+        const index = Number(enrollmentId.split("-").at(-1));
+        return {
+          digest: index.toString(16).padStart(64, "0"),
+          recipientEmail: `guardian-${index}@example.com`,
+          recipientName: `Student ${index}`,
+          amount: "80.00",
+          monthLabel: "August 2026",
+          subject: "Payment reminder",
+          bodyPreview: `Reminder ${index}`,
+        };
+      },
+    );
+
+    const resolved = await resolveAssistantConfirmationArguments({
+      namespace: "billing",
+      name: "send_payment_reminders",
+      argumentsValue: { reminders },
+    });
+    expect(resolved).toMatchObject({
+      __assistantConfirmation: {
+        recipientSummary: expect.stringContaining("and 17 more"),
+        deliveries: expect.arrayContaining([
+          expect.objectContaining({ enrollmentId: "enrollment-20" }),
+        ]),
+      },
+    });
+
+    await executeAssistantTool({
+      namespace: "billing",
+      name: "send_payment_reminders",
+      argumentsValue: resolved,
+      context: {
+        admin: { id: "admin-1", role: "STAFF" },
+        idempotencyKey: "tool-run-batch",
+        provenanceValidated: true,
+      },
+    });
+
+    expect(paymentServiceMocks.sendPaymentReminderEmail).toHaveBeenCalledTimes(20);
+    expect(paymentServiceMocks.sendPaymentReminderEmail).toHaveBeenLastCalledWith(
+      "enrollment-20",
+      "2026-08",
+      "tool-run-batch:19",
+      (20).toString(16).padStart(64, "0"),
+    );
+  });
+
+  it("resolves a large communication cohort in one bounded read", async () => {
+    studentMocks.resolveStudentCommunicationRecipientsData.mockResolvedValue({
+      total: 20,
+      page: 1,
+      limit: 100,
+      hasMore: false,
+      recipients: Array.from({ length: 20 }, (_, index) => ({
+        studentId: `student-${index + 1}`,
+        name: `Student ${index + 1}`,
+        recipientEmail: `student-${index + 1}@example.com`,
+        deliverable: true,
+      })),
+    });
+
+    const result = await executeAssistantTool({
+      namespace: "communications",
+      name: "resolve_recipients",
+      argumentsValue: { status: "ACTIVE" },
+      context: { admin: { id: "admin-1", role: "STAFF" } },
+    });
+
+    expect(studentMocks.resolveStudentCommunicationRecipientsData).toHaveBeenCalledWith({
+      studentIds: undefined,
+      query: undefined,
+      status: "ACTIVE",
+      school: undefined,
+      gradeLevel: undefined,
+      page: 1,
+      limit: 100,
+    });
+    expect(result).toMatchObject({
+      data: { total: 20, hasMore: false, recipients: expect.any(Array) },
+    });
+  });
+
   it("keeps the full resolved recipient set visible for bulk-email approval", async () => {
     const recipients = Array.from({ length: 4 }, (_, index) => ({
       studentId: `student-${index + 1}`,
@@ -1043,11 +1139,18 @@ describe("assistant tool result cards", () => {
       tutorCounts: [],
       weeklySessionsByDay: [],
     });
+    dashboardMocks.getDashboardReportPageForAssistant.mockResolvedValue({
+      total: 0,
+      page: 1,
+      limit: 50,
+      hasMore: false,
+      results: [],
+    });
 
     await executeAssistantTool({
       namespace: "schedule",
       name: "get_schedule",
-      argumentsValue: { month: "2026-08", limit: 25 },
+      argumentsValue: { month: "2026-08", page: 1, limit: 25 },
       context: { admin: { id: "admin-1", role: "STAFF" } },
     });
     await executeAssistantTool({
@@ -1059,11 +1162,13 @@ describe("assistant tool result cards", () => {
 
     expect(
       sessionServiceMocks.getMonthScheduleForAssistant,
-    ).toHaveBeenCalledWith("2026-08", 25);
+    ).toHaveBeenCalledWith("2026-08", 25, 1);
     expect(dashboardMocks.getDashboardStats).toHaveBeenCalledWith({
       materialize: false,
       includeSessionDetails: false,
       includeScheduleAggregates: false,
+      includeUnpaidStudents: false,
+      includeUpcomingEndings: false,
     });
     expect(
       sessionServiceMocks.getDashboardScheduleForAssistant,

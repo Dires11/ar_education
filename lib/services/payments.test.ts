@@ -1,8 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Prisma } from "@/generated/prisma";
 
 const paymentData = vi.hoisted(() => ({
   createOutstandingPaymentForPeriod: vi.fn(),
+  getActiveSubscriptionEnrollments: vi.fn(),
   getEnrollmentForPaymentReminder: vi.fn(),
   getEnrollmentPaymentDueQuote: vi.fn(),
 }));
@@ -18,6 +19,7 @@ vi.mock("@/lib/utils/email", () => ({ sendEmail: emailUtility.sendEmail }));
 
 import {
   getPaymentDueQuote,
+  getPaymentDuesForAssistant,
   getPaymentReminderConfirmation,
   recordPaymentForDue,
   sendPaymentReminderEmail,
@@ -128,5 +130,72 @@ describe("payment due confirmation integrity", () => {
       ),
     ).rejects.toThrow("changed after approval was requested");
     expect(emailUtility.sendEmail).not.toHaveBeenCalled();
+  });
+});
+
+describe("assistant payment due coverage", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("returns overdue periods older than two months and honors quarterly billing", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-23T12:00:00.000Z"));
+    paymentData.getActiveSubscriptionEnrollments.mockResolvedValue({
+      total: 1,
+      page: 1,
+      limit: 25,
+      hasMore: false,
+      enrollments: [
+        {
+          id: "enrollment-quarterly",
+          studentId: "student-1",
+          startDate: new Date("2026-01-15T00:00:00.000Z"),
+          endDate: null,
+          status: "ACTIVE",
+          priceAtEnrollment: new Prisma.Decimal(300),
+          customPriceOverride: null,
+          student: {
+            id: "student-1",
+            firstName: "Maya",
+            lastName: "Chen",
+            email: "maya@example.com",
+            guardians: [],
+          },
+          package: {
+            name: "Quarterly Math",
+            type: "MONTHLY",
+            billingPeriod: "THREE_MONTHS",
+          },
+          subject: { name: "Math" },
+          discounts: [],
+          payments: [],
+        },
+      ],
+    });
+
+    const result = await getPaymentDuesForAssistant({
+      status: "OVERDUE",
+      fromMonth: "2026-01",
+      toMonth: "2026-08",
+      page: 1,
+      limit: 25,
+    });
+
+    expect(result.dues.map((due) => due.month)).toEqual([
+      "2026-01",
+      "2026-04",
+      "2026-07",
+    ]);
+    expect(result.dues[0]).toMatchObject({
+      amount: "300.00",
+      isOverdue: true,
+    });
+    expect(paymentData.getActiveSubscriptionEnrollments).toHaveBeenCalledWith({
+      page: 1,
+      limit: 25,
+      paymentFromMonth: "2026-01",
+      paymentToMonth: "2026-08",
+    });
   });
 });

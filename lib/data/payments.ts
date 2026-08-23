@@ -56,7 +56,14 @@ export async function listPayments({
     prisma.payment.count({ where }),
   ]);
 
-  return { payments, total, page, pageSize };
+  return {
+    payments,
+    total,
+    page,
+    pageSize,
+    limit: pageSize,
+    hasMore: page * pageSize < total,
+  };
 }
 
 export async function listPaymentsForAssistant(filters: PaymentFilters = {}) {
@@ -112,7 +119,14 @@ export async function listPaymentsForAssistant(filters: PaymentFilters = {}) {
     }),
     prisma.payment.count({ where }),
   ]);
-  return { payments, total, page, pageSize };
+  return {
+    payments,
+    total,
+    page,
+    pageSize,
+    limit: pageSize,
+    hasMore: page * pageSize < total,
+  };
 }
 
 export async function getPaymentForAssistantConfirmation(id: string) {
@@ -362,27 +376,54 @@ export function getEnrollmentPaymentDueQuote(id: string, coversMonth: string) {
   });
 }
 
-export function getActiveSubscriptionEnrollments() {
-  return prisma.enrollment.findMany({
-    where: { status: "ACTIVE", package: { type: "MONTHLY" } },
-    include: {
-      student: {
-        include: {
-          guardians: {
-            where: { isPrimary: true },
-            include: { guardian: true },
+export async function getActiveSubscriptionEnrollments(input: {
+  page: number;
+  limit: number;
+  paymentFromMonth: string;
+  paymentToMonth: string;
+}) {
+  const where = {
+    status: "ACTIVE" as const,
+    package: { type: "MONTHLY" as const },
+  };
+  const [total, enrollments] = await prisma.$transaction([
+    prisma.enrollment.count({ where }),
+    prisma.enrollment.findMany({
+      where,
+      include: {
+        student: {
+          include: {
+            guardians: {
+              where: { isPrimary: true },
+              include: { guardian: true },
+            },
           },
         },
+        package: true,
+        subject: true,
+        discounts: true,
+        payments: {
+          where: {
+            coversMonth: {
+              gte: input.paymentFromMonth,
+              lte: input.paymentToMonth,
+            },
+          },
+          select: { coversMonth: true, amount: true },
+        },
       },
-      package: true,
-      subject: true,
-      discounts: true,
-      payments: {
-        where: { coversMonth: { not: null } },
-        select: { coversMonth: true, amount: true },
-      },
-    },
-  });
+      orderBy: { id: "asc" },
+      skip: (input.page - 1) * input.limit,
+      take: input.limit,
+    }),
+  ]);
+  return {
+    total,
+    page: input.page,
+    limit: input.limit,
+    hasMore: input.page * input.limit < total,
+    enrollments,
+  };
 }
 
 export function getEnrollmentForPaymentReminder(

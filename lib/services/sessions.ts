@@ -941,13 +941,24 @@ export async function getMonthSchedule(monthKey: string) {
 export async function getMonthScheduleForAssistant(
   monthKey: string,
   limit = 100,
+  page = 1,
 ) {
   const centerTimeZone = getConfiguredCenterTimeZone();
   const range = getCalendarMonthRange(monthKey, centerTimeZone);
   const [real, rules] = await Promise.all([
-    getSessionsForAssistantMonth(range.start, range.endExclusive, limit),
+    getSessionsForAssistantMonth(
+      range.start,
+      range.endExclusive,
+      limit,
+      page,
+    ),
     getRecurrenceRulesForMonth(range.calendarStart, range.calendarEnd),
   ]);
+  if (real.slotsTruncated) {
+    throw new Error(
+      "This month contains more than 5,000 materialized sessions. Narrow the request to an exact session ID.",
+    );
+  }
   const virtual = await getVirtualSessionsForMonth(
     range.calendarStart,
     real.slots,
@@ -987,6 +998,8 @@ export async function getMonthScheduleForAssistant(
   });
   return {
     month: monthKey,
+    page,
+    limit,
     realSessions: {
       total: real.total,
       hasMore: real.hasMore,
@@ -994,8 +1007,10 @@ export async function getMonthScheduleForAssistant(
     },
     virtualSessions: {
       total: virtual.length,
-      hasMore: virtual.length > limit,
-      results: virtual.slice(0, limit).map(summarizeVirtual),
+      hasMore: page * limit < virtual.length,
+      results: virtual
+        .slice((page - 1) * limit, page * limit)
+        .map(summarizeVirtual),
     },
   };
 }
@@ -1032,6 +1047,11 @@ export async function getDashboardScheduleForAssistant(limit = 50) {
           getAssistantSessionSlots(range.start, range.endExclusive),
           getRecurrenceRulesForMonth(range.calendarStart, range.calendarEnd),
         ]);
+        if (slots.length > 5_000) {
+          throw new Error(
+            "The dashboard schedule exceeds the 5,000-session assistant safety bound.",
+          );
+        }
         const virtual = await getVirtualSessionsForMonth(
           range.calendarStart,
           slots,

@@ -187,6 +187,81 @@ export async function queryStudentDirectoryData({
   };
 }
 
+export async function resolveStudentCommunicationRecipientsData(input: {
+  studentIds?: string[];
+  query?: string;
+  status?: PersonStatus;
+  school?: string;
+  gradeLevel?: string;
+  page: number;
+  limit: number;
+}) {
+  const where: Prisma.StudentWhereInput = {
+    ...(input.studentIds ? { id: { in: input.studentIds } } : {}),
+    ...(input.status ? { status: input.status } : {}),
+    ...(input.school
+      ? { school: { contains: input.school, mode: "insensitive" as const } }
+      : {}),
+    ...(input.gradeLevel
+      ? {
+          gradeLevel: {
+            contains: input.gradeLevel,
+            mode: "insensitive" as const,
+          },
+        }
+      : {}),
+    ...(input.query ? studentSearchWhere(input.query) : {}),
+  };
+  const [total, students] = await prisma.$transaction([
+    prisma.student.count({ where }),
+    prisma.student.findMany({
+      where,
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        status: true,
+        email: true,
+        guardians: {
+          select: {
+            guardian: {
+              select: {
+                firstName: true,
+                lastName: true,
+                email: true,
+              },
+            },
+          },
+          orderBy: { isPrimary: "desc" },
+          take: 1,
+        },
+      },
+      orderBy: [{ lastName: "asc" }, { firstName: "asc" }],
+      skip: (input.page - 1) * input.limit,
+      take: input.limit,
+    }),
+  ]);
+  return {
+    total,
+    page: input.page,
+    limit: input.limit,
+    hasMore: input.page * input.limit < total,
+    recipients: students.map((student) => {
+      const guardian = student.guardians[0]?.guardian;
+      return {
+        studentId: student.id,
+        name: `${student.firstName} ${student.lastName}`,
+        status: student.status,
+        recipientName: guardian
+          ? `${guardian.firstName} ${guardian.lastName}`
+          : `${student.firstName} ${student.lastName}`,
+        recipientEmail: guardian?.email ?? student.email,
+        deliverable: Boolean(guardian?.email ?? student.email),
+      };
+    }),
+  };
+}
+
 export async function getStudent(id: string) {
   return prisma.student.findUnique({
     where: { id },

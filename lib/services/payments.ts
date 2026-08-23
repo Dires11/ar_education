@@ -61,6 +61,13 @@ export type PaymentDue = {
   isDueThisMonth: boolean;
 };
 
+type PaymentDueStatus =
+  | "ALL"
+  | "OVERDUE"
+  | "DUE_THIS_MONTH"
+  | "UPCOMING"
+  | "PAID";
+
 const DEFAULT_PAYMENT_REMINDER_TEMPLATE = {
   name: "Payment Reminder",
   type: "PAYMENT_REMINDER" as const,
@@ -194,18 +201,23 @@ export async function deletePaymentById(id: string) {
   return deletePayment(id);
 }
 
-export async function getUpcomingPaymentDues(): Promise<PaymentDue[]> {
-  const today = new Date();
-  const timeZone = getConfiguredCenterTimeZone();
-  const currentBillingMonth = startOfBillingMonth(
-    getCalendarDateInTimeZone(today, timeZone),
-  );
-  const offsets = [-2, -1, 0, 1, 2];
+function paymentDueMatchesStatus(due: PaymentDue, status: PaymentDueStatus) {
+  if (status === "OVERDUE") return due.isOverdue;
+  if (status === "DUE_THIS_MONTH") return due.isDueThisMonth;
+  if (status === "UPCOMING") {
+    return !due.isPaid && !due.isOverdue && !due.isDueThisMonth;
+  }
+  if (status === "PAID") return due.isPaid;
+  return true;
+}
 
-  const enrollments = await getActiveSubscriptionEnrollments();
-
+function paymentDuesForEnrollments(
+  enrollments: Awaited<ReturnType<typeof getActiveSubscriptionEnrollments>>["enrollments"],
+  monthDates: Date[],
+  currentBillingMonth: Date,
+  timeZone: string,
+) {
   const dues: PaymentDue[] = [];
-
   for (const enrollment of enrollments) {
     const { student } = enrollment;
     const recipientEmail =
@@ -218,15 +230,11 @@ export async function getUpcomingPaymentDues(): Promise<PaymentDue[]> {
       ? startOfBillingMonth(billingCutoff)
       : null;
 
-    for (const offset of offsets) {
-      const monthDate = addBillingMonths(currentBillingMonth, offset);
-
-      // Skip months before enrollment started
+    for (const monthDate of monthDates) {
       if (enrollmentStart > monthDate) continue;
       if (finalBillingMonth && monthDate > finalBillingMonth) continue;
       if (
-        billingMonthDifference(monthDate, enrollmentStart) % periodMonths !==
-        0
+        billingMonthDifference(monthDate, enrollmentStart) % periodMonths !== 0
       ) {
         continue;
       }
@@ -251,9 +259,7 @@ export async function getUpcomingPaymentDues(): Promise<PaymentDue[]> {
         amountDecimal,
         paymentAmounts,
       );
-      const amount = outstandingAmount.toFixed(2);
       const isPaid = outstandingAmount.isZero();
-
       dues.push({
         key: `${enrollment.id}_${monthStr}`,
         enrollmentId: enrollment.id,
@@ -262,7 +268,7 @@ export async function getUpcomingPaymentDues(): Promise<PaymentDue[]> {
         recipientEmail,
         subjectName: enrollment.subject.name,
         packageName: enrollment.package.name,
-        amount,
+        amount: outstandingAmount.toFixed(2),
         month: monthStr,
         monthLabel,
         isPaid,
@@ -272,20 +278,100 @@ export async function getUpcomingPaymentDues(): Promise<PaymentDue[]> {
       });
     }
   }
+  return dues;
+}
 
+function sortPaymentDues(dues: PaymentDue[]) {
   dues.sort((a, b) => {
-    const rank = (d: PaymentDue) => {
-      if (d.isPaid) return 4;
-      if (d.isOverdue) return 0;
-      if (d.isDueThisMonth) return 1;
+    const rank = (due: PaymentDue) => {
+      if (due.isPaid) return 4;
+      if (due.isOverdue) return 0;
+      if (due.isDueThisMonth) return 1;
       return 2;
     };
-    const r = rank(a) - rank(b);
-    if (r !== 0) return r;
-    return a.month.localeCompare(b.month);
+    return rank(a) - rank(b) || a.month.localeCompare(b.month);
   });
-
   return dues;
+}
+
+function billingMonthRange(fromMonth: string, toMonth: string) {
+  const from = new Date(`${fromMonth}-01T00:00:00.000Z`);
+  const to = new Date(`${toMonth}-01T00:00:00.000Z`);
+  const count = billingMonthDifference(to, from) + 1;
+  if (count < 1 || count > 24) {
+    throw new Error("Payment-due ranges must cover between 1 and 24 months");
+  }
+  return Array.from({ length: count }, (_, index) =>
+    addBillingMonths(from, index),
+  );
+}
+
+export async function getPaymentDuesForAssistant(input: {
+  status: PaymentDueStatus;
+  fromMonth: string;
+  toMonth: string;
+  page: number;
+  limit: number;
+}) {
+  const timeZone = getConfiguredCenterTimeZone();
+  const currentBillingMonth = startOfBillingMonth(
+    getCalendarDateInTimeZone(new Date(), timeZone),
+  );
+  const monthDates = billingMonthRange(input.fromMonth, input.toMonth);
+  const enrollmentPage = await getActiveSubscriptionEnrollments({
+    page: input.page,
+    limit: input.limit,
+    paymentFromMonth: input.fromMonth,
+    paymentToMonth: input.toMonth,
+  });
+  const dues = sortPaymentDues(
+    paymentDuesForEnrollments(
+      enrollmentPage.enrollments,
+      monthDates,
+      currentBillingMonth,
+      timeZone,
+    ).filter((due) => paymentDueMatchesStatus(due, input.status)),
+  );
+  return {
+    total: enrollmentPage.total,
+    page: enrollmentPage.page,
+    limit: enrollmentPage.limit,
+    hasMore: enrollmentPage.hasMore,
+    from: input.fromMonth,
+    to: input.toMonth,
+    dues,
+  };
+}
+
+export async function getUpcomingPaymentDues(): Promise<PaymentDue[]> {
+  const timeZone = getConfiguredCenterTimeZone();
+  const currentBillingMonth = startOfBillingMonth(
+    getCalendarDateInTimeZone(new Date(), timeZone),
+  );
+  const monthDates = [-2, -1, 0, 1, 2].map((offset) =>
+    addBillingMonths(currentBillingMonth, offset),
+  );
+  const fromMonth = formatBillingMonth(monthDates[0]);
+  const toMonth = formatBillingMonth(monthDates.at(-1)!);
+  const dues: PaymentDue[] = [];
+  for (let page = 1; ; page += 1) {
+    const enrollmentPage = await getActiveSubscriptionEnrollments({
+      page,
+      limit: 100,
+      paymentFromMonth: fromMonth,
+      paymentToMonth: toMonth,
+    });
+    dues.push(
+      ...paymentDuesForEnrollments(
+        enrollmentPage.enrollments,
+        monthDates,
+        currentBillingMonth,
+        timeZone,
+      ),
+    );
+    if (!enrollmentPage.hasMore) break;
+  }
+  return sortPaymentDues(dues);
 }
 
 export async function getEnrollmentPaidMonths(

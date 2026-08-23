@@ -351,7 +351,9 @@ function toolOutput(callId: string, output: unknown): ResponseInputItem {
 type AssistantGrantKind =
   | AssistantIdentifierReference["kind"]
   | "studentGuardianLink"
-  | "sessionParticipant";
+  | "sessionParticipant"
+  | "communicationRecipient"
+  | "billingReminder";
 
 function grantKey(kind: AssistantGrantKind, id: string) {
   return `${kind}:${id}`;
@@ -362,7 +364,7 @@ function referenceGrant(reference: AssistantIdentifierReference) {
 }
 
 function relationshipGrant(
-  kind: "studentGuardianLink" | "sessionParticipant",
+  kind: "studentGuardianLink" | "sessionParticipant" | "billingReminder",
   parentId: string,
   childId: string,
 ) {
@@ -832,15 +834,54 @@ async function runModelLoop(input: {
           discountId: argumentsValue.discountId,
         }).map(referenceGrant);
       }
+      if (key === "communications.resolve_recipients") {
+        const recipients = Array.isArray(data?.recipients)
+          ? data.recipients
+          : [];
+        return recipients.flatMap((recipient) => {
+          if (
+            !recipient ||
+            typeof recipient !== "object" ||
+            Array.isArray(recipient)
+          ) {
+            return [];
+          }
+          const studentId = (recipient as Record<string, unknown>).studentId;
+          return typeof studentId === "string"
+            ? [grantKey("communicationRecipient", studentId)]
+            : [];
+        });
+      }
+      if (key === "billing.get_upcoming_dues") {
+        const dues = Array.isArray(data?.dues) ? data.dues : [];
+        return dues.flatMap((due) => {
+          if (!due || typeof due !== "object" || Array.isArray(due)) return [];
+          const record = due as Record<string, unknown>;
+          return typeof record.enrollmentId === "string" &&
+            typeof record.month === "string"
+            ? [relationshipGrant(
+                "billingReminder",
+                record.enrollmentId,
+                record.month,
+              )]
+            : [];
+        });
+      }
       const keys = exactArgumentKeys[key] ?? [];
-      return collectAssistantIdentifierReferences(
+      const references = collectAssistantIdentifierReferences(
         namespace,
         name,
         Object.fromEntries(keys.map((argumentKey) => [
           argumentKey,
           argumentsValue[argumentKey],
         ])),
-      ).map(referenceGrant);
+      );
+      return references.flatMap((reference) => [
+        referenceGrant(reference),
+        ...(key === "students.get_student" && reference.kind === "student"
+          ? [grantKey("communicationRecipient", reference.id)]
+          : []),
+      ]);
     })();
     const mutationGrants = assistantToolMutatesData({ namespace, name })
       ? collectPrimaryToolResultGrants(namespace, name, result)
@@ -854,7 +895,13 @@ async function runModelLoop(input: {
         relationshipGrant("studentGuardianLink", data.studentId, data.id),
       );
     }
-    [...exactGrants, ...mutationGrants].forEach((grant) => {
+    const expandedMutationGrants = mutationGrants.flatMap((grant) => [
+      grant,
+      ...(grant.startsWith("student:")
+        ? [grantKey("communicationRecipient", grant.slice("student:".length))]
+        : []),
+    ]);
+    [...exactGrants, ...expandedMutationGrants].forEach((grant) => {
       authorizedMutationGrants.add(grant);
       ambiguousCandidateGrants.delete(grant);
     });
@@ -865,7 +912,14 @@ async function runModelLoop(input: {
       result,
     );
     const primaryCandidateGrants = candidates.records.flatMap((candidate) =>
-      primaryCandidateReferences(namespace, name, candidate).map(referenceGrant),
+      primaryCandidateReferences(namespace, name, candidate).flatMap(
+        (reference) => [
+          referenceGrant(reference),
+          ...(reference.kind === "student"
+            ? [grantKey("communicationRecipient", reference.id)]
+            : []),
+        ],
+      ),
     );
     primaryCandidateGrants.forEach((grant) =>
       authorizedMutationGrants.add(grant),
@@ -940,7 +994,14 @@ async function runModelLoop(input: {
     if (ambiguousRecords.length > 0) {
       ambiguousRecords
         .flatMap((candidate) =>
-          primaryCandidateReferences(namespace, name, candidate).map(referenceGrant),
+          primaryCandidateReferences(namespace, name, candidate).flatMap(
+            (reference) => [
+              referenceGrant(reference),
+              ...(reference.kind === "student"
+                ? [grantKey("communicationRecipient", reference.id)]
+                : []),
+            ],
+          ),
         )
         .forEach((grant) => {
           ambiguousCandidateGrants.add(grant);
@@ -995,6 +1056,39 @@ async function runModelLoop(input: {
             : [];
         }),
       ];
+    }
+    if (key === "communications.send_email") {
+      const studentIds = Array.isArray(argumentsValue.studentIds)
+        ? argumentsValue.studentIds
+        : [];
+      return studentIds.flatMap((studentId) =>
+        typeof studentId === "string"
+          ? [grantKey("communicationRecipient", studentId)]
+          : [],
+      );
+    }
+    if (key === "billing.send_payment_reminders") {
+      const reminders = Array.isArray(argumentsValue.reminders)
+        ? argumentsValue.reminders
+        : [];
+      return reminders.flatMap((reminder) => {
+        if (
+          !reminder ||
+          typeof reminder !== "object" ||
+          Array.isArray(reminder)
+        ) {
+          return [];
+        }
+        const record = reminder as Record<string, unknown>;
+        return typeof record.enrollmentId === "string" &&
+          typeof record.month === "string"
+          ? [relationshipGrant(
+              "billingReminder",
+              record.enrollmentId,
+              record.month,
+            )]
+          : [];
+      });
     }
     return collectAssistantIdentifierReferences(
       namespace,

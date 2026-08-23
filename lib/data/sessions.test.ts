@@ -119,10 +119,11 @@ describe("assistant recurrence lookup", () => {
     const start = new Date("2026-08-01T00:00:00.000Z");
     const end = new Date("2026-09-01T00:00:00.000Z");
 
-    await getSessionsForAssistantMonth(start, end, 25);
+    await getSessionsForAssistantMonth(start, end, 25, 2);
 
     const query = prismaMock.session.findMany.mock.calls[0][0];
     expect(query.take).toBe(25);
+    expect(query.skip).toBe(25);
     expect(query.select.attendance.take).toBe(20);
     expect(query.select.attendance.select.student).toEqual({
       select: { id: true, firstName: true, lastName: true },
@@ -130,6 +131,10 @@ describe("assistant recurrence lookup", () => {
     expect(query.select.attendance.select.student.select).not.toHaveProperty(
       "email",
     );
+    expect(prismaMock.session.findMany.mock.calls[1][0]).toMatchObject({
+      take: 5_001,
+      orderBy: { scheduledFor: "asc" },
+    });
   });
 
   it("bounds nested dashboard attendance while allowing one group attendance call", async () => {

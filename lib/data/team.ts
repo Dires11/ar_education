@@ -9,6 +9,38 @@ export async function listAdmins() {
   });
 }
 
+export async function listAdminsForAssistant(input: {
+  adminId?: string;
+  email?: string;
+  page: number;
+  limit: number;
+}) {
+  const where = {
+    disabledAt: null,
+    ...(input.adminId ? { id: input.adminId } : {}),
+    ...(input.email
+      ? { email: { equals: input.email, mode: "insensitive" as const } }
+      : {}),
+  };
+  const [total, admins] = await prisma.$transaction([
+    prisma.admin.count({ where }),
+    prisma.admin.findMany({
+      where,
+      select: { id: true, name: true, email: true, role: true },
+      orderBy: { createdAt: "asc" },
+      skip: (input.page - 1) * input.limit,
+      take: input.limit,
+    }),
+  ]);
+  return {
+    total,
+    page: input.page,
+    limit: input.limit,
+    hasMore: input.page * input.limit < total,
+    admins,
+  };
+}
+
 export async function findAdminById(id: string) {
   return prisma.admin.findUniqueOrThrow({ where: { id } });
 }

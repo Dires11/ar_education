@@ -1,8 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const prismaMock = vi.hoisted(() => ({
+  enrollment: {
+    count: vi.fn(),
+    findMany: vi.fn(),
+  },
   payment: {
+    count: vi.fn(),
     create: vi.fn(),
+    findMany: vi.fn(),
     upsert: vi.fn(),
   },
   $transaction: vi.fn(),
@@ -14,6 +20,8 @@ import { Prisma } from "@/generated/prisma";
 import {
   createOutstandingPaymentForPeriod,
   createPayment,
+  getActiveSubscriptionEnrollments,
+  listPaymentsForAssistant,
 } from "@/lib/data/payments";
 
 const paymentInput = {
@@ -54,6 +62,59 @@ describe("payment persistence", () => {
       data: paymentInput,
     });
     expect(prismaMock.payment.upsert).not.toHaveBeenCalled();
+  });
+
+  it("pages subscription enrollments and only loads payment coverage in the requested window", async () => {
+    prismaMock.enrollment.count.mockResolvedValue(250);
+    prismaMock.enrollment.findMany.mockResolvedValue([{ id: "enrollment-101" }]);
+    prismaMock.$transaction.mockImplementation((queries: Promise<unknown>[]) =>
+      Promise.all(queries),
+    );
+
+    await expect(
+      getActiveSubscriptionEnrollments({
+        page: 2,
+        limit: 100,
+        paymentFromMonth: "2025-09",
+        paymentToMonth: "2026-08",
+      }),
+    ).resolves.toMatchObject({
+      total: 250,
+      page: 2,
+      limit: 100,
+      hasMore: true,
+    });
+    expect(prismaMock.enrollment.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        skip: 100,
+        take: 100,
+        include: expect.objectContaining({
+          payments: {
+            where: {
+              coversMonth: { gte: "2025-09", lte: "2026-08" },
+            },
+            select: { coversMonth: true, amount: true },
+          },
+        }),
+      }),
+    );
+  });
+
+  it("returns an explicit continuation signal for payment history", async () => {
+    prismaMock.payment.count.mockResolvedValue(65);
+    prismaMock.payment.findMany.mockResolvedValue([]);
+
+    await expect(
+      listPaymentsForAssistant({ page: 2, pageSize: 30 }),
+    ).resolves.toMatchObject({
+      total: 65,
+      page: 2,
+      limit: 30,
+      hasMore: true,
+    });
+    expect(prismaMock.payment.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ skip: 30, take: 30 }),
+    );
   });
 
   it("deduplicates a due payment without excluding other payments from coverage", async () => {

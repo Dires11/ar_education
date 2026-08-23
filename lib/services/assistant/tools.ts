@@ -128,6 +128,7 @@ const ASSISTANT_READ_ONLY_TOOL_KEYS = new Set([
   "billing.get_payment_stats",
   "communications.list_email_templates",
   "communications.get_email_template",
+  "communications.resolve_recipients",
   "team.get_team",
   "reporting.get_dashboard_summary",
 ]);
@@ -467,6 +468,7 @@ const toolSpecs: AssistantToolSpec[] = [
       .object({
         month: monthSchema.optional(),
         sessionId: idSchema.optional(),
+        page: z.number().int().min(1).max(10_000).default(1),
         limit: z.number().int().min(1).max(100).default(100),
       })
       .refine((value) => Boolean(value.month || value.sessionId), {
@@ -660,6 +662,7 @@ const toolSpecs: AssistantToolSpec[] = [
       method: z.enum(["CASH", "BANK_TRANSFER", "CARD", "OTHER"]).optional(),
       from: z.iso.datetime().optional(),
       to: z.iso.datetime().optional(),
+      page: z.number().int().min(1).max(10_000).default(1),
       limit: z.number().int().min(1).max(30).default(20),
     }),
     requiresConfirmation: false,
@@ -668,13 +671,31 @@ const toolSpecs: AssistantToolSpec[] = [
     namespace: "billing",
     name: "get_upcoming_dues",
     description:
-      "List a bounded summary of overdue, current, future, or recently paid package dues.",
-    schema: z.object({
-      status: z
-        .enum(["ALL", "OVERDUE", "DUE_THIS_MONTH", "UPCOMING", "PAID"])
-        .default("ALL"),
-      limit: z.number().int().min(1).max(100).default(50),
-    }),
+      "Page active subscription enrollments and list their overdue, current, future, or paid billing periods in an explicit window of up to 24 months. If fromMonth/toMonth are omitted, the response covers only the default recent window and must not be described as all historical debt.",
+    schema: z
+      .object({
+        status: z
+          .enum(["ALL", "OVERDUE", "DUE_THIS_MONTH", "UPCOMING", "PAID"])
+          .default("ALL"),
+        fromMonth: monthSchema.optional(),
+        toMonth: monthSchema.optional(),
+        page: z.number().int().min(1).max(10_000).default(1),
+        limit: z.number().int().min(1).max(100).default(25),
+      })
+      .refine(
+        (value) => {
+          if (!value.fromMonth || !value.toMonth) return true;
+          const from = new Date(`${value.fromMonth}-01T00:00:00.000Z`);
+          const to = new Date(`${value.toMonth}-01T00:00:00.000Z`);
+          const months =
+            (to.getUTCFullYear() - from.getUTCFullYear()) * 12 +
+            to.getUTCMonth() -
+            from.getUTCMonth() +
+            1;
+          return months >= 1 && months <= 24;
+        },
+        { message: "Payment-due windows must cover 1 to 24 months" },
+      ),
     requiresConfirmation: false,
   },
   {
@@ -715,6 +736,59 @@ const toolSpecs: AssistantToolSpec[] = [
       "Send a payment reminder email for one verified enrollment billing month after an unambiguous enrollment lookup. The application will request confirmation.",
     schema: z.object({ enrollmentId: idSchema, month: monthSchema }),
     requiresConfirmation: true,
+  },
+  {
+    namespace: "billing",
+    name: "send_payment_reminders",
+    description:
+      "Send payment reminder emails for a verified bounded set of enrollment billing periods returned by get_upcoming_dues. Use one bulk call instead of one tool call per recipient. The application will request one confirmation for the complete batch.",
+    schema: z
+      .object({
+        reminders: z
+          .array(
+            z.object({ enrollmentId: idSchema, month: monthSchema }),
+          )
+          .min(1)
+          .max(100),
+      })
+      .refine(
+        (value) =>
+          new Set(
+            value.reminders.map(
+              (reminder) => `${reminder.enrollmentId}:${reminder.month}`,
+            ),
+          ).size === value.reminders.length,
+        { message: "Each enrollment billing period must be unique" },
+      ),
+    requiresConfirmation: true,
+  },
+  {
+    namespace: "communications",
+    name: "resolve_recipients",
+    description:
+      "Resolve a bounded, explicit student cohort into verified email recipients in one call before send_email. Use studentIds for a known set, or filters for a cohort such as all active students. Paginate until hasMore is false before sending the complete cohort; do not guess or omit later pages.",
+    schema: z
+      .object({
+        studentIds: z.array(idSchema).min(1).max(300).optional(),
+        query: z.string().trim().min(1).max(200).optional(),
+        status: z.enum(["ACTIVE", "PAUSED", "INACTIVE"]).optional(),
+        school: z.string().trim().min(1).max(200).optional(),
+        gradeLevel: z.string().trim().min(1).max(100).optional(),
+        page: z.number().int().min(1).max(10_000).default(1),
+        limit: z.number().int().min(1).max(300).default(100),
+      })
+      .refine(
+        (value) =>
+          Boolean(
+            value.studentIds ||
+              value.query ||
+              value.status ||
+              value.school ||
+              value.gradeLevel,
+          ),
+        { message: "Provide studentIds or at least one cohort filter" },
+      ),
+    requiresConfirmation: false,
   },
   {
     namespace: "communications",
@@ -768,6 +842,8 @@ const toolSpecs: AssistantToolSpec[] = [
       adminId: idSchema.optional(),
       invitationId: idSchema.optional(),
       email: z.email().optional(),
+      page: z.number().int().min(1).max(10_000).default(1),
+      limit: z.number().int().min(1).max(100).default(50),
     }),
     ownerOnly: true,
     requiresConfirmation: false,
@@ -811,8 +887,14 @@ const toolSpecs: AssistantToolSpec[] = [
     namespace: "reporting",
     name: "get_dashboard_summary",
     description:
-      "Get current dashboard totals, today's sessions, unpaid students, package endings, and tutor workload.",
-    schema: z.object({}),
+      "Get current dashboard totals or page through unpaid students, upcoming package endings, and tutor workload. Use section plus page to continue any truncated result set.",
+    schema: z.object({
+      section: z
+        .enum(["SUMMARY", "UNPAID_STUDENTS", "UPCOMING_ENDINGS", "TUTOR_WORKLOAD"])
+        .default("SUMMARY"),
+      page: z.number().int().min(1).max(10_000).default(1),
+      limit: z.number().int().min(1).max(50).default(50),
+    }),
     requiresConfirmation: false,
   },
 ];
