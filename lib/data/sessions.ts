@@ -102,6 +102,61 @@ export async function getSessionsForAssistantMonth(
   return { total, hasMore: total > sessions.length, sessions, slots };
 }
 
+export function getAssistantSessionSlots(
+  rangeStart: Date,
+  rangeEndExclusive: Date,
+) {
+  return prisma.session.findMany({
+    where: { scheduledFor: { gte: rangeStart, lt: rangeEndExclusive } },
+    select: {
+      enrollmentId: true,
+      scheduledFor: true,
+      status: true,
+      recurrenceRuleId: true,
+      recurrenceOccurrenceFor: true,
+    },
+    orderBy: { scheduledFor: "asc" },
+  });
+}
+
+export async function getSessionsForAssistantRange(
+  rangeStart: Date,
+  rangeEndExclusive: Date,
+  limit: number,
+) {
+  const where: Prisma.SessionWhereInput = {
+    scheduledFor: { gte: rangeStart, lt: rangeEndExclusive },
+    status: { in: ["SCHEDULED", "COMPLETED"] },
+  };
+  const [total, sessions] = await prisma.$transaction([
+    prisma.session.count({ where }),
+    prisma.session.findMany({
+      where,
+      select: {
+        id: true,
+        scheduledFor: true,
+        durationMinutes: true,
+        status: true,
+        room: true,
+        tutor: { select: { id: true, firstName: true, lastName: true } },
+        subject: { select: { id: true, name: true } },
+        _count: { select: { attendance: true } },
+        attendance: {
+          select: {
+            student: {
+              select: { id: true, firstName: true, lastName: true },
+            },
+          },
+          take: 10,
+        },
+      },
+      orderBy: { scheduledFor: "asc" },
+      take: limit,
+    }),
+  ]);
+  return { total, hasMore: total > sessions.length, sessions };
+}
+
 export async function getSessionForAssistant(id: string) {
   return prisma.session.findUnique({
     where: { id },
@@ -128,7 +183,7 @@ export async function getSessionForAssistant(id: string) {
             select: { id: true, firstName: true, lastName: true },
           },
         },
-        take: 50,
+        take: 100,
       },
     },
   });
@@ -299,23 +354,26 @@ export async function getActiveRecurrenceRulesForGroup(
   });
 }
 
-export function listRecurrenceRulesForAssistant(input: {
+export async function listRecurrenceRulesForAssistant(input: {
   enrollmentId?: string;
   groupId?: string;
   includeEnded: boolean;
   calendarDate: Date;
   limit: number;
 }) {
-  return prisma.recurrenceRule.findMany({
-    where: {
-      ...(input.enrollmentId
-        ? { enrollmentId: input.enrollmentId }
-        : { groupId: input.groupId }),
-      ...(input.includeEnded
-        ? {}
-        : { OR: [{ endsOn: null }, { endsOn: { gte: input.calendarDate } }] }),
-    },
-    select: {
+  const where = {
+    ...(input.enrollmentId
+      ? { enrollmentId: input.enrollmentId }
+      : { groupId: input.groupId }),
+    ...(input.includeEnded
+      ? {}
+      : { OR: [{ endsOn: null }, { endsOn: { gte: input.calendarDate } }] }),
+  };
+  const [total, rules] = await prisma.$transaction([
+    prisma.recurrenceRule.count({ where }),
+    prisma.recurrenceRule.findMany({
+      where,
+      select: {
       id: true,
       enrollmentId: true,
       groupId: true,
@@ -344,10 +402,12 @@ export function listRecurrenceRulesForAssistant(input: {
           subject: { select: { id: true, name: true } },
         },
       },
-    },
-    orderBy: [{ updatedAt: "desc" }, { dayOfWeek: "asc" }],
-    take: input.limit,
-  });
+      },
+      orderBy: [{ updatedAt: "desc" }, { dayOfWeek: "asc" }],
+      take: input.limit,
+    }),
+  ]);
+  return { total, hasMore: total > rules.length, rules };
 }
 
 export async function createSession(data: {

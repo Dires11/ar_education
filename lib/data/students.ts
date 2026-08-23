@@ -122,20 +122,22 @@ export async function queryStudentDirectoryData({
             ? [{ firstName: direction }, { lastName: "asc" }]
             : [{ lastName: direction }, { firstName: "asc" }];
 
-  const [students, matchingCount, rankedCount] = await Promise.all([
+  const select = {
+    id: true,
+    firstName: true,
+    lastName: true,
+    dob: true,
+    school: true,
+    gradeLevel: true,
+    status: true,
+    createdAt: true,
+    updatedAt: true,
+  } satisfies Prisma.StudentSelect;
+
+  const [initialStudents, matchingCount, rankedCount] = await Promise.all([
     prisma.student.findMany({
       where: rankedWhere,
-      select: {
-        id: true,
-        firstName: true,
-        lastName: true,
-        dob: true,
-        school: true,
-        gradeLevel: true,
-        status: true,
-        createdAt: true,
-        updatedAt: true,
-      },
+      select,
       orderBy,
       skip: (page - 1) * limit,
       take: limit,
@@ -143,6 +145,33 @@ export async function queryStudentDirectoryData({
     prisma.student.count({ where: matchingWhere }),
     prisma.student.count({ where: rankedWhere }),
   ]);
+  let students = initialStudents;
+
+  let topRankTieCount = 0;
+  let topRankTiesTruncated = false;
+  if (
+    sortBy === "DATE_OF_BIRTH" &&
+    page === 1 &&
+    limit === 1 &&
+    students[0]?.dob
+  ) {
+    const tieWhere: Prisma.StudentWhereInput = {
+      AND: [rankedWhere, { dob: students[0].dob }],
+    };
+    const tieLimit = 100;
+    const [tieCount, tiedStudents] = await Promise.all([
+      prisma.student.count({ where: tieWhere }),
+      prisma.student.findMany({
+        where: tieWhere,
+        select,
+        orderBy: [{ lastName: "asc" }, { firstName: "asc" }],
+        take: tieLimit,
+      }),
+    ]);
+    topRankTieCount = tieCount;
+    topRankTiesTruncated = tieCount > tiedStudents.length;
+    students = tiedStudents;
+  }
 
   return {
     students,
@@ -153,6 +182,8 @@ export async function queryStudentDirectoryData({
     page,
     limit,
     hasMore: page * limit < rankedCount,
+    topRankTieCount,
+    topRankTiesTruncated,
   };
 }
 
@@ -173,7 +204,7 @@ export async function getStudent(id: string) {
 }
 
 export async function getStudentForAssistant(id: string, limit = 20) {
-  return prisma.student.findUnique({
+  const student = await prisma.student.findUnique({
     where: { id },
     select: {
       id: true,
@@ -225,6 +256,11 @@ export async function getStudentForAssistant(id: string, limit = 20) {
       },
     },
   });
+  if (!student) return null;
+  const activeEnrollmentCount = await prisma.enrollment.count({
+    where: { studentId: id, status: "ACTIVE" },
+  });
+  return { ...student, activeEnrollmentCount };
 }
 
 export async function createStudent(data: {
@@ -372,6 +408,33 @@ export async function updateGuardian(
 
 export async function getGuardian(id: string) {
   return prisma.guardian.findUnique({ where: { id } });
+}
+
+export function getLinkedGuardianForAssistant(
+  studentId: string,
+  guardianId: string,
+) {
+  return prisma.studentGuardian.findUnique({
+    where: { studentId_guardianId: { studentId, guardianId } },
+    select: {
+      studentId: true,
+      guardianId: true,
+      isPrimary: true,
+      guardian: {
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          email: true,
+          phone: true,
+          relationship: true,
+        },
+      },
+      student: {
+        select: { id: true, firstName: true, lastName: true },
+      },
+    },
+  });
 }
 
 export function updateLinkedGuardian(input: {

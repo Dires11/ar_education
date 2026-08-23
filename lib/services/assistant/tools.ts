@@ -105,6 +105,7 @@ const ASSISTANT_READ_ONLY_TOOL_KEYS = new Set([
   "students.search_students",
   "students.query_student_directory",
   "students.get_student",
+  "guardians.get_guardian",
   "tutors.search_tutors",
   "tutors.get_tutor",
   "tutors.get_tutor_payroll",
@@ -142,7 +143,7 @@ const toolSpecs: AssistantToolSpec[] = [
     namespace: "students",
     name: "query_student_directory",
     description:
-      "Query, filter, paginate, and rank the student directory in one call. Use for counts, lists, demographic comparisons, and superlatives such as youngest, oldest, newest, or most recently updated. Never use this to verify a supplied student ID; use get_student instead. For youngest use DATE_OF_BIRTH DESC with limit 1; for oldest use DATE_OF_BIRTH ASC with limit 1. Date-of-birth rankings exclude missing DOB values and report how many records were excluded. Do not fetch each student individually.",
+      "Query, filter, paginate, and rank the student directory in one call. Use for counts, lists, demographic comparisons, and superlatives such as youngest, oldest, newest, or most recently updated. Never use this to verify a supplied student ID; use get_student instead. For youngest use DATE_OF_BIRTH DESC with limit 1; for oldest use DATE_OF_BIRTH ASC with limit 1. A top date-of-birth rank automatically returns all tied students up to a bounded cap and reports the tie count. Date-of-birth rankings exclude missing DOB values and report how many records were excluded. Do not fetch each student individually.",
     schema: studentDirectoryQuerySchema,
     requiresConfirmation: false,
   },
@@ -193,6 +194,14 @@ const toolSpecs: AssistantToolSpec[] = [
     description: "Permanently delete an unlinked student record.",
     schema: z.object({ id: idSchema }),
     requiresConfirmation: true,
+  },
+  {
+    namespace: "guardians",
+    name: "get_guardian",
+    description:
+      "Verify and inspect one exact guardian relationship using both the student ID and guardian ID before updating or removing it.",
+    schema: z.object({ studentId: idSchema, guardianId: idSchema }),
+    requiresConfirmation: false,
   },
   {
     namespace: "guardians",
@@ -269,12 +278,31 @@ const toolSpecs: AssistantToolSpec[] = [
     namespace: "tutors",
     name: "get_tutor_payroll",
     description:
-      "Calculate completed-session hours and earnings for a tutor over an ISO date range.",
-    schema: z.object({
-      id: idSchema,
-      from: z.iso.datetime(),
-      to: z.iso.datetime(),
-    }),
+      "Calculate completed-session hours and earnings for a tutor over a bounded ISO date range, with compact recent session rows.",
+    schema: z
+      .object({
+        id: idSchema,
+        from: z.iso.datetime(),
+        to: z.iso.datetime(),
+        limit: z.number().int().min(1).max(100).default(50),
+      })
+      .superRefine((value, context) => {
+        const from = new Date(value.from);
+        const to = new Date(value.to);
+        if (to <= from) {
+          context.addIssue({
+            code: "custom",
+            message: "Payroll end must be after its start",
+            path: ["to"],
+          });
+        } else if (to.getTime() - from.getTime() > 366 * 24 * 60 * 60 * 1_000) {
+          context.addIssue({
+            code: "custom",
+            message: "Payroll date range cannot exceed 366 days",
+            path: ["to"],
+          });
+        }
+      }),
     requiresConfirmation: false,
   },
   {
@@ -530,7 +558,7 @@ const toolSpecs: AssistantToolSpec[] = [
     namespace: "recurrence",
     name: "list_recurring_schedules",
     description:
-      "List current and future recurring schedule rules for exactly one known enrollment or group. Optionally include ended rules. Returns rule IDs required for occurrence, series, and deletion changes.",
+      "List bounded current and future recurring-schedule candidates for exactly one known enrollment or group. Optionally include ended rules. Always inspect the chosen rule with get_recurring_schedule before occurrence, series, or deletion changes.",
     schema: recurringScheduleLookupSchema,
     requiresConfirmation: false,
   },

@@ -102,7 +102,9 @@ export const markAttendanceSchema = z.object({
       ]),
       billable: z.boolean(),
     })
-  ).min(1, "At least one attendance record is required"),
+  )
+    .min(1, "At least one attendance record is required")
+    .max(100, "Attendance updates are limited to 100 students at a time"),
 });
 
 export const updateSessionSchema = z

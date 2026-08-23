@@ -48,12 +48,15 @@ import {
 } from "@/lib/services/assistant/tools";
 import {
   executeAssistantTool,
-  collectAssistantIdentifierValues,
   enrichAssistantConfirmationCard,
   getAssistantConfirmationCard,
   getAssistantMutationDraftCard,
   resolveAssistantConfirmationArguments,
 } from "@/lib/services/assistant/executor";
+import {
+  collectAssistantIdentifierReferences,
+  type AssistantIdentifierReference,
+} from "@/lib/services/assistant/provenance";
 import { ASSISTANT_MODEL } from "@/lib/services/assistant/config";
 import { classifyFailedAssistantRun } from "@/lib/services/assistant/recovery";
 import { DeliveryOutcomeUnknownError } from "@/lib/utils/email-errors";
@@ -345,15 +348,41 @@ function toolOutput(callId: string, output: unknown): ResponseInputItem {
   };
 }
 
-function collectPrimaryToolResultIdentifiers(result: unknown) {
+type AssistantGrantKind =
+  | AssistantIdentifierReference["kind"]
+  | "studentGuardianLink"
+  | "sessionParticipant";
+
+function grantKey(kind: AssistantGrantKind, id: string) {
+  return `${kind}:${id}`;
+}
+
+function referenceGrant(reference: AssistantIdentifierReference) {
+  return grantKey(reference.kind, reference.id);
+}
+
+function relationshipGrant(
+  kind: "studentGuardianLink" | "sessionParticipant",
+  parentId: string,
+  childId: string,
+) {
+  return grantKey(kind, JSON.stringify([parentId, childId]));
+}
+
+function collectPrimaryToolResultGrants(
+  namespace: string,
+  name: string,
+  result: unknown,
+) {
   if (!result || typeof result !== "object" || Array.isArray(result)) return [];
   const wrappedData = (result as Record<string, unknown>).data;
   if (!wrappedData || typeof wrappedData !== "object" || Array.isArray(wrappedData)) {
     return [];
   }
   const data = wrappedData as Record<string, unknown>;
-  return collectAssistantIdentifierValues({
+  return collectAssistantIdentifierReferences(namespace, name, {
     id: data.id,
+    studentId: data.studentId,
     guardianId: data.guardianId,
     paymentId: data.paymentId,
     discountId: data.discountId,
@@ -362,7 +391,7 @@ function collectPrimaryToolResultIdentifiers(result: unknown) {
     recurrenceRuleIds: data.recurrenceRuleIds,
     invitationId: data.invitationId,
     adminId: data.adminId,
-  });
+  }).map(referenceGrant);
 }
 
 async function refreshAssistantSummary(
@@ -501,7 +530,7 @@ async function runModelLoop(input: {
   hasHistoricalUntrustedContext?: boolean;
   initialAssistantContent?: string;
   initialMutationUsed?: boolean;
-  initialAuthorizedIds?: string[];
+  initialAuthorizedGrants?: string[];
   initialToolHistory?: Array<{
     namespace: string;
     toolName: string;
@@ -518,8 +547,8 @@ async function runModelLoop(input: {
   const hasUntrustedEvidence =
     input.hasAttachments ||
     Boolean(input.hasHistoricalUntrustedContext);
-  const authorizedMutationIds = new Set(input.initialAuthorizedIds ?? []);
-  const ambiguousCandidateIds = new Set<string>();
+  const authorizedMutationGrants = new Set(input.initialAuthorizedGrants ?? []);
+  const ambiguousCandidateGrants = new Set<string>();
 
   const candidateResultForTool = (
     namespace: string,
@@ -564,9 +593,17 @@ async function runModelLoop(input: {
         }
         const team = data as Record<string, unknown>;
         return [
-          ...(Array.isArray(team.admins) ? team.admins : []),
+          ...(Array.isArray(team.admins)
+            ? team.admins.map((record) => ({
+                ...(record as Record<string, unknown>),
+                __assistantEntityKind: "admin",
+              }))
+            : []),
           ...(Array.isArray(team.pendingInvitations)
-            ? team.pendingInvitations
+            ? team.pendingInvitations.map((record) => ({
+                ...(record as Record<string, unknown>),
+                __assistantEntityKind: "invitation",
+              }))
             : []),
         ];
       }
@@ -622,7 +659,9 @@ async function runModelLoop(input: {
           : undefined;
       }
       if (key === "recurrence.list_recurring_schedules") {
-        return data;
+        return data && typeof data === "object" && !Array.isArray(data)
+          ? (data as Record<string, unknown>).rules
+          : undefined;
       }
       return undefined;
     })();
@@ -635,6 +674,44 @@ async function runModelLoop(input: {
       records,
       total: typeof totalValue === "number" ? totalValue : records.length,
     };
+  };
+
+  const primaryCandidateReferences = (
+    namespace: string,
+    name: string,
+    candidate: unknown,
+  ): AssistantIdentifierReference[] => {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+      return [];
+    }
+    const record = candidate as Record<string, unknown>;
+    const id = typeof record.id === "string" ? record.id : undefined;
+    const key = `${namespace}.${name}`;
+    const kindByTool: Record<string, AssistantIdentifierReference["kind"]> = {
+      "students.search_students": "student",
+      "students.query_student_directory": "student",
+      "tutors.search_tutors": "tutor",
+      "enrollments.search_enrollments": "enrollment",
+      "catalog.list_subjects": "subject",
+      "catalog.list_packages": "package",
+      "enrollments.list_groups": "group",
+      "billing.list_payments": "payment",
+      "communications.list_email_templates": "emailTemplate",
+      "recurrence.list_recurring_schedules": "recurrence",
+    };
+    if (key === "billing.get_upcoming_dues") {
+      return typeof record.enrollmentId === "string"
+        ? [{ kind: "enrollment", id: record.enrollmentId }]
+        : [];
+    }
+    if (key === "team.get_team") {
+      const kind = record.__assistantEntityKind;
+      return id && (kind === "admin" || kind === "invitation")
+        ? [{ kind, id }]
+        : [];
+    }
+    const kind = kindByTool[key];
+    return id && kind ? [{ kind, id }] : [];
   };
 
   const recordProvenance = (
@@ -651,7 +728,7 @@ async function runModelLoop(input: {
     ) {
       return;
     }
-    const previouslyAuthorized = new Set(authorizedMutationIds);
+    const previouslyAuthorized = new Set(authorizedMutationGrants);
     const key = `${namespace}.${name}`;
     const resultRecord = result as Record<string, unknown>;
     const data =
@@ -660,7 +737,7 @@ async function runModelLoop(input: {
       !Array.isArray(resultRecord.data)
         ? (resultRecord.data as Record<string, unknown>)
         : undefined;
-    const exactIdentifiers = (() => {
+    const exactGrants = (() => {
       const exactArgumentKeys: Record<string, string[]> = {
         "students.get_student": ["id"],
         "tutors.get_tutor": ["id"],
@@ -671,32 +748,68 @@ async function runModelLoop(input: {
         "billing.get_student_balance": ["studentId"],
         "communications.get_email_template": ["id"],
       };
+      if (key === "guardians.get_guardian") {
+        const studentId = argumentsValue.studentId;
+        const guardianId = argumentsValue.guardianId;
+        if (typeof studentId !== "string" || typeof guardianId !== "string") {
+          return [];
+        }
+        return [
+          grantKey("student", studentId),
+          grantKey("guardian", guardianId),
+          relationshipGrant("studentGuardianLink", studentId, guardianId),
+        ];
+      }
       if (key === "schedule.get_schedule" && argumentsValue.sessionId) {
-        return collectAssistantIdentifierValues({
-          sessionId: argumentsValue.sessionId,
-        });
+        const sessionId = String(argumentsValue.sessionId);
+        const attendance = Array.isArray(data?.attendance) ? data.attendance : [];
+        return [
+          grantKey("session", sessionId),
+          ...attendance.flatMap((entry) => {
+            if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+            const student = (entry as Record<string, unknown>).student;
+            const studentId =
+              student && typeof student === "object" && !Array.isArray(student)
+                ? (student as Record<string, unknown>).id
+                : undefined;
+            return typeof studentId === "string"
+              ? [relationshipGrant("sessionParticipant", sessionId, studentId)]
+              : [];
+          }),
+        ];
       }
       if (key === "enrollments.get_enrollment") {
-        return collectAssistantIdentifierValues({
+        return collectAssistantIdentifierReferences(namespace, name, {
           id: data?.id ??
             (data?.enrollment as Record<string, unknown> | undefined)?.id,
           discountId: argumentsValue.discountId,
-        });
+        }).map(referenceGrant);
       }
       const keys = exactArgumentKeys[key] ?? [];
-      return collectAssistantIdentifierValues(
+      return collectAssistantIdentifierReferences(
+        namespace,
+        name,
         Object.fromEntries(keys.map((argumentKey) => [
           argumentKey,
           argumentsValue[argumentKey],
         ])),
-      );
+      ).map(referenceGrant);
     })();
-    const mutationIdentifiers = assistantToolMutatesData({ namespace, name })
-      ? collectPrimaryToolResultIdentifiers(result)
+    const mutationGrants = assistantToolMutatesData({ namespace, name })
+      ? collectPrimaryToolResultGrants(namespace, name, result)
       : [];
-    [...exactIdentifiers, ...mutationIdentifiers].forEach((id) => {
-      authorizedMutationIds.add(id);
-      ambiguousCandidateIds.delete(id);
+    if (
+      (key === "guardians.add_guardian" || key === "guardians.update_guardian") &&
+      typeof data?.studentId === "string" &&
+      typeof data?.id === "string"
+    ) {
+      mutationGrants.push(
+        relationshipGrant("studentGuardianLink", data.studentId, data.id),
+      );
+    }
+    [...exactGrants, ...mutationGrants].forEach((grant) => {
+      authorizedMutationGrants.add(grant);
+      ambiguousCandidateGrants.delete(grant);
     });
     const candidates = candidateResultForTool(
       namespace,
@@ -704,14 +817,12 @@ async function runModelLoop(input: {
       argumentsValue,
       result,
     );
-    const primaryCandidateIds = candidates.records.flatMap((candidate) =>
-      candidate && typeof candidate === "object" && !Array.isArray(candidate)
-        ? collectAssistantIdentifierValues({
-            id: (candidate as Record<string, unknown>).id,
-          })
-        : [],
+    const primaryCandidateGrants = candidates.records.flatMap((candidate) =>
+      primaryCandidateReferences(namespace, name, candidate).map(referenceGrant),
     );
-    primaryCandidateIds.forEach((id) => authorizedMutationIds.add(id));
+    primaryCandidateGrants.forEach((grant) =>
+      authorizedMutationGrants.add(grant),
+    );
     let ambiguousRecords: unknown[] = [];
     if (
       key === "students.search_students" ||
@@ -746,7 +857,6 @@ async function runModelLoop(input: {
     } else if (
       (key === "billing.list_payments" ||
         key === "billing.get_upcoming_dues" ||
-        key === "recurrence.list_recurring_schedules" ||
         key === "communications.list_email_templates" ||
         (key === "schedule.get_schedule" && argumentsValue.month)) &&
       candidates.total > 1
@@ -754,7 +864,12 @@ async function runModelLoop(input: {
       ambiguousRecords = candidates.records;
     } else if (key === "team.get_team" && candidates.total > 1) {
       ambiguousRecords = candidates.records;
-    } else if (key === "reporting.get_dashboard_summary") {
+    } else if (
+      key === "reporting.get_dashboard_summary" ||
+      key === "recurrence.list_recurring_schedules" ||
+      key === "students.query_student_directory" ||
+      (key === "schedule.get_schedule" && argumentsValue.month)
+    ) {
       // Dashboard reports are broad operational summaries, never exact record
       // resolution. Require a dedicated lookup before any reported ID can be
       // used by a mutation, even when a section contains only one row.
@@ -778,15 +893,13 @@ async function runModelLoop(input: {
     if (ambiguousRecords.length > 0) {
       ambiguousRecords
         .flatMap((candidate) =>
-          candidate && typeof candidate === "object" && !Array.isArray(candidate)
-            ? collectAssistantIdentifierValues({
-                id: (candidate as Record<string, unknown>).id,
-              })
-            : [],
+          primaryCandidateReferences(namespace, name, candidate).map(referenceGrant),
         )
-        .forEach((id) => {
-          ambiguousCandidateIds.add(id);
-          if (!previouslyAuthorized.has(id)) authorizedMutationIds.delete(id);
+        .forEach((grant) => {
+          ambiguousCandidateGrants.add(grant);
+          if (!previouslyAuthorized.has(grant)) {
+            authorizedMutationGrants.delete(grant);
+          }
         });
     }
   };
@@ -799,6 +912,49 @@ async function runModelLoop(input: {
       tool.result,
     );
   }
+
+  const requiredMutationGrants = (
+    namespace: string,
+    name: string,
+    argumentsValue: Record<string, unknown>,
+  ) => {
+    const key = `${namespace}.${name}`;
+    if (
+      key === "guardians.update_guardian" ||
+      key === "guardians.remove_guardian"
+    ) {
+      return [
+        relationshipGrant(
+          "studentGuardianLink",
+          String(argumentsValue.studentId),
+          String(argumentsValue.guardianId),
+        ),
+      ];
+    }
+    if (key === "schedule.mark_attendance") {
+      const sessionId = String(argumentsValue.sessionId);
+      const attendances = Array.isArray(argumentsValue.attendances)
+        ? argumentsValue.attendances
+        : [];
+      return [
+        grantKey("session", sessionId),
+        ...attendances.flatMap((attendance) => {
+          if (!attendance || typeof attendance !== "object" || Array.isArray(attendance)) {
+            return [];
+          }
+          const studentId = (attendance as Record<string, unknown>).studentId;
+          return typeof studentId === "string"
+            ? [relationshipGrant("sessionParticipant", sessionId, studentId)]
+            : [];
+        }),
+      ];
+    }
+    return collectAssistantIdentifierReferences(
+      namespace,
+      name,
+      argumentsValue,
+    ).map(referenceGrant);
+  };
 
   try {
     while (true) {
@@ -953,10 +1109,15 @@ async function runModelLoop(input: {
       const requiresConfirmation =
         policyRequiresConfirmation || evidenceRequiresConfirmation;
       if (assistantToolMutatesData(spec)) {
-        const identifiers = collectAssistantIdentifierValues(argumentsValue);
-        const missing = identifiers.filter(
-          (id) =>
-            !authorizedMutationIds.has(id) || ambiguousCandidateIds.has(id),
+        const requiredGrants = requiredMutationGrants(
+          namespace,
+          call.name,
+          argumentsValue,
+        );
+        const missing = requiredGrants.filter(
+          (grant) =>
+            !authorizedMutationGrants.has(grant) ||
+            ambiguousCandidateGrants.has(grant),
         );
         if (missing.length > 0) {
           responseInput.push(
@@ -1334,7 +1495,11 @@ export async function processAssistantDecision(
       hasHistoricalUntrustedContext:
         context?.hasUntrustedHistory ?? existing.run.hasAttachments,
       initialMutationUsed: decision === "APPROVE",
-      initialAuthorizedIds: collectPrimaryToolResultIdentifiers(result),
+      initialAuthorizedGrants: collectPrimaryToolResultGrants(
+        existing.namespace,
+        existing.toolName,
+        result,
+      ),
       initialToolHistory: [
         ...((existing.run.toolRuns ?? [])
           .filter((toolRun) => toolRun.status === "COMPLETED" && toolRun.result)

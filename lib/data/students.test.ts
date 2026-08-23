@@ -6,12 +6,15 @@ const prismaMock = vi.hoisted(() => ({
     findUnique: vi.fn(),
     count: vi.fn(),
   },
+  enrollment: { count: vi.fn() },
+  studentGuardian: { findUnique: vi.fn() },
   $transaction: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({ prisma: prismaMock }));
 
 import {
+  getLinkedGuardianForAssistant,
   getStudentForAssistant,
   queryStudentDirectoryData,
   updateLinkedGuardian,
@@ -40,6 +43,38 @@ describe("student directory data queries", () => {
     expect(select.enrollments.select.student).toBeUndefined();
   });
 
+  it("returns a dedicated active-enrollment count for assistant cards", async () => {
+    prismaMock.student.findUnique.mockResolvedValue({
+      id: "student-1",
+      enrollments: Array.from({ length: 20 }, () => ({ status: "COMPLETED" })),
+    });
+    prismaMock.enrollment.count.mockResolvedValue(1);
+
+    await expect(getStudentForAssistant("student-1")).resolves.toMatchObject({
+      activeEnrollmentCount: 1,
+    });
+    expect(prismaMock.enrollment.count).toHaveBeenCalledWith({
+      where: { studentId: "student-1", status: "ACTIVE" },
+    });
+  });
+
+  it("looks up a guardian only through the exact student relationship", async () => {
+    prismaMock.studentGuardian.findUnique.mockResolvedValue(null);
+
+    await getLinkedGuardianForAssistant("student-1", "guardian-1");
+
+    expect(prismaMock.studentGuardian.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          studentId_guardianId: {
+            studentId: "student-1",
+            guardianId: "guardian-1",
+          },
+        },
+      }),
+    );
+  });
+
   it("answers youngest-student rankings in one bounded query", async () => {
     const youngest = {
       id: "student-1",
@@ -55,7 +90,8 @@ describe("student directory data queries", () => {
     prismaMock.student.findMany.mockResolvedValue([youngest]);
     prismaMock.student.count
       .mockResolvedValueOnce(23)
-      .mockResolvedValueOnce(20);
+      .mockResolvedValueOnce(20)
+      .mockResolvedValueOnce(1);
 
     const result = await queryStudentDirectoryData({
       sortBy: "DATE_OF_BIRTH",
@@ -84,7 +120,44 @@ describe("student directory data queries", () => {
       page: 1,
       limit: 1,
       hasMore: true,
+      topRankTieCount: 1,
+      topRankTiesTruncated: false,
     });
+  });
+
+  it("returns all bounded students tied at the youngest rank", async () => {
+    const tied = ["Ana", "Maya"].map((firstName, index) => ({
+      id: `student-${index + 1}`,
+      firstName,
+      lastName: "Chen",
+      dob: new Date("2016-09-14T00:00:00.000Z"),
+      school: null,
+      gradeLevel: null,
+      status: "ACTIVE",
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+    }));
+    prismaMock.student.findMany
+      .mockResolvedValueOnce([tied[0]])
+      .mockResolvedValueOnce(tied);
+    prismaMock.student.count
+      .mockResolvedValueOnce(2)
+      .mockResolvedValueOnce(2)
+      .mockResolvedValueOnce(2);
+
+    const result = await queryStudentDirectoryData({
+      sortBy: "DATE_OF_BIRTH",
+      sortOrder: "DESC",
+      page: 1,
+      limit: 1,
+    });
+
+    expect(result.students).toEqual(tied);
+    expect(result.topRankTieCount).toBe(2);
+    expect(result.topRankTiesTruncated).toBe(false);
+    expect(prismaMock.student.findMany.mock.calls[1][0]).toEqual(
+      expect.objectContaining({ take: 100 }),
+    );
   });
 
   it("matches a full student name token by token", async () => {

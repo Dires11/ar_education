@@ -6,11 +6,20 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
     findUnique: vi.fn(),
   },
+  session: {
+    aggregate: vi.fn(),
+    count: vi.fn(),
+    findMany: vi.fn(),
+  },
 }));
 
 vi.mock("@/lib/prisma", () => ({ prisma: prismaMock }));
 
-import { getTutorForAssistant, listTutors } from "@/lib/data/tutors";
+import {
+  getTutorForAssistant,
+  getTutorPayrollForAssistantData,
+  listTutors,
+} from "@/lib/data/tutors";
 
 describe("tutor search", () => {
   beforeEach(() => {
@@ -60,6 +69,39 @@ describe("tutor search", () => {
       select: { id: true, firstName: true, lastName: true },
     });
     expect(query.select.enrollments.select.student.select).not.toHaveProperty(
+      "email",
+    );
+  });
+
+  it("aggregates payroll while returning only bounded compact sessions", async () => {
+    prismaMock.tutor.findUnique.mockResolvedValue({
+      id: "tutor-1",
+      firstName: "Theo",
+      lastName: "Grant",
+      hourlyRate: "40",
+    });
+    prismaMock.session.aggregate.mockResolvedValue({
+      _sum: { durationMinutes: 600 },
+    });
+    prismaMock.session.count.mockResolvedValue(25);
+    prismaMock.session.findMany.mockResolvedValue([]);
+
+    const result = await getTutorPayrollForAssistantData(
+      "tutor-1",
+      new Date("2026-01-01T00:00:00.000Z"),
+      new Date("2026-02-01T00:00:00.000Z"),
+      10,
+    );
+
+    expect(result).toMatchObject({ total: 25, totalMinutes: 600 });
+    const query = prismaMock.session.findMany.mock.calls[0][0];
+    expect(query.take).toBe(10);
+    expect(query.select.enrollment.select.student.select).toEqual({
+      id: true,
+      firstName: true,
+      lastName: true,
+    });
+    expect(query.select.enrollment.select.student.select).not.toHaveProperty(
       "email",
     );
   });

@@ -1232,6 +1232,200 @@ describe("assistant orchestration", () => {
     );
   });
 
+  it("does not authorize a tutor mutation from an equal student ID", async () => {
+    responses.queue.push(
+      {
+        events: [],
+        final: {
+          output_text: "",
+          output: [{
+            type: "function_call",
+            namespace: "students",
+            name: "get_student",
+            call_id: "call-student-shared",
+            arguments: JSON.stringify({ id: "shared-id" }),
+          }],
+          usage,
+        },
+      },
+      {
+        events: [],
+        final: {
+          output_text: "",
+          output: [{
+            type: "function_call",
+            namespace: "tutors",
+            name: "archive_tutor",
+            call_id: "call-tutor-shared",
+            arguments: JSON.stringify({ id: "shared-id" }),
+          }],
+          usage,
+        },
+      },
+      { events: [], final: { output_text: "I need the tutor lookup.", output: [], usage } },
+    );
+    dataMocks.createOrGetAssistantToolRun.mockResolvedValue({
+      id: "tool-student-shared",
+      runId: "run-1",
+      callId: "call-student-shared",
+      namespace: "students",
+      toolName: "get_student",
+      arguments: { id: "shared-id" },
+      status: "RUNNING",
+      requiresConfirmation: false,
+    });
+    executeMock.mockResolvedValue({ ok: true, data: { id: "shared-id" } });
+
+    await processAssistantTurn(
+      { id: "admin-1", role: "STAFF" },
+      {
+        clientTurnId: "5546d523-b015-4fab-9cd0-4aab294514da",
+        message: "Inspect the student, then archive a tutor with the same ID.",
+      },
+      () => undefined,
+    );
+
+    expect(executeMock).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(responses.requests.at(-1)?.input)).toContain(
+      "mutation targets were not established",
+    );
+  });
+
+  it("uses an exact guardian relationship lookup before updating it", async () => {
+    responses.queue.push(
+      {
+        events: [],
+        final: {
+          output_text: "",
+          output: [{
+            type: "function_call",
+            namespace: "guardians",
+            name: "get_guardian",
+            call_id: "call-guardian-link",
+            arguments: JSON.stringify({
+              studentId: "student-1",
+              guardianId: "guardian-1",
+            }),
+          }],
+          usage,
+        },
+      },
+      {
+        events: [],
+        final: {
+          output_text: "",
+          output: [{
+            type: "function_call",
+            namespace: "guardians",
+            name: "update_guardian",
+            call_id: "call-update-guardian",
+            arguments: JSON.stringify({
+              studentId: "student-1",
+              guardianId: "guardian-1",
+              phone: "555-0100",
+            }),
+          }],
+          usage,
+        },
+      },
+      { events: [], final: { output_text: "Updated.", output: [], usage } },
+    );
+    dataMocks.createOrGetAssistantToolRun.mockImplementation(async (tool) => ({
+      ...tool,
+      id: `tool-${tool.callId}`,
+      status: "RUNNING",
+    }));
+    executeMock
+      .mockResolvedValueOnce({
+        ok: true,
+        data: { studentId: "student-1", guardianId: "guardian-1" },
+      })
+      .mockResolvedValueOnce({ ok: true, data: { id: "guardian-1", studentId: "student-1" } });
+
+    await processAssistantTurn(
+      { id: "admin-1", role: "STAFF" },
+      {
+        clientTurnId: "5957a2fc-5990-49de-b14c-f11b4b2ff96d",
+        message: "Update this guardian's phone.",
+      },
+      () => undefined,
+    );
+
+    expect(executeMock).toHaveBeenCalledTimes(2);
+    expect(executeMock.mock.calls[1][0]).toEqual(
+      expect.objectContaining({ namespace: "guardians", name: "update_guardian" }),
+    );
+  });
+
+  it("grants all inspected session participants for one attendance mutation", async () => {
+    const attendances = Array.from({ length: 20 }, (_, index) => ({
+      studentId: `student-${index + 1}`,
+      status: "COMPLETED",
+      billable: true,
+    }));
+    responses.queue.push(
+      {
+        events: [],
+        final: {
+          output_text: "",
+          output: [{
+            type: "function_call",
+            namespace: "schedule",
+            name: "get_schedule",
+            call_id: "call-group-session",
+            arguments: JSON.stringify({ sessionId: "session-1", limit: 1 }),
+          }],
+          usage,
+        },
+      },
+      {
+        events: [],
+        final: {
+          output_text: "",
+          output: [{
+            type: "function_call",
+            namespace: "schedule",
+            name: "mark_attendance",
+            call_id: "call-group-attendance",
+            arguments: JSON.stringify({ sessionId: "session-1", attendances }),
+          }],
+          usage,
+        },
+      },
+      { events: [], final: { output_text: "Attendance saved.", output: [], usage } },
+    );
+    dataMocks.createOrGetAssistantToolRun.mockImplementation(async (tool) => ({
+      ...tool,
+      id: `tool-${tool.callId}`,
+      status: "RUNNING",
+    }));
+    executeMock
+      .mockResolvedValueOnce({
+        ok: true,
+        data: {
+          id: "session-1",
+          attendance: attendances.map((attendance) => ({
+            student: { id: attendance.studentId },
+          })),
+        },
+      })
+      .mockResolvedValueOnce({ ok: true, data: { sessionId: "session-1" } });
+
+    await processAssistantTurn(
+      { id: "admin-1", role: "STAFF" },
+      {
+        clientTurnId: "7df09199-7bdf-417a-97ac-77a10a8d0837",
+        message: "Mark all 20 listed students completed and billable.",
+      },
+      () => undefined,
+    );
+
+    expect(executeMock).toHaveBeenCalledTimes(2);
+    expect(executeMock.mock.calls[1][0]).toEqual(
+      expect.objectContaining({ namespace: "schedule", name: "mark_attendance" }),
+    );
+  });
+
   it("rejects a mutation ID that was not established by a lookup", async () => {
     responses.queue.push(
       {
@@ -1340,6 +1534,87 @@ describe("assistant orchestration", () => {
     expect(executeMock).toHaveBeenCalledTimes(1);
     expect(dataMocks.createOrGetAssistantToolRun).toHaveBeenCalledTimes(1);
     expect(dataMocks.pauseAssistantRun).not.toHaveBeenCalled();
+  });
+
+  it("requires exact recurrence inspection even when a bounded list returns one row", async () => {
+    responses.queue.push(
+      {
+        events: [],
+        final: {
+          output_text: "",
+          output: [{
+            type: "function_call",
+            namespace: "recurrence",
+            name: "list_recurring_schedules",
+            call_id: "call-rule-list",
+            arguments: JSON.stringify({
+              enrollmentId: "enrollment-1",
+              includeEnded: false,
+              limit: 1,
+            }),
+          }],
+          usage,
+        },
+      },
+      {
+        events: [],
+        final: {
+          output_text: "",
+          output: [{
+            type: "function_call",
+            namespace: "recurrence",
+            name: "delete_recurring_schedule",
+            call_id: "call-delete-rule",
+            arguments: JSON.stringify({ ruleId: "rule-1" }),
+          }],
+          usage,
+        },
+      },
+      {
+        events: [],
+        final: {
+          output_text: "I need to inspect that recurring schedule first.",
+          output: [],
+          usage,
+        },
+      },
+    );
+    dataMocks.createOrGetAssistantToolRun.mockResolvedValue({
+      id: "tool-rule-list",
+      runId: "run-1",
+      callId: "call-rule-list",
+      namespace: "recurrence",
+      toolName: "list_recurring_schedules",
+      arguments: {
+        enrollmentId: "enrollment-1",
+        includeEnded: false,
+        limit: 1,
+      },
+      status: "RUNNING",
+      requiresConfirmation: false,
+    });
+    executeMock.mockResolvedValue({
+      ok: true,
+      data: {
+        total: 1,
+        hasMore: false,
+        rules: [{ id: "rule-1", name: "Monday schedule" }],
+      },
+    });
+
+    await processAssistantTurn(
+      { id: "admin-1", role: "STAFF" },
+      {
+        clientTurnId: "9b162d84-bb1e-4687-9709-738a7f45e5a8",
+        message: "Delete the listed recurring schedule.",
+      },
+      () => undefined,
+    );
+
+    expect(executeMock).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(responses.requests.at(-1)?.input)).toContain(
+      "mutation targets were not established",
+    );
   });
 
   it("keeps ambiguous candidates blocked even if the model inspects one", async () => {

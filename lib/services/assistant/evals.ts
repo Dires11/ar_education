@@ -92,10 +92,25 @@ export const ASSISTANT_ROUTING_EVAL_CASES: AssistantRoutingEvalCase[] = [
       "For session ID session_123, mark student ID student_123 completed and billable.",
     expectedNamespace: "schedule",
     expectedTool: "mark_attendance",
-    requiredLookupGroups: [
-      ["schedule.get_schedule"],
-      ["students.get_student", "students.search_students"],
-    ],
+    requiredLookupGroups: [["schedule.get_schedule"]],
+    expectedConfirmation: false,
+  },
+  {
+    name: "update linked guardian",
+    prompt:
+      "Update guardian ID guardian_123 linked to student ID student_123 to phone 555-0100.",
+    expectedNamespace: "guardians",
+    expectedTool: "update_guardian",
+    requiredLookupGroups: [["guardians.get_guardian"]],
+    expectedConfirmation: false,
+  },
+  {
+    name: "create one-time enrollment session",
+    prompt:
+      "Create a one-time 60 minute session for enrollment ID enrollment_123 at 2026-08-24T17:00:00.000Z.",
+    expectedNamespace: "schedule",
+    expectedTool: "create_one_time_session",
+    requiredLookupGroups: [["enrollments.get_enrollment"]],
     expectedConfirmation: false,
   },
   {

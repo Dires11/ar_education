@@ -17,6 +17,7 @@ const sessionDataMocks = vi.hoisted(() => ({
 }));
 const sessionServiceMocks = vi.hoisted(() => ({
   getEnrollmentMonthSummary: vi.fn(),
+  getDashboardScheduleForAssistant: vi.fn(),
   getMonthScheduleForAssistant: vi.fn(),
   getRecurringSchedulePreview: vi.fn(),
   listRecurrenceRulesForAssistant: vi.fn(),
@@ -102,6 +103,8 @@ vi.mock("@/lib/services/sessions", () => ({
   deleteSessionById: vi.fn(),
   endRecurrenceFromDate: vi.fn(),
   getEnrollmentMonthSummary: sessionServiceMocks.getEnrollmentMonthSummary,
+  getDashboardScheduleForAssistant:
+    sessionServiceMocks.getDashboardScheduleForAssistant,
   getMonthScheduleForAssistant:
     sessionServiceMocks.getMonthScheduleForAssistant,
   getRecurringSchedulePreview: sessionServiceMocks.getRecurringSchedulePreview,
@@ -218,6 +221,43 @@ describe("assistant tool result cards", () => {
         ]),
       },
     });
+  });
+
+  it("does not suggest enrollment when an active enrollment is outside the detail cap", async () => {
+    studentMocks.getStudentForAssistant.mockResolvedValue({
+      id: "student-1",
+      firstName: "Maya",
+      lastName: "Chen",
+      avatarUrl: null,
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      status: "ACTIVE",
+      dob: null,
+      school: null,
+      gradeLevel: null,
+      guardians: [{
+        isPrimary: true,
+        guardian: { firstName: "Ana", lastName: "Chen" },
+      }],
+      enrollments: Array.from({ length: 20 }, () => ({ status: "COMPLETED" })),
+      activeEnrollmentCount: 1,
+      _count: { guardians: 1, enrollments: 21 },
+    });
+
+    const result = await executeAssistantTool({
+      namespace: "students",
+      name: "get_student",
+      argumentsValue: { id: "student-1" },
+      context: { admin: { id: "admin-1", role: "STAFF" } },
+    });
+
+    const card = (result as {
+      card?: { suggestedActions?: Array<{ label: string }> };
+    }).card;
+    expect(card?.suggestedActions).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ label: "Enroll in a package" }),
+      ]),
+    );
   });
 
   it("keeps a committed mutation successful when card enrichment fails", async () => {
@@ -881,6 +921,10 @@ describe("assistant tool result cards", () => {
       weeklySessionsByDay: [],
       monthlyRevenue: [],
     });
+    sessionServiceMocks.getDashboardScheduleForAssistant.mockResolvedValue({
+      todaySessions: { total: 0, hasMore: false, results: [] },
+      tomorrowSessions: { total: 0, hasMore: false, results: [] },
+    });
 
     await executeAssistantTool({
       namespace: "schedule",
@@ -900,7 +944,11 @@ describe("assistant tool result cards", () => {
     ).toHaveBeenCalledWith("2026-08", 25);
     expect(dashboardMocks.getDashboardStats).toHaveBeenCalledWith({
       materialize: false,
+      includeSessionDetails: false,
     });
+    expect(
+      sessionServiceMocks.getDashboardScheduleForAssistant,
+    ).toHaveBeenCalledTimes(1);
   });
 
   it("passes a deterministic idempotency key to outbound email", async () => {
@@ -973,9 +1021,11 @@ describe("assistant tool result cards", () => {
   });
 
   it("lists and inspects recurring schedules so mutations can use rule IDs", async () => {
-    sessionServiceMocks.listRecurrenceRulesForAssistant.mockResolvedValue([
-      { id: "rule-1", dayOfWeek: 1 },
-    ]);
+    sessionServiceMocks.listRecurrenceRulesForAssistant.mockResolvedValue({
+      total: 1,
+      hasMore: false,
+      rules: [{ id: "rule-1", dayOfWeek: 1 }],
+    });
     const rule = {
       id: "rule-1",
       dayOfWeek: 1,
@@ -1004,7 +1054,11 @@ describe("assistant tool result cards", () => {
     });
 
     expect(listResult).toMatchObject({
-      data: [{ id: "rule-1", dayOfWeek: 1 }],
+      data: {
+        total: 1,
+        hasMore: false,
+        rules: [{ id: "rule-1", dayOfWeek: 1 }],
+      },
       href: "/schedule",
     });
     expect(

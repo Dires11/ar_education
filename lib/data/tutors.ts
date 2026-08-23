@@ -219,3 +219,51 @@ export async function getTutorPayrollSessions(
     orderBy: { scheduledFor: "asc" },
   });
 }
+
+export async function getTutorPayrollForAssistantData(
+  tutorId: string,
+  from: Date,
+  toExclusive: Date,
+  limit: number,
+) {
+  const where = {
+    tutorId,
+    status: "COMPLETED" as const,
+    scheduledFor: { gte: from, lt: toExclusive },
+  };
+  const [tutor, aggregate, total, sessions] = await Promise.all([
+    prisma.tutor.findUnique({
+      where: { id: tutorId },
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        hourlyRate: true,
+      },
+    }),
+    prisma.session.aggregate({
+      where,
+      _sum: { durationMinutes: true },
+    }),
+    prisma.session.count({ where }),
+    prisma.session.findMany({
+      where,
+      select: {
+        id: true,
+        scheduledFor: true,
+        durationMinutes: true,
+        subject: { select: { id: true, name: true } },
+        enrollment: {
+          select: {
+            student: {
+              select: { id: true, firstName: true, lastName: true },
+            },
+          },
+        },
+      },
+      orderBy: { scheduledFor: "desc" },
+      take: limit,
+    }),
+  ]);
+  return { tutor, totalMinutes: aggregate._sum.durationMinutes ?? 0, total, sessions };
+}

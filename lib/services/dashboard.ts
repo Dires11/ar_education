@@ -26,7 +26,10 @@ import {
   getConfiguredCenterTimeZone,
 } from "@/lib/services/session-dates";
 
-export async function getDashboardStats(options?: { materialize?: boolean }) {
+export async function getDashboardStats(options?: {
+  materialize?: boolean;
+  includeSessionDetails?: boolean;
+}) {
   const now = new Date();
   const timeZone = getConfiguredCenterTimeZone();
   const today = getCalendarDateInTimeZone(now, timeZone);
@@ -65,7 +68,10 @@ export async function getDashboardStats(options?: { materialize?: boolean }) {
 
   // Materialize today's + tomorrow's recurring sessions before querying,
   // so the dashboard is accurate even without a prior schedule-page visit.
-  if (options?.materialize !== false) {
+  if (
+    options?.includeSessionDetails !== false &&
+    options?.materialize !== false
+  ) {
     await Promise.all([
       materializeSessions(
         todayStart,
@@ -88,8 +94,12 @@ export async function getDashboardStats(options?: { materialize?: boolean }) {
     weeklySessionsByDay,
     monthlyRevenue,
   ] = await Promise.all([
-    getSessionsForDay(todayStart, tomorrowStart),
-    getSessionsForDay(tomorrowStart, dayAfterTomorrowStart),
+    options?.includeSessionDetails === false
+      ? Promise.resolve([])
+      : getSessionsForDay(todayStart, tomorrowStart),
+    options?.includeSessionDetails === false
+      ? Promise.resolve([])
+      : getSessionsForDay(tomorrowStart, dayAfterTomorrowStart),
     getActiveStudentCount(),
     getUpcomingPackageEndings(today, 14),
     getTutorSessionCountsThisWeek(week.start, week.endExclusive),

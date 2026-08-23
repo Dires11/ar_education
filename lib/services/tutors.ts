@@ -7,6 +7,7 @@ import {
   setTutorSubjects,
   getTutor,
   getTutorPayrollSessions,
+  getTutorPayrollForAssistantData,
 } from "@/lib/data/tutors";
 import {
   createTutorSchema,
@@ -68,6 +69,32 @@ export async function getTutorPayroll(
     totalSessions: sessions.length,
     totalHours: totalHours.toNumber(),
     earnings,
+  };
+}
+
+export async function getTutorPayrollForAssistant(
+  tutorId: string,
+  from: Date,
+  to: Date,
+  limit: number,
+) {
+  const result = await getTutorPayrollForAssistantData(
+    tutorId,
+    from,
+    to,
+    limit,
+  );
+  if (!result.tutor) return null;
+  const totalHours = new Prisma.Decimal(result.totalMinutes).div(60);
+  return {
+    tutor: result.tutor,
+    from,
+    to,
+    totalSessions: result.total,
+    totalHours: totalHours.toNumber(),
+    earnings: totalHours.mul(result.tutor.hourlyRate),
+    hasMore: result.total > result.sessions.length,
+    sessions: result.sessions,
   };
 }
 

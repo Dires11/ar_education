@@ -5,6 +5,7 @@ import type { Admin } from "@/generated/prisma";
 import {
   getStudent as getStudentData,
   getStudentForAssistant,
+  getLinkedGuardianForAssistant,
   listStudents,
 } from "@/lib/data/students";
 import {
@@ -59,7 +60,7 @@ import {
   updateTutorProfile,
   updateTutorSubjectsList,
   archiveTutorById,
-  getTutorPayroll,
+  getTutorPayrollForAssistant,
 } from "@/lib/services/tutors";
 import {
   createSubjectOffering,
@@ -98,6 +99,7 @@ import {
   listRecurrenceRulesForAssistant,
   getEnrollmentMonthSummary,
   getRecurringSchedulePreview,
+  getDashboardScheduleForAssistant,
 } from "@/lib/services/sessions";
 import {
   recordPayment,
@@ -131,6 +133,7 @@ import {
   type AssistantToolSpec,
 } from "@/lib/services/assistant/tools";
 import { minimizeAssistantDto } from "@/lib/services/assistant/dto";
+import { collectAssistantIdentifierReferences } from "@/lib/services/assistant/provenance";
 import { getConfiguredCenterTimeZone } from "@/lib/services/session-dates";
 import { formatCalendarDate, formatDateTime } from "@/lib/utils/dates";
 import { getInstantCalendarDateKey } from "@/lib/utils/time-zone";
@@ -419,6 +422,7 @@ type StudentCardSource = {
     guardian: { firstName: string; lastName: string };
   }>;
   enrollments?: Array<{ status: string }>;
+  activeEnrollmentCount?: number;
 };
 
 function studentResultCard(
@@ -434,9 +438,10 @@ function studentResultCard(
   const primaryGuardian =
     student.guardians?.find((item) => item.isPrimary)?.guardian ??
     student.guardians?.[0]?.guardian;
-  const hasActiveEnrollment = student.enrollments?.some(
-    (enrollment) => enrollment.status === "ACTIVE",
-  );
+  const hasActiveEnrollment =
+    student.activeEnrollmentCount !== undefined
+      ? student.activeEnrollmentCount > 0
+      : student.enrollments?.some((enrollment) => enrollment.status === "ACTIVE");
   const suggestedActions: AssistantResultCard["suggestedActions"] = [];
 
   if (!primaryGuardian) {
@@ -1733,6 +1738,8 @@ async function executeStudents(name: string, args: ToolArguments) {
           page: result.page,
           limit: result.limit,
           hasMore: result.hasMore,
+          topRankTieCount: result.topRankTieCount,
+          topRankTiesTruncated: result.topRankTiesTruncated,
           sortBy: args.sortBy,
           sortOrder: args.sortOrder,
           students: result.students.map((student) => ({
@@ -1858,6 +1865,12 @@ async function executeStudents(name: string, args: ToolArguments) {
 async function executeGuardians(name: string, args: ToolArguments) {
   const studentId = stringValue(args, "studentId");
   switch (name) {
+    case "get_guardian": {
+      const guardianId = stringValue(args, "guardianId");
+      const link = await getLinkedGuardianForAssistant(studentId, guardianId);
+      if (!link) throw new Error("Guardian is not linked to this student");
+      return toolResult(link, `/students?student=${studentId}`);
+    }
     case "add_guardian": {
       const guardian = { ...args };
       delete guardian.studentId;
@@ -2033,10 +2046,11 @@ async function executeTutors(name: string, args: ToolArguments) {
     }
     case "get_tutor_payroll": {
       const id = stringValue(args, "id");
-      const payroll = await getTutorPayroll(
+      const payroll = await getTutorPayrollForAssistant(
         id,
         dateValue(args.from),
         dateValue(args.to),
+        Number(args.limit),
       );
       if (!payroll) throw new Error("Tutor not found");
       return toolResult(payroll, `/tutors/${id}`);
@@ -2987,7 +3001,8 @@ export async function executeAssistantTool(input: {
   const args = parsedArguments(spec, input.argumentsValue);
   if (
     assistantToolMutatesData(spec) &&
-    collectAssistantIdentifierValues(args).length > 0 &&
+    collectAssistantIdentifierReferences(input.namespace, input.name, args)
+      .length > 0 &&
     !input.context.provenanceValidated
   ) {
     throw new Error(
@@ -3017,18 +3032,13 @@ export async function executeAssistantTool(input: {
     case "team":
       return executeTeam(input.name, args, input.context);
     case "reporting": {
-      const dashboard = await getDashboardStats({ materialize: false });
-      const sessionSummary = (session: (typeof dashboard.todaySessions)[number]) => ({
-        id: session.id,
-        scheduledFor: session.scheduledFor,
-        durationMinutes: session.durationMinutes,
-        status: session.status,
-        tutorName: `${session.tutor.firstName} ${session.tutor.lastName}`,
-        subjectName: session.subject.name,
-        students: session.attendance.map((attendance) => ({
-          name: `${attendance.student.firstName} ${attendance.student.lastName}`,
-        })),
-      });
+      const [dashboard, schedule] = await Promise.all([
+        getDashboardStats({
+          materialize: false,
+          includeSessionDetails: false,
+        }),
+        getDashboardScheduleForAssistant(),
+      ]);
       const bounded = <T, R>(
         items: T[],
         summarize: (item: T) => R,
@@ -3041,11 +3051,8 @@ export async function executeAssistantTool(input: {
       return toolResult(
         {
           activeStudentCount: dashboard.activeStudentCount,
-          todaySessions: bounded(dashboard.todaySessions, sessionSummary),
-          tomorrowSessions: bounded(
-            dashboard.tomorrowSessions,
-            sessionSummary,
-          ),
+          todaySessions: schedule.todaySessions,
+          tomorrowSessions: schedule.tomorrowSessions,
           upcomingEndings: bounded(
             dashboard.upcomingEndings,
             (enrollment) => ({

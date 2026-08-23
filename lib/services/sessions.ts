@@ -10,6 +10,8 @@ import {
   deleteSession,
   getSessionsByMonth,
   getSessionsForAssistantMonth,
+  getAssistantSessionSlots,
+  getSessionsForAssistantRange,
   getRecurrenceRuleById,
   getRecurrenceRuleWithParticipants,
   getEnrollmentForSession,
@@ -374,6 +376,7 @@ export async function getVirtualSessionsForMonth(
   monthStart: Date,
   realSessions: RealSessionSlim[],
   prefetchedRules?: MonthRules,
+  includePast = false,
 ): Promise<VirtualSession[]> {
   const calendarMonthStart = new Date(
     Date.UTC(monthStart.getUTCFullYear(), monthStart.getUTCMonth(), 1),
@@ -450,7 +453,7 @@ export async function getVirtualSessionsForMonth(
 
       if (!hasReal) {
         // Past slots should have been materialized already; skip them here
-        if (isBefore(scheduledFor, today)) {
+        if (!includePast && isBefore(scheduledFor, today)) {
           current = addCalendarDays(current, rule.intervalWeeks * 7);
           continue;
         }
@@ -540,7 +543,7 @@ export async function getVirtualSessionsForMonth(
             scheduledFor.getTime(),
       );
 
-      if (!hasReal && !isBefore(scheduledFor, today)) {
+      if (!hasReal && (includePast || !isBefore(scheduledFor, today))) {
         virtual.push({
           id: `virtual_${rule.id}_${format(scheduledFor, "yyyyMMddHHmm")}`,
           scheduledFor: scheduledFor.toISOString(),
@@ -990,6 +993,111 @@ export async function getMonthScheduleForAssistant(
       hasMore: virtual.length > limit,
       results: virtual.slice(0, limit).map(summarizeVirtual),
     },
+  };
+}
+
+export async function getDashboardScheduleForAssistant(limit = 50) {
+  const timeZone = getConfiguredCenterTimeZone();
+  const today = getCalendarDateInTimeZone(new Date(), timeZone);
+  const tomorrow = addCalendarDays(today, 1);
+  const dayAfterTomorrow = addCalendarDays(today, 2);
+  const todayStart = combineDateAndTime(today, "00:00", timeZone);
+  const tomorrowStart = combineDateAndTime(tomorrow, "00:00", timeZone);
+  const dayAfterTomorrowStart = combineDateAndTime(
+    dayAfterTomorrow,
+    "00:00",
+    timeZone,
+  );
+  const monthKeys = [
+    ...new Set([
+      today.toISOString().slice(0, 7),
+      tomorrow.toISOString().slice(0, 7),
+    ]),
+  ];
+
+  const [todayReal, tomorrowReal, virtualByMonth] = await Promise.all([
+    getSessionsForAssistantRange(todayStart, tomorrowStart, limit),
+    getSessionsForAssistantRange(tomorrowStart, dayAfterTomorrowStart, limit),
+    Promise.all(
+      monthKeys.map(async (monthKey) => {
+        const range = getCalendarMonthRange(monthKey, timeZone);
+        const [slots, rules] = await Promise.all([
+          getAssistantSessionSlots(range.start, range.endExclusive),
+          getRecurrenceRulesForMonth(range.calendarStart, range.calendarEnd),
+        ]);
+        return getVirtualSessionsForMonth(
+          range.calendarStart,
+          slots,
+          rules,
+          true,
+        );
+      }),
+    ),
+  ]);
+  const virtualSessions = virtualByMonth.flat();
+  const inRange = (session: VirtualSession, start: Date, end: Date) => {
+    const scheduledFor = new Date(session.scheduledFor);
+    return scheduledFor >= start && scheduledFor < end;
+  };
+  const summarizeReal = (session: (typeof todayReal.sessions)[number]) => ({
+    id: session.id,
+    scheduledFor: session.scheduledFor,
+    durationMinutes: session.durationMinutes,
+    status: session.status,
+    room: session.room,
+    tutorName: `${session.tutor.firstName} ${session.tutor.lastName}`,
+    subjectName: session.subject.name,
+    attendanceTotal: session._count.attendance,
+    students: session.attendance.map((attendance) => ({
+      id: attendance.student.id,
+      name: `${attendance.student.firstName} ${attendance.student.lastName}`,
+    })),
+  });
+  const summarizeVirtual = (session: VirtualSession) => ({
+    id: session.id,
+    scheduledFor: session.scheduledFor,
+    durationMinutes: session.durationMinutes,
+    status: session.status,
+    room: session.room,
+    tutorName: `${session.tutor.firstName} ${session.tutor.lastName}`,
+    subjectName: session.subject.name,
+    attendanceTotal: session.attendance.length,
+    students: session.attendance.slice(0, 10).map((attendance) => ({
+      name: `${attendance.student.firstName} ${attendance.student.lastName}`,
+    })),
+    virtual: true as const,
+  });
+  const section = (
+    real: typeof todayReal,
+    virtual: VirtualSession[],
+  ) => {
+    const results = [
+      ...real.sessions.map(summarizeReal),
+      ...virtual.map(summarizeVirtual),
+    ]
+      .sort(
+        (left, right) =>
+          new Date(left.scheduledFor).getTime() -
+          new Date(right.scheduledFor).getTime(),
+      )
+      .slice(0, limit);
+    const total = real.total + virtual.length;
+    return { total, hasMore: total > results.length, results };
+  };
+
+  return {
+    todaySessions: section(
+      todayReal,
+      virtualSessions.filter((session) =>
+        inRange(session, todayStart, tomorrowStart),
+      ),
+    ),
+    tomorrowSessions: section(
+      tomorrowReal,
+      virtualSessions.filter((session) =>
+        inRange(session, tomorrowStart, dayAfterTomorrowStart),
+      ),
+    ),
   };
 }
 

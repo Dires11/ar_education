@@ -338,6 +338,7 @@ export async function getAssistantSummarySource(
   threadId: string,
   retainRecent = 20,
 ) {
+  const maxSummaryBatch = 40;
   const thread = await prisma.assistantThread.findFirst({
     where: { id: threadId, adminId },
     select: {
@@ -348,9 +349,9 @@ export async function getAssistantSummarySource(
   });
   if (!thread || thread._count.messages <= 40) return null;
 
-  const summarizeThrough = Math.max(
-    thread.summarizedMessageCount,
+  const summarizeThrough = Math.min(
     thread._count.messages - retainRecent,
+    thread.summarizedMessageCount + maxSummaryBatch,
   );
   if (summarizeThrough <= thread.summarizedMessageCount) return null;
 

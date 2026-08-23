@@ -41,6 +41,36 @@ describe("assistant tool registry", () => {
     ).toBe(false);
   });
 
+  it("bounds assistant payroll ranges and result rows", () => {
+    const payroll = getAssistantToolSpec(
+      "tutors",
+      "get_tutor_payroll",
+      "OWNER",
+    )!;
+    expect(
+      payroll.schema.safeParse({
+        id: "tutor-1",
+        from: "2026-01-01T00:00:00.000Z",
+        to: "2026-12-31T00:00:00.000Z",
+        limit: 100,
+      }).success,
+    ).toBe(true);
+    expect(
+      payroll.schema.safeParse({
+        id: "tutor-1",
+        from: "2025-01-01T00:00:00.000Z",
+        to: "2026-12-31T00:00:00.000Z",
+      }).success,
+    ).toBe(false);
+    expect(
+      payroll.schema.safeParse({
+        id: "tutor-1",
+        from: "2026-02-01T00:00:00.000Z",
+        to: "2026-01-01T00:00:00.000Z",
+      }).success,
+    ).toBe(false);
+  });
+
   it("keeps namespaces small and every function deferred", () => {
     const counts = getAssistantNamespaceCounts("OWNER");
     expect(Object.values(counts).every((count) => count < 10)).toBe(true);
@@ -71,6 +101,15 @@ describe("assistant tool registry", () => {
     expect(ownerNames).toContain("team.get_team");
     expect(staffNames).not.toContain("team.invite_team_member");
     expect(staffNames).not.toContain("team.get_team");
+  });
+
+  it("classifies exact guardian relationship inspection as read-only", () => {
+    const guardian = getAssistantToolSpec(
+      "guardians",
+      "get_guardian",
+      "STAFF",
+    )!;
+    expect(assistantToolMutatesData(guardian)).toBe(false);
   });
 
   it("does not expose internal avatar storage identifiers to the model", () => {

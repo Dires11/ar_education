@@ -8,6 +8,7 @@ const prismaMock = vi.hoisted(() => ({
   assistantToolRun: {
     upsert: vi.fn(),
   },
+  assistantMessage: { findMany: vi.fn() },
   $transaction: vi.fn(),
 }));
 
@@ -21,6 +22,7 @@ import {
   expireAssistantRuns,
   failAssistantRun,
   getAssistantContext,
+  getAssistantSummarySource,
   getAssistantThreadMessageCount,
   recordAssistantModelStep,
   rejectAssistantToolRun,
@@ -75,6 +77,28 @@ describe("assistant persistence guarantees", () => {
         },
       },
     });
+  });
+
+  it("summarizes a large backlog in bounded message batches", async () => {
+    prismaMock.assistantThread.findFirst.mockResolvedValue({
+      contextSummary: "Earlier summary",
+      summarizedMessageCount: 0,
+      _count: { messages: 200 },
+    });
+    prismaMock.assistantMessage.findMany.mockResolvedValue(
+      Array.from({ length: 40 }, (_, index) => ({
+        role: index % 2 === 0 ? "USER" : "ASSISTANT",
+        content: `message-${index}`,
+        run: null,
+      })),
+    );
+
+    await expect(
+      getAssistantSummarySource("admin-1", "thread-1"),
+    ).resolves.toMatchObject({ summarizeThrough: 40 });
+    expect(prismaMock.assistantMessage.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ skip: 0, take: 40 }),
+    );
   });
 
   it("carries attachment provenance into later turns", async () => {

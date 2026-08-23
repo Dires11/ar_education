@@ -71,6 +71,17 @@ function simulatedLookupResult(
       },
     };
   }
+  if (namespace === "guardians" && name === "get_guardian") {
+    return {
+      ok: true,
+      data: {
+        studentId: "student_123",
+        guardianId: "guardian_123",
+        isPrimary: true,
+        guardian: { id: "guardian_123", name: "Ana Thompson" },
+      },
+    };
+  }
   if (namespace === "tutors" && name === "search_tutors") {
     return {
       ok: true,
