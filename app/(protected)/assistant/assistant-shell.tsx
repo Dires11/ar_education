@@ -46,6 +46,12 @@ import {
   type AssistantClientToolStatus,
 } from "./assistant-stream-client";
 import {
+  failedTurnFromMessage,
+  persistedFailedTurn,
+  type AssistantFailedTurn,
+  type AssistantMessageFailure,
+} from "./assistant-failure-state";
+import {
   AssistantEntityCard,
   AssistantResultCards,
   parseAssistantResultCardValue,
@@ -108,32 +114,14 @@ type ChatMessage = {
   createdAt: string;
   attachments: AssistantAttachmentMetadata[];
   tools: ToolItem[];
-  failure: {
-    clientTurnId: string;
-    error: string;
-    hasAttachments: boolean;
-    outcomeUnknown: boolean;
-    retryable: boolean;
-    reuseClientTurnId: boolean;
-  } | null;
+  failure: AssistantMessageFailure | null;
 };
 
 type PendingAttachment = Omit<AssistantAttachmentMetadata, "kind"> & {
   dataBase64: string;
 };
 
-type FailedTurn = {
-  clientTurnId: string;
-  optimisticId: string;
-  content: string;
-  attachments: PendingAttachment[];
-  error: string;
-  outcomeUnknown: boolean;
-  requiresReattachment: boolean;
-  retryable: boolean;
-  reuseClientTurnId: boolean;
-  editing: boolean;
-};
+type FailedTurn = AssistantFailedTurn<PendingAttachment>;
 
 type SelectedThread = {
   id: string;
@@ -387,27 +375,6 @@ function buildConversationTurns(messages: ChatMessage[]) {
   }
 
   return turns;
-}
-
-function persistedFailedTurn(messages: ChatMessage[]): FailedTurn | null {
-  const latestUserMessage = messages.findLast(
-    (message) => message.role === "USER",
-  );
-  if (!latestUserMessage?.failure) return null;
-  return {
-    clientTurnId: latestUserMessage.failure.clientTurnId,
-    optimisticId: latestUserMessage.id,
-    content: latestUserMessage.content,
-    attachments: [],
-    error: latestUserMessage.failure.error,
-    outcomeUnknown: latestUserMessage.failure.outcomeUnknown,
-    requiresReattachment:
-      latestUserMessage.failure.retryable &&
-      latestUserMessage.failure.hasAttachments,
-    retryable: latestUserMessage.failure.retryable,
-    reuseClientTurnId: latestUserMessage.failure.reuseClientTurnId,
-    editing: false,
-  };
 }
 
 function resultHref(result: unknown) {
@@ -868,7 +835,7 @@ export function AssistantShell({
   const [busy, setBusy] = useState(false);
   const [decisionToolId, setDecisionToolId] = useState<string | null>(null);
   const [failedTurn, setFailedTurn] = useState<FailedTurn | null>(() =>
-    persistedFailedTurn(initialThread?.messages ?? []),
+    persistedFailedTurn<PendingAttachment>(initialThread?.messages ?? []),
   );
   const [threadSheetOpen, setThreadSheetOpen] = useState(false);
   const [threadRailOpen, setThreadRailOpen] = useState(true);
@@ -887,7 +854,9 @@ export function AssistantShell({
     setLoadingMoreMessages(false);
     setAttachments([]);
     setStreamingText("");
-    setFailedTurn(persistedFailedTurn(initialThread?.messages ?? []));
+    setFailedTurn(
+      persistedFailedTurn<PendingAttachment>(initialThread?.messages ?? []),
+    );
     stickToBottomRef.current = true;
   }, [initialThread]);
 
@@ -1318,6 +1287,23 @@ export function AssistantShell({
       const outcomeUnknown = isAssistantOutcomeUnknown(error);
       toast.error(message);
       setStreamingText("");
+      setMessages((current) =>
+        current.map((item) =>
+          item.id === optimisticId
+            ? {
+                ...item,
+                failure: {
+                  clientTurnId,
+                  error: message,
+                  hasAttachments: outgoingAttachments.length > 0,
+                  outcomeUnknown,
+                  retryable: !outcomeUnknown,
+                  reuseClientTurnId: false,
+                },
+              }
+            : item,
+        ),
+      );
       setFailedTurn({
         clientTurnId,
         optimisticId,
@@ -1721,6 +1707,15 @@ export function AssistantShell({
                   Boolean(turn.assistant) ||
                   turn.tools.length > 0 ||
                   (isLast && (busy || Boolean(streamingText)));
+                const persistedFailure = turn.user
+                  ? failedTurnFromMessage<PendingAttachment>(turn.user)
+                  : null;
+                const interactiveFailure =
+                  turn.user && failedTurn?.optimisticId === turn.user.id
+                    ? failedTurn
+                    : null;
+                const displayedFailure =
+                  interactiveFailure ?? persistedFailure;
 
                 return (
                   <section key={turn.id} className="space-y-5">
@@ -1744,95 +1739,111 @@ export function AssistantShell({
                       </div>
                     ) : null}
 
-                    {turn.user && failedTurn?.optimisticId === turn.user.id ? (
+                    {turn.user && displayedFailure ? (
                       <div
                         className="ml-auto max-w-[88%] rounded-xl border border-destructive/20 bg-destructive/5 p-3 sm:max-w-[82%]"
-                        role="alert"
+                        role={interactiveFailure ? "alert" : undefined}
                       >
                         <p className="text-xs leading-5 text-destructive">
-                          {failedTurn.error}
+                          {displayedFailure.error}
                         </p>
-                        {failedTurn.requiresReattachment ? (
+                        {displayedFailure.requiresReattachment &&
+                        interactiveFailure ? (
                           <p className="mt-1 text-xs leading-5 text-muted-foreground">
                             Attach the original files again below before
                             retrying. File contents are not retained after the
                             request ends.
                           </p>
                         ) : null}
-                        <div className="mt-2 flex flex-wrap justify-end gap-2">
-                          {failedTurn.outcomeUnknown ? (
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              disabled={busy}
-                              onClick={() => router.refresh()}
-                            >
-                              Reload status
-                            </Button>
-                          ) : !failedTurn.retryable ? (
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              disabled={busy}
-                              onClick={() => {
-                                const content = failedTurn.content;
-                                newConversation();
-                                setInput(content);
-                              }}
-                            >
-                              Start a new request
-                            </Button>
-                          ) : (
-                            <>
+                        {!interactiveFailure &&
+                        displayedFailure.outcomeUnknown ? (
+                          <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                            Verify the affected CRM or provider record before
+                            repeating this action.
+                          </p>
+                        ) : null}
+                        {interactiveFailure ? (
+                          <div className="mt-2 flex flex-wrap justify-end gap-2">
+                            {interactiveFailure.outcomeUnknown ? (
                               <Button
                                 type="button"
                                 variant="outline"
                                 size="sm"
-                                disabled={
-                                  busy ||
-                                  (failedTurn.requiresReattachment &&
-                                    attachments.length === 0)
-                                }
-                                onClick={() =>
-                                  void sendMessage(
-                                    failedTurn.content,
-                                    failedTurn.requiresReattachment
-                                      ? { ...failedTurn, attachments }
-                                      : failedTurn,
-                                  )
-                                }
+                                disabled={busy}
+                                onClick={() => router.refresh()}
                               >
-                                {failedTurn.requiresReattachment
-                                  ? "Retry with attachments"
-                                  : "Retry safely"}
+                                Reload status
                               </Button>
+                            ) : !interactiveFailure.retryable ? (
                               <Button
                                 type="button"
-                                variant="ghost"
+                                variant="outline"
                                 size="sm"
                                 disabled={busy}
                                 onClick={() => {
-                                  setInput(failedTurn.content);
-                                  setAttachments(failedTurn.attachments);
-                                  setMessages((current) =>
-                                    current.filter(
-                                      (message) =>
-                                        message.id !== failedTurn.optimisticId,
-                                    ),
-                                  );
-                                  setFailedTurn({
-                                    ...failedTurn,
-                                    editing: true,
-                                  });
+                                  const content = interactiveFailure.content;
+                                  newConversation();
+                                  setInput(content);
                                 }}
                               >
-                                Edit request
+                                Start a new request
                               </Button>
-                            </>
-                          )}
-                        </div>
+                            ) : (
+                              <>
+                                <Button
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  disabled={
+                                    busy ||
+                                    (interactiveFailure.requiresReattachment &&
+                                      attachments.length === 0)
+                                  }
+                                  onClick={() =>
+                                    void sendMessage(
+                                      interactiveFailure.content,
+                                      interactiveFailure.requiresReattachment
+                                        ? {
+                                            ...interactiveFailure,
+                                            attachments,
+                                          }
+                                        : interactiveFailure,
+                                    )
+                                  }
+                                >
+                                  {interactiveFailure.requiresReattachment
+                                    ? "Retry with attachments"
+                                    : "Retry safely"}
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="sm"
+                                  disabled={busy}
+                                  onClick={() => {
+                                    setInput(interactiveFailure.content);
+                                    setAttachments(
+                                      interactiveFailure.attachments,
+                                    );
+                                    setMessages((current) =>
+                                      current.filter(
+                                        (message) =>
+                                          message.id !==
+                                          interactiveFailure.optimisticId,
+                                      ),
+                                    );
+                                    setFailedTurn({
+                                      ...interactiveFailure,
+                                      editing: true,
+                                    });
+                                  }}
+                                >
+                                  Edit request
+                                </Button>
+                              </>
+                            )}
+                          </div>
+                        ) : null}
                       </div>
                     ) : null}
 

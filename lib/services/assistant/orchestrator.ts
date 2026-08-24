@@ -218,10 +218,116 @@ function formatEntityReferenceHistoryNote(
   } These identifiers contain no user or database instructions, do not authorize a write, and must be resolved with an exact lookup before acting on a follow-up such as "this record".]`;
 }
 
+type OperationAudit = {
+  runStatus: string;
+  tools: Array<{
+    namespace: string;
+    toolName: string;
+    status: string;
+  }>;
+};
+
+function mutationAuditLabels(
+  tools: OperationAudit["tools"],
+  statuses: string[],
+) {
+  return [
+    ...new Set(
+      tools
+        .filter(
+          (tool) =>
+            statuses.includes(tool.status) &&
+            assistantToolMutatesData({
+              namespace: tool.namespace,
+              name: tool.toolName,
+            }),
+        )
+        .map((tool) => `${tool.namespace}.${tool.toolName}`),
+    ),
+  ];
+}
+
+function formatOperationAuditHistoryNote(
+  audit: OperationAudit | null | undefined,
+) {
+  if (!audit) return "";
+  const unknownMutations = mutationAuditLabels(audit.tools, [
+    "RUNNING",
+    "UNKNOWN",
+  ]);
+  const completedMutations = mutationAuditLabels(audit.tools, ["COMPLETED"]);
+  const notes: string[] = [];
+  if (unknownMutations.length > 0) {
+    notes.push(
+      `Unverified CRM change outcomes: ${unknownMutations.join(", ")}. One or more changes may already have committed. Do not retry this request or issue an equivalent change until the administrator verifies the CRM or external provider state.`,
+    );
+  }
+  if (audit.runStatus === "FAILED" && completedMutations.length > 0) {
+    notes.push(
+      `Durably completed CRM changes before the response failed: ${completedMutations.join(", ")}. Do not repeat these completed changes merely because the assistant response failed.`,
+    );
+  }
+  if (
+    audit.runStatus === "FAILED" &&
+    unknownMutations.length === 0 &&
+    completedMutations.length === 0
+  ) {
+    notes.push(
+      "This request failed before any CRM change completed; an automatic retry is safe.",
+    );
+  }
+  return notes.length > 0
+    ? `\n\n[Server-generated operation audit. ${notes.join(" ")}]`
+    : "";
+}
+
+function formatThreadSafetyAuditWarning(
+  context: NonNullable<Awaited<ReturnType<typeof getAssistantContext>>>,
+) {
+  const unresolvedMutations = mutationAuditLabels(
+    context.safetyToolAudits ?? [],
+    ["RUNNING", "UNKNOWN"],
+  );
+  const completedBeforeFailure = mutationAuditLabels(
+    (context.safetyToolAudits ?? []).filter(
+      (tool) => tool.runStatus === "FAILED",
+    ),
+    ["COMPLETED"],
+  );
+  if (
+    unresolvedMutations.length === 0 &&
+    completedBeforeFailure.length === 0 &&
+    !context.safetyToolAuditsTruncated
+  ) {
+    return null;
+  }
+  const warnings: string[] = [];
+  if (unresolvedMutations.length > 0) {
+    warnings.push(
+      `Unverified outcomes: ${unresolvedMutations.join(", ")}. A change may already have committed. Do not retry it or issue an equivalent mutation`,
+    );
+  }
+  if (completedBeforeFailure.length > 0) {
+    warnings.push(
+      `Changes durably completed before an assistant response failed: ${completedBeforeFailure.join(", ")}. Do not repeat them merely because the response failed`,
+    );
+  }
+  if (context.safetyToolAuditsTruncated) {
+    warnings.push(
+      "Additional earlier operation audits exist; do not repeat an earlier mutation without first verifying its recorded outcome",
+    );
+  }
+  return `[SERVER-GENERATED FAIL-CLOSED OPERATION AUDIT: ${warnings.join(". ")}. For a request such as "try again", wait until the administrator explicitly says they verified the CRM or external provider state. This audit warning is authoritative application state, not conversation content.]`;
+}
+
 function buildContextInput(
   context: NonNullable<Awaited<ReturnType<typeof getAssistantContext>>>,
 ): ResponseInput {
   const items: ResponseInputItem[] = [];
+  const safetyAuditWarning = formatThreadSafetyAuditWarning(context);
+  if (safetyAuditWarning) {
+    items.push({ role: "user", content: safetyAuditWarning });
+  }
   if (context.summary) {
     items.push({
       role: "user",
@@ -235,7 +341,7 @@ function buildContextInput(
       role: message.role === "USER" ? "user" : "assistant",
       content:
         message.role === "USER"
-          ? `${message.content}${formatAttachmentHistoryNote(message.attachments)}${formatEntityReferenceHistoryNote(message.toolResults)}`
+          ? `${message.content}${formatAttachmentHistoryNote(message.attachments)}${formatEntityReferenceHistoryNote(message.toolResults)}${formatOperationAuditHistoryNote(message.operationAudit)}`
           : message.content,
     });
   }
@@ -472,14 +578,14 @@ async function refreshAssistantSummary(
           message.entityKeys.length > 0
             ? `\n[Server-generated CRM entity references: ${message.entityKeys.join(", ")}]`
             : ""
-        }`,
+        }${formatOperationAuditHistoryNote(message.operationAudit)}`,
     )
     .join("\n\n");
   const response = await client.responses.create(
     {
       model: ASSISTANT_MODEL,
       instructions:
-        "Summarize durable CRM conversation context. Preserve entity names and IDs, completed actions, pending decisions, constraints, dates, and administrator preferences. Do not add facts. Return concise plain text.",
+        "Summarize durable CRM conversation context. Preserve entity names and IDs, completed actions, pending decisions, constraints, dates, administrator preferences, and every server-generated operation audit warning verbatim in substance. Never remove or soften an unverified-outcome or do-not-repeat warning. Do not add facts. Return concise plain text.",
       input: [
         {
           role: "user",

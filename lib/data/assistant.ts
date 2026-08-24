@@ -375,13 +375,17 @@ export async function getAssistantContext(
           createdAt: true,
           run: {
             select: {
+              status: true,
               hasAttachments: true,
-              _count: { select: { toolRuns: true } },
               toolRuns: {
-                where: { status: "COMPLETED" },
                 orderBy: [{ createdAt: "asc" }, { id: "asc" }],
                 take: 12,
-                select: { result: true },
+                select: {
+                  namespace: true,
+                  toolName: true,
+                  status: true,
+                  result: true,
+                },
               },
             },
           },
@@ -390,9 +394,36 @@ export async function getAssistantContext(
     },
   });
   if (!thread) return null;
+  const safetyToolAuditRows = await prisma.assistantToolRun.findMany({
+    where: {
+      run: {
+        threadId,
+        thread: { adminId },
+      },
+      OR: [
+        { status: { in: ["RUNNING", "UNKNOWN"] } },
+        { status: "COMPLETED", run: { status: "FAILED" } },
+      ],
+    },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    take: 21,
+    select: {
+      namespace: true,
+      toolName: true,
+      status: true,
+      run: { select: { status: true } },
+    },
+  });
   const orderedMessages = thread.messages.reverse();
   return {
     summary: thread.contextSummary,
+    safetyToolAudits: safetyToolAuditRows.slice(0, 20).map((toolRun) => ({
+      namespace: toolRun.namespace,
+      toolName: toolRun.toolName,
+      status: toolRun.status,
+      runStatus: toolRun.run.status,
+    })),
+    safetyToolAuditsTruncated: safetyToolAuditRows.length > 20,
     hasUntrustedHistory:
       thread._count.runs > 0 ||
       orderedMessages.some(
@@ -408,8 +439,21 @@ export async function getAssistantContext(
       createdAt: message.createdAt,
       toolResults:
         message.role === "USER"
-          ? (message.run?.toolRuns ?? []).map((toolRun) => toolRun.result)
+          ? (message.run?.toolRuns ?? [])
+              .filter((toolRun) => toolRun.status === "COMPLETED")
+              .map((toolRun) => toolRun.result)
           : [],
+      operationAudit:
+        message.role === "USER" && message.run
+          ? {
+              runStatus: message.run.status,
+              tools: message.run.toolRuns.map((toolRun) => ({
+                namespace: toolRun.namespace,
+                toolName: toolRun.toolName,
+                status: toolRun.status,
+              })),
+            }
+          : null,
     })),
   };
 }
@@ -498,11 +542,16 @@ export async function getAssistantSummarySource(
       content: true,
       run: {
         select: {
+          status: true,
           toolRuns: {
-            where: { status: "COMPLETED" },
             orderBy: [{ createdAt: "asc" }, { id: "asc" }],
             take: 12,
-            select: { result: true },
+            select: {
+              namespace: true,
+              toolName: true,
+              status: true,
+              result: true,
+            },
           },
         },
       },
@@ -518,11 +567,23 @@ export async function getAssistantSummarySource(
           ? [
               ...new Set(
                 (message.run?.toolRuns ?? [])
+                  .filter((toolRun) => toolRun.status === "COMPLETED")
                   .map((toolRun) => assistantResultEntityKey(toolRun.result))
                   .filter((value): value is string => Boolean(value)),
               ),
             ]
           : [],
+      operationAudit:
+        message.role === "USER" && message.run
+          ? {
+              runStatus: message.run.status,
+              tools: message.run.toolRuns.map((toolRun) => ({
+                namespace: toolRun.namespace,
+                toolName: toolRun.toolName,
+                status: toolRun.status,
+              })),
+            }
+          : null,
     })),
     summarizeThrough,
   };
@@ -697,6 +758,41 @@ export async function createAssistantTurn(input: {
         }
 
         if (input.supersedesRunId) {
+          const supersededMessage = await tx.assistantMessage.findFirst({
+            where: {
+              threadId: thread.id,
+              runId: input.supersedesRunId,
+              role: "USER",
+            },
+            select: { id: true, createdAt: true },
+          });
+          if (!supersededMessage) {
+            throw new Error("The failed request is no longer retryable");
+          }
+          if (thread.summarizedMessageCount > 0) {
+            const messageOrdinal = await tx.assistantMessage.count({
+              where: {
+                threadId: thread.id,
+                AND: [
+                  visibleAssistantMessageWhere,
+                  {
+                    OR: [
+                      { createdAt: { lt: supersededMessage.createdAt } },
+                      {
+                        createdAt: supersededMessage.createdAt,
+                        id: { lte: supersededMessage.id },
+                      },
+                    ],
+                  },
+                ],
+              },
+            });
+            if (messageOrdinal <= thread.summarizedMessageCount) {
+              throw new Error(
+                "This older failed request can no longer be retried automatically. Start a new request after reviewing the conversation.",
+              );
+            }
+          }
           const superseded = await tx.assistantRun.updateMany({
             where: {
               id: input.supersedesRunId,

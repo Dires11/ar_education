@@ -395,6 +395,90 @@ describe("assistant orchestration", () => {
     ]);
   });
 
+  it("warns Luna not to repeat an outbound mutation with an unknown outcome", async () => {
+    dataMocks.getAssistantContext.mockResolvedValue({
+      summary: null,
+      hasUntrustedHistory: false,
+      safetyToolAudits: [
+        {
+          namespace: "communications",
+          toolName: "send_email",
+          status: "UNKNOWN",
+          runStatus: "FAILED",
+        },
+        {
+          namespace: "billing",
+          toolName: "record_payment",
+          status: "COMPLETED",
+          runStatus: "FAILED",
+        },
+      ],
+      safetyToolAuditsTruncated: false,
+      messages: [
+        {
+          role: "USER",
+          content: "Send the center update email.",
+          createdAt: new Date(),
+          operationAudit: {
+            runStatus: "FAILED",
+            tools: [
+              {
+                namespace: "communications",
+                toolName: "send_email",
+                status: "UNKNOWN",
+              },
+            ],
+          },
+        },
+        {
+          role: "USER",
+          content: "Try again.",
+          createdAt: new Date(),
+          operationAudit: {
+            runStatus: "RUNNING",
+            tools: [],
+          },
+        },
+      ],
+    });
+    responses.queue.push({
+      events: [],
+      final: {
+        output_text: "Please verify whether the email was sent first.",
+        output: [],
+        usage,
+      },
+    });
+
+    await processAssistantTurn(
+      { id: "admin-1", role: "STAFF" },
+      {
+        threadId: "thread-1",
+        clientTurnId: "c7bcb6f9-41e7-4c17-bf0d-3e1b04c8e0d4",
+        message: "Try again.",
+      },
+      () => undefined,
+    );
+
+    const modelInput = responses.requests[0].input as Array<{
+      content: string;
+    }>;
+    expect(modelInput[0].content).toContain(
+      "SERVER-GENERATED FAIL-CLOSED OPERATION AUDIT",
+    );
+    expect(modelInput[0].content).toContain("communications.send_email");
+    expect(modelInput[0].content).toContain(
+      "Changes durably completed before an assistant response failed: billing.record_payment",
+    );
+    expect(modelInput[1].content).toContain(
+      "Do not retry this request or issue an equivalent change",
+    );
+    expect(responses.requests[0].instructions).toContain(
+      "server-generated operation audit alerts",
+    );
+    expect(executeMock).not.toHaveBeenCalled();
+  });
+
   it("preserves server card identities when old messages roll into a summary", async () => {
     dataMocks.getAssistantSummarySource.mockResolvedValueOnce({
       previousSummary: "Earlier conversation",
@@ -407,6 +491,16 @@ describe("assistant orchestration", () => {
             "student:student-42",
             "payment-reminder:enrollment-1:2026-08",
           ],
+          operationAudit: {
+            runStatus: "FAILED",
+            tools: [
+              {
+                namespace: "communications",
+                toolName: "send_email",
+                status: "UNKNOWN",
+              },
+            ],
+          },
         },
         {
           role: "ASSISTANT",
@@ -439,6 +533,9 @@ describe("assistant orchestration", () => {
     expect(summaryInput[0].content).toContain("student:student-42");
     expect(summaryInput[0].content).toContain(
       "payment-reminder:enrollment-1:2026-08",
+    );
+    expect(summaryInput[0].content).toContain(
+      "Unverified CRM change outcomes: communications.send_email",
     );
     expect(dataMocks.setAssistantThreadSummary).toHaveBeenCalledWith(
       "admin-1",

@@ -14,6 +14,7 @@ import {
   getAssistantOpenAITools,
   getAssistantToolSpec,
 } from "@/lib/services/assistant/tools";
+import { validateAssistantEvalArguments } from "./assistant-eval-validation";
 
 function sanitizeReplayValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(sanitizeReplayValue);
@@ -23,14 +24,6 @@ function sanitizeReplayValue(value: unknown): unknown {
       .filter(([key]) => key !== "parsed" && key !== "parsed_arguments")
       .map(([key, item]) => [key, sanitizeReplayValue(item)]),
   );
-}
-
-function parseArguments(value: string) {
-  const parsed = JSON.parse(value) as unknown;
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("Tool arguments were not an object");
-  }
-  return parsed as Record<string, unknown>;
 }
 
 function stringArgument(
@@ -289,6 +282,8 @@ async function evaluateCase(
     step: number;
     tool: string;
     arguments: Record<string, unknown>;
+    schemaValid: boolean;
+    validationError?: string;
   }> = [];
   const input: ResponseInputItem[] = [
     { role: "user", content: item.prompt },
@@ -318,22 +313,45 @@ async function evaluateCase(
       ...(sanitizeReplayValue(response.output) as ResponseInputItem[]),
     );
     for (const call of calls) {
-      const args = parseArguments(call.arguments);
       const namespace = call.namespace;
       if (!namespace) {
         failure = `Model called ${call.name} without a CRM namespace`;
         break;
       }
       const key = `${namespace}.${call.name}`;
-      transcript.push({ step, tool: key, arguments: args });
       const spec = getAssistantToolSpec(namespace, call.name, "OWNER");
       if (!spec) {
         failure = `Model called unavailable tool ${key}`;
         break;
       }
+      const validation = validateAssistantEvalArguments(spec, call.arguments);
+      const args = validation.arguments;
+      transcript.push({
+        step,
+        tool: key,
+        arguments: args,
+        schemaValid: validation.success,
+        ...(validation.success
+          ? {}
+          : { validationError: validation.error }),
+      });
+      if (!validation.success) {
+        input.push({
+          type: "function_call_output",
+          call_id: call.call_id,
+          output: JSON.stringify({
+            ok: false,
+            error: `Invalid arguments: ${validation.error}`,
+          }),
+        });
+        continue;
+      }
       if (targetKeys.has(key)) {
         const calledTools = new Set(
-          transcript.slice(0, -1).map((entry) => entry.tool),
+          transcript
+            .slice(0, -1)
+            .filter((entry) => entry.schemaValid)
+            .map((entry) => entry.tool),
         );
         const missingLookups = (item.requiredLookupGroups ?? []).filter(
           (alternatives) =>

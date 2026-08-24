@@ -53,7 +53,8 @@ export const ASSISTANT_ROUTING_EVAL_CASES: AssistantRoutingEvalCase[] = [
   },
   {
     name: "overdue dues",
-    prompt: "Show all overdue package payments.",
+    prompt:
+      "Show overdue package payments from September 2024 through August 2026.",
     expectedNamespace: "billing",
     expectedTool: "get_upcoming_dues",
   },

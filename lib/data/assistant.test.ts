@@ -8,6 +8,7 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
   },
   assistantToolRun: {
+    findMany: vi.fn(),
     upsert: vi.fn(),
   },
   assistantRun: { findUnique: vi.fn() },
@@ -37,6 +38,7 @@ import {
 describe("assistant persistence guarantees", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    prismaMock.assistantToolRun.findMany.mockResolvedValue([]);
   });
 
   it("uses one atomic upsert per OpenAI call ID", async () => {
@@ -159,13 +161,20 @@ describe("assistant persistence guarantees", () => {
         run:
           index === 0
             ? {
+                status: "COMPLETED",
                 toolRuns: [
                   {
+                    namespace: "students",
+                    toolName: "create_student",
+                    status: "COMPLETED",
                     result: {
                       card: { entityKey: "student:student-42" },
                     },
                   },
                   {
+                    namespace: "billing",
+                    toolName: "send_payment_reminder",
+                    status: "COMPLETED",
                     result: {
                       card: {
                         entityKey:
@@ -200,8 +209,8 @@ describe("assistant persistence guarantees", () => {
         select: expect.objectContaining({
           run: {
             select: {
+              status: true,
               toolRuns: expect.objectContaining({
-                where: { status: "COMPLETED" },
                 take: 12,
               }),
             },
@@ -282,9 +291,15 @@ describe("assistant persistence guarantees", () => {
           attachments: [{ name: "calendar.jpg" }],
           createdAt: new Date(),
           run: {
+            status: "COMPLETED",
             _count: { toolRuns: 1 },
             toolRuns: [
-              { result: { card: { entityKey: "student:student-1" } } },
+              {
+                namespace: "students",
+                toolName: "get_student",
+                status: "COMPLETED",
+                result: { card: { entityKey: "student:student-1" } },
+              },
             ],
           },
         },
@@ -347,6 +362,90 @@ describe("assistant persistence guarantees", () => {
     await expect(
       getAssistantContext("admin-1", "thread-1"),
     ).resolves.toMatchObject({ hasUntrustedHistory: false });
+  });
+
+  it("returns bounded server-authored audit state for unresolved operations", async () => {
+    prismaMock.assistantThread.findFirst.mockResolvedValue({
+      contextSummary: null,
+      _count: { runs: 0 },
+      messages: [
+        {
+          role: "USER",
+          content: "Send the message",
+          attachments: null,
+          createdAt: new Date(),
+          run: {
+            status: "FAILED",
+            hasAttachments: false,
+            toolRuns: [
+              {
+                namespace: "communications",
+                toolName: "send_email",
+                status: "UNKNOWN",
+                result: null,
+              },
+            ],
+          },
+        },
+      ],
+    });
+    prismaMock.assistantToolRun.findMany.mockResolvedValue([
+      {
+        namespace: "communications",
+        toolName: "send_email",
+        status: "UNKNOWN",
+        run: { status: "FAILED" },
+      },
+    ]);
+
+    const context = await getAssistantContext("admin-1", "thread-1");
+
+    expect(context).toMatchObject({
+      safetyToolAudits: [
+        {
+          namespace: "communications",
+          toolName: "send_email",
+          status: "UNKNOWN",
+          runStatus: "FAILED",
+        },
+      ],
+      safetyToolAuditsTruncated: false,
+      messages: [
+        expect.objectContaining({
+          operationAudit: {
+            runStatus: "FAILED",
+            tools: [
+              {
+                namespace: "communications",
+                toolName: "send_email",
+                status: "UNKNOWN",
+              },
+            ],
+          },
+        }),
+      ],
+    });
+    expect(prismaMock.assistantToolRun.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          run: {
+            threadId: "thread-1",
+            thread: { adminId: "admin-1" },
+          },
+          OR: [
+            { status: { in: ["RUNNING", "UNKNOWN"] } },
+            { status: "COMPLETED", run: { status: "FAILED" } },
+          ],
+        },
+        take: 21,
+        select: {
+          namespace: true,
+          toolName: true,
+          status: true,
+          run: { select: { status: true } },
+        },
+      }),
+    );
   });
 
   it("checks active runs inside a serializable transaction", async () => {
@@ -581,7 +680,16 @@ describe("assistant persistence guarantees", () => {
         findFirst: vi.fn().mockResolvedValue(thread),
         update: vi.fn().mockResolvedValue(thread),
       },
-      assistantMessage: { count: vi.fn().mockResolvedValue(1) },
+      assistantMessage: {
+        findFirst: vi.fn().mockResolvedValue({
+          id: "message-100",
+          createdAt: new Date("2026-08-23T12:00:00.000Z"),
+        }),
+        count: vi
+          .fn()
+          .mockResolvedValueOnce(100)
+          .mockResolvedValueOnce(100),
+      },
       assistantRun: {
         findUnique: vi.fn().mockResolvedValue(null),
         findFirst: vi.fn().mockResolvedValue(null),
@@ -635,6 +743,57 @@ describe("assistant persistence guarantees", () => {
         }),
       }),
     );
+  });
+
+  it("rejects retrying a failed message that is already in the rolling summary", async () => {
+    const thread = {
+      id: "thread-1",
+      adminId: "admin-1",
+      archivedAt: null,
+      contextSummary: "Durable context through message 70",
+      summarizedMessageCount: 70,
+    };
+    const tx = {
+      assistantThread: {
+        findFirst: vi.fn().mockResolvedValue(thread),
+        update: vi.fn(),
+      },
+      assistantMessage: {
+        findFirst: vi.fn().mockResolvedValue({
+          id: "message-40",
+          createdAt: new Date("2026-08-20T12:00:00.000Z"),
+        }),
+        count: vi.fn().mockResolvedValue(40),
+      },
+      assistantRun: {
+        findUnique: vi.fn().mockResolvedValue(null),
+        findFirst: vi.fn().mockResolvedValue(null),
+        findMany: vi.fn().mockResolvedValue([]),
+        updateMany: vi.fn(),
+        create: vi.fn(),
+      },
+      assistantToolRun: {
+        findMany: vi.fn().mockResolvedValue([]),
+        updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+      },
+    };
+    prismaMock.$transaction.mockImplementation(
+      (callback: (client: typeof tx) => unknown) => callback(tx),
+    );
+
+    await expect(
+      createAssistantTurn({
+        adminId: "admin-1",
+        threadId: "thread-1",
+        clientTurnId: "turn-new",
+        message: "Edited old request",
+        supersedesRunId: "run-old",
+        model: "gpt-5.6-luna",
+      }),
+    ).rejects.toThrow("older failed request can no longer be retried");
+
+    expect(tx.assistantRun.updateMany).not.toHaveBeenCalled();
+    expect(tx.assistantRun.create).not.toHaveBeenCalled();
   });
 
   it("only advances summaries monotonically when refreshes resolve out of order", async () => {
