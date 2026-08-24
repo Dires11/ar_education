@@ -9,13 +9,13 @@ import {
   getStudentProfileForAssistantMutation,
   getStudentForAssistant,
   getLinkedGuardianForAssistant,
-  listStudents,
+  searchStudentsForAssistant,
   resolveStudentCommunicationRecipientsData,
 } from "@/lib/data/students";
 import {
   getTutorProfileForAssistantMutation,
   getTutorForAssistant,
-  listTutors,
+  searchTutorsForAssistant,
 } from "@/lib/data/tutors";
 import {
   getSubject,
@@ -1998,17 +1998,17 @@ export async function getAssistantConfirmationCard(input: {
 async function executeStudents(name: string, args: ToolArguments) {
   switch (name) {
     case "search_students": {
-      const result = await listStudents({
-        search: args.query as string | undefined,
+      const result = await searchStudentsForAssistant({
+        query: args.query as string | undefined,
         status: args.status as "ACTIVE" | "PAUSED" | "INACTIVE" | undefined,
         page: Number(args.page),
-        pageSize: Number(args.limit ?? 10),
+        limit: Number(args.limit ?? 10),
       });
       return toolResult({
         total: result.total,
         page: result.page,
-        limit: result.pageSize,
-        hasMore: result.page * result.pageSize < result.total,
+        limit: result.limit,
+        hasMore: result.page * result.limit < result.total,
         students: result.students.map((student) => ({
           id: student.id,
           name: `${student.firstName} ${student.lastName}`,
@@ -2020,6 +2020,9 @@ async function executeStudents(name: string, args: ToolArguments) {
           gradeLevel: student.gradeLevel,
           createdAt: student.createdAt,
           updatedAt: student.updatedAt,
+          guardianTotal: student._count.guardians,
+          hasMoreGuardians:
+            student._count.guardians > student.guardians.length,
           primaryGuardian: student.guardians[0]
             ? {
                 id: student.guardians[0].guardian.id,
@@ -2245,18 +2248,18 @@ async function executeGuardians(name: string, args: ToolArguments) {
 async function executeTutors(name: string, args: ToolArguments) {
   switch (name) {
     case "search_tutors": {
-      const result = await listTutors({
-        search: args.query as string | undefined,
+      const result = await searchTutorsForAssistant({
+        query: args.query as string | undefined,
         status: args.status as "ACTIVE" | "PAUSED" | "INACTIVE" | undefined,
         subjectId: args.subjectId as string | undefined,
         page: Number(args.page),
-        pageSize: Number(args.limit ?? 10),
+        limit: Number(args.limit ?? 10),
       });
       return toolResult({
         total: result.total,
         page: result.page,
-        limit: result.pageSize,
-        hasMore: result.page * result.pageSize < result.total,
+        limit: result.limit,
+        hasMore: result.page * result.limit < result.total,
         tutors: result.tutors.map((tutor) => ({
           id: tutor.id,
           name: `${tutor.firstName} ${tutor.lastName}`,
@@ -2264,6 +2267,8 @@ async function executeTutors(name: string, args: ToolArguments) {
           email: tutor.email,
           phone: tutor.phone,
           hourlyRate: tutor.hourlyRate.toString(),
+          subjectTotal: tutor._count.subjects,
+          hasMoreSubjects: tutor._count.subjects > tutor.subjects.length,
           subjects: tutor.subjects.map((item) => ({
             id: item.subject.id,
             name: item.subject.name,

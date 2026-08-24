@@ -7,6 +7,8 @@ const studentMocks = vi.hoisted(() => ({
   getStudentIdentityForAssistant: vi.fn(),
   getLinkedGuardianForAssistant: vi.fn(),
   resolveStudentCommunicationRecipientsData: vi.fn(),
+  searchStudentsForAssistant: vi.fn(),
+  updateStudentProfile: vi.fn(),
 }));
 const paymentDataMocks = vi.hoisted(() => ({
   getPaymentForAssistantConfirmation: vi.fn(),
@@ -80,6 +82,7 @@ const teamServiceMocks = vi.hoisted(() => ({
 const referenceDataMocks = vi.hoisted(() => ({
   getTutor: vi.fn(),
   getTutorForAssistant: vi.fn(),
+  searchTutorsForAssistant: vi.fn(),
   getSubject: vi.fn(),
   getPackage: vi.fn(),
   getEnrollment: vi.fn(),
@@ -94,7 +97,7 @@ vi.mock("@/lib/data/students", () => ({
   getStudentProfileForAssistantMutation: studentMocks.getStudent,
   getStudentForAssistant: studentMocks.getStudentForAssistant,
   getLinkedGuardianForAssistant: studentMocks.getLinkedGuardianForAssistant,
-  listStudents: vi.fn(),
+  searchStudentsForAssistant: studentMocks.searchStudentsForAssistant,
   resolveStudentCommunicationRecipientsData:
     studentMocks.resolveStudentCommunicationRecipientsData,
 }));
@@ -103,7 +106,7 @@ vi.mock("@/lib/data/sessions", () => sessionDataMocks);
 vi.mock("@/lib/data/tutors", () => ({
   getTutorProfileForAssistantMutation: referenceDataMocks.getTutor,
   getTutorForAssistant: referenceDataMocks.getTutorForAssistant,
-  listTutors: vi.fn(),
+  searchTutorsForAssistant: referenceDataMocks.searchTutorsForAssistant,
 }));
 vi.mock("@/lib/data/subjects", () => ({
   getSubject: referenceDataMocks.getSubject,
@@ -132,7 +135,7 @@ vi.mock("@/lib/services/students", () => ({
   queryStudentDirectory: vi.fn(),
   removeGuardianFromStudent: vi.fn(),
   updateGuardianDetails: vi.fn(),
-  updateStudentProfile: vi.fn(),
+  updateStudentProfile: studentMocks.updateStudentProfile,
   updateStudentStatusById: vi.fn(),
 }));
 
@@ -325,6 +328,140 @@ describe("assistant tool result cards", () => {
     ).rejects.toThrow("disabled");
     expect(teamServiceMocks.getTeamPageForAssistant).not.toHaveBeenCalled();
     expect(teamServiceMocks.inviteTeamMember).not.toHaveBeenCalled();
+  });
+
+  it("updates a student whose stored date of birth is null", async () => {
+    studentMocks.getStudent.mockResolvedValue({
+      id: "student-1",
+      firstName: "Legacy",
+      lastName: "Student",
+      avatarUrl: null,
+      avatarPublicId: null,
+      dob: null,
+      email: null,
+      phone: null,
+      school: null,
+      gradeLevel: null,
+      notes: null,
+    });
+    studentMocks.updateStudentProfile.mockResolvedValue({ id: "student-1" });
+
+    await executeAssistantTool({
+      namespace: "students",
+      name: "update_student",
+      argumentsValue: { id: "student-1", phone: "555-0100" },
+      context: {
+        admin: { id: "admin-1", role: "STAFF" },
+        provenanceValidated: true,
+      },
+    });
+
+    expect(studentMocks.updateStudentProfile).toHaveBeenCalledWith(
+      "student-1",
+      expect.objectContaining({
+        firstName: "Legacy",
+        lastName: "Student",
+        dob: "",
+        phone: "555-0100",
+      }),
+    );
+  });
+
+  it("reports truncation from bounded student and tutor searches", async () => {
+    const createdAt = new Date("2026-01-01T00:00:00.000Z");
+    const updatedAt = new Date("2026-08-01T00:00:00.000Z");
+    studentMocks.searchStudentsForAssistant.mockResolvedValue({
+      total: 1,
+      page: 1,
+      limit: 10,
+      students: [
+        {
+          id: "student-1",
+          firstName: "Maya",
+          lastName: "Chen",
+          status: "ACTIVE",
+          email: null,
+          phone: null,
+          dob: null,
+          school: null,
+          gradeLevel: null,
+          createdAt,
+          updatedAt,
+          _count: { guardians: 3 },
+          guardians: [
+            {
+              guardian: {
+                id: "guardian-1",
+                firstName: "Ana",
+                lastName: "Chen",
+                email: "ana@example.com",
+                phone: "555-0101",
+              },
+            },
+          ],
+        },
+      ],
+    });
+    referenceDataMocks.searchTutorsForAssistant.mockResolvedValue({
+      total: 1,
+      page: 1,
+      limit: 10,
+      tutors: [
+        {
+          id: "tutor-1",
+          firstName: "Theo",
+          lastName: "Grant",
+          status: "ACTIVE",
+          email: "theo@example.com",
+          phone: "555-0102",
+          hourlyRate: { toString: () => "45" },
+          _count: { subjects: 25 },
+          subjects: Array.from({ length: 20 }, (_, index) => ({
+            subject: { id: `subject-${index}`, name: `Subject ${index}` },
+          })),
+        },
+      ],
+    });
+
+    const students = await executeAssistantTool({
+      namespace: "students",
+      name: "search_students",
+      argumentsValue: { query: "Maya" },
+      context: { admin: { id: "admin-1", role: "STAFF" } },
+    });
+    const tutors = await executeAssistantTool({
+      namespace: "tutors",
+      name: "search_tutors",
+      argumentsValue: { query: "Theo" },
+      context: { admin: { id: "admin-1", role: "STAFF" } },
+    });
+
+    expect(students).toMatchObject({
+      data: {
+        students: [
+          {
+            guardianTotal: 3,
+            hasMoreGuardians: true,
+            primaryGuardian: { id: "guardian-1" },
+          },
+        ],
+      },
+    });
+    expect(tutors).toMatchObject({
+      data: {
+        tutors: [
+          {
+            subjectTotal: 25,
+            hasMoreSubjects: true,
+            subjects: expect.any(Array),
+          },
+        ],
+      },
+    });
+    expect(
+      (tutors as { data: { tutors: Array<{ subjects: unknown[] }> } }).data
+        .tutors[0].subjects,
+    ).toHaveLength(20);
   });
 
   it("pins recurring-schedule approvals to the reviewed rule version", async () => {

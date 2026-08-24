@@ -20,6 +20,7 @@ import {
   getTutorProfileForAssistantMutation,
   getTutorPayrollForAssistantData,
   listTutors,
+  searchTutorsForAssistant,
 } from "@/lib/data/tutors";
 
 describe("tutor search", () => {
@@ -74,6 +75,26 @@ describe("tutor search", () => {
     expect(query.select.enrollments.select.student.select).not.toHaveProperty(
       "email",
     );
+  });
+
+  it("caps and counts subjects in assistant tutor search", async () => {
+    await searchTutorsForAssistant({
+      query: "Theo",
+      status: "ACTIVE",
+      subjectId: "subject-1",
+      page: 2,
+      limit: 10,
+    });
+
+    const query = prismaMock.tutor.findMany.mock.calls[0][0];
+    expect(query.skip).toBe(10);
+    expect(query.take).toBe(10);
+    expect(query.select.subjects.take).toBe(20);
+    expect(query.select.subjects.where).toEqual({ subjectId: "subject-1" });
+    expect(query.select.subjects.select).toEqual({
+      subject: { select: { id: true, name: true } },
+    });
+    expect(query.select._count).toEqual({ select: { subjects: true } });
   });
 
   it("preloads tutor mutations without loading enrollment relations", async () => {

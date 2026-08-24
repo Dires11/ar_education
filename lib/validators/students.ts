@@ -53,7 +53,7 @@ export const updateStudentSchema = z.object({
   lastName: z.string().trim().min(1, "Last name is required").max(100),
   avatarUrl: z.string().url("Invalid image URL").max(2_000).optional().or(z.literal("")),
   avatarPublicId: z.string().trim().max(255).optional(),
-  dob: dateSchema,
+  dob: dateSchema.or(z.literal("")),
   email: z.string().trim().email("Invalid email").max(320).optional().or(z.literal("")),
   phone: z.string().trim().max(50).optional(),
   school: z.string().trim().max(200).optional(),

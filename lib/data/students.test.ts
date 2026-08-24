@@ -20,6 +20,7 @@ import {
   getStudentProfileForAssistantMutation,
   queryStudentDirectoryData,
   resolveStudentCommunicationRecipientsData,
+  searchStudentsForAssistant,
   updateLinkedGuardian,
 } from "@/lib/data/students";
 
@@ -58,6 +59,31 @@ describe("student directory data queries", () => {
       expect(call.select).not.toHaveProperty("guardians");
       expect(call.select).not.toHaveProperty("enrollments");
     }
+  });
+
+  it("caps and minimizes guardians in assistant student search", async () => {
+    prismaMock.student.findMany.mockResolvedValue([]);
+    prismaMock.student.count.mockResolvedValue(0);
+
+    await searchStudentsForAssistant({
+      query: "Maya",
+      status: "ACTIVE",
+      page: 2,
+      limit: 10,
+    });
+
+    const query = prismaMock.student.findMany.mock.calls[0][0];
+    expect(query.skip).toBe(10);
+    expect(query.take).toBe(10);
+    expect(query.select.guardians.take).toBe(1);
+    expect(query.select.guardians.select.guardian.select).toEqual({
+      id: true,
+      firstName: true,
+      lastName: true,
+      email: true,
+      phone: true,
+    });
+    expect(query.select._count).toEqual({ select: { guardians: true } });
   });
 
   it("returns a dedicated active-enrollment count for assistant cards", async () => {

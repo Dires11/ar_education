@@ -70,7 +70,7 @@ export async function updateStudentProfile(
   input: UpdateStudentInput
 ) {
   const parsed = updateStudentSchema.parse(input);
-  const dob = parsed.dob ? new Date(parsed.dob) : undefined;
+  const dob = parsed.dob ? new Date(parsed.dob) : null;
   const existing = await getStudent(id);
   if (!existing) throw new Error("Student not found");
   const updated = await updateStudent(id, {

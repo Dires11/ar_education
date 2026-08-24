@@ -70,6 +70,62 @@ export async function listStudents({
   return { students, total, page, pageSize };
 }
 
+export async function searchStudentsForAssistant(input: {
+  query?: string;
+  status?: PersonStatus;
+  page: number;
+  limit: number;
+}) {
+  const where = {
+    ...(input.status && { status: input.status }),
+    ...(input.query ? studentSearchWhere(input.query) : {}),
+  };
+  const [students, total] = await Promise.all([
+    prisma.student.findMany({
+      where,
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        status: true,
+        email: true,
+        phone: true,
+        dob: true,
+        school: true,
+        gradeLevel: true,
+        createdAt: true,
+        updatedAt: true,
+        _count: { select: { guardians: true } },
+        guardians: {
+          select: {
+            guardian: {
+              select: {
+                id: true,
+                firstName: true,
+                lastName: true,
+                email: true,
+                phone: true,
+              },
+            },
+          },
+          orderBy: [{ isPrimary: "desc" }, { guardianId: "asc" }],
+          take: 1,
+        },
+      },
+      orderBy: [{ lastName: "asc" }, { firstName: "asc" }, { id: "asc" }],
+      skip: (input.page - 1) * input.limit,
+      take: input.limit,
+    }),
+    prisma.student.count({ where }),
+  ]);
+  return {
+    students,
+    total,
+    page: input.page,
+    limit: input.limit,
+  };
+}
+
 export type StudentDirectoryDataQuery = {
   query?: string;
   status?: PersonStatus;

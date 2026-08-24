@@ -52,6 +52,60 @@ export async function listTutors({
   return { tutors, total, page, pageSize };
 }
 
+const ASSISTANT_TUTOR_SEARCH_SUBJECT_LIMIT = 20;
+
+export async function searchTutorsForAssistant(input: {
+  query?: string;
+  status?: PersonStatus;
+  subjectId?: string;
+  page: number;
+  limit: number;
+}) {
+  const where = {
+    ...(input.status && { status: input.status }),
+    ...(input.subjectId && {
+      subjects: { some: { subjectId: input.subjectId } },
+    }),
+    ...(input.query && tutorSearchWhere(input.query)),
+  };
+  const [tutors, total] = await Promise.all([
+    prisma.tutor.findMany({
+      where,
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        status: true,
+        email: true,
+        phone: true,
+        hourlyRate: true,
+        _count: { select: { subjects: true } },
+        subjects: {
+          where: input.subjectId ? { subjectId: input.subjectId } : undefined,
+          select: {
+            subject: { select: { id: true, name: true } },
+          },
+          orderBy: [
+            { subject: { name: "asc" } },
+            { subjectId: "asc" },
+          ],
+          take: ASSISTANT_TUTOR_SEARCH_SUBJECT_LIMIT,
+        },
+      },
+      orderBy: [{ lastName: "asc" }, { firstName: "asc" }, { id: "asc" }],
+      skip: (input.page - 1) * input.limit,
+      take: input.limit,
+    }),
+    prisma.tutor.count({ where }),
+  ]);
+  return {
+    tutors,
+    total,
+    page: input.page,
+    limit: input.limit,
+  };
+}
+
 export async function getTutor(id: string) {
   return prisma.tutor.findUnique({
     where: { id },

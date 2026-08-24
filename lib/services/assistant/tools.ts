@@ -138,7 +138,7 @@ const toolSpecs: AssistantToolSpec[] = [
     namespace: "students",
     name: "search_students",
     description:
-      "Search students and guardians by name, contact information, or school. Returns compact profile fields and IDs for resolving a person before a mutation. Never use this for a supplied student ID; use get_student instead. Do not use this tool for directory-wide rankings or superlatives.",
+      "Search students and guardians by name, contact information, or school. Returns compact profile fields, IDs, one primary-guardian preview, and guardian truncation metadata for resolving a person before a mutation. Use get_student to inspect every guardian. Never use this for a supplied student ID; use get_student instead. Do not use this tool for directory-wide rankings or superlatives.",
     schema: searchSchema,
     requiresConfirmation: false,
   },
@@ -238,7 +238,7 @@ const toolSpecs: AssistantToolSpec[] = [
     namespace: "tutors",
     name: "search_tutors",
     description:
-      "Search tutors by name or email, optionally by status or subject ID.",
+      "Search tutors by name or email, optionally by status or subject ID. Returns a bounded subject preview plus subject truncation metadata; use get_tutor for the complete paged subject list.",
     schema: searchSchema.extend({ subjectId: idSchema.optional() }),
     requiresConfirmation: false,
   },
