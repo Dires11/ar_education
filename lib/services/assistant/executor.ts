@@ -19,7 +19,6 @@ import {
 } from "@/lib/data/tutors";
 import {
   getSubject,
-  listSubjects,
   listSubjectsForAssistant,
 } from "@/lib/data/subjects";
 import { getPackage, listPackagesForAssistant } from "@/lib/data/packages";
@@ -183,6 +182,7 @@ const VERSIONED_RECURRENCE_CONFIRMATION_TOOLS = new Set([
   "split_recurring_schedule",
   "end_recurring_schedule",
   "cancel_occurrence",
+  "reschedule_occurrence",
   "delete_recurring_schedule",
 ]);
 const VERSIONED_SESSION_CONFIRMATION_TOOLS = new Set([
@@ -514,7 +514,12 @@ function confirmationSnapshot(args: ToolArguments) {
   );
 }
 
-function confirmedRecurrenceUpdatedAt(args: ToolArguments, ruleId: string) {
+function confirmedRecurrenceUpdatedAt(
+  args: ToolArguments,
+  ruleId: string,
+  confirmationApproved = true,
+) {
+  if (!confirmationApproved) return undefined;
   const version = assistantRecurrenceVersionSchema.safeParse(
     args.__assistantRecurrenceVersion,
   );
@@ -1258,6 +1263,7 @@ function recurrenceResultCard(
     startTime: string;
     durationMinutes: number;
     startsOn: Date;
+    endsOn?: Date | null;
     enrollment?: {
       student: { firstName: string; lastName: string };
       subject: { name: string };
@@ -1265,6 +1271,7 @@ function recurrenceResultCard(
     group?: { name: string; subject: { name: string } } | null;
   },
   subtitle: string,
+  options?: { linkToRule?: boolean },
 ): AssistantResultCard {
   const monthKey = getCalendarMonthKey(
     rule.startsOn,
@@ -1279,6 +1286,14 @@ function recurrenceResultCard(
     : rule.group
       ? `${rule.group.name} · ${rule.group.subject.name}`
       : "Recurring schedule";
+  const hasEnded = Boolean(
+    rule.endsOn &&
+      rule.endsOn.toISOString().slice(0, 10) <
+        getInstantCalendarDateKey(
+          new Date(),
+          getConfiguredCenterTimeZone(),
+        ),
+  );
   return {
     kind: "SESSION",
     entityKey: `recurrence:${rule.id}`,
@@ -1299,7 +1314,10 @@ function recurrenceResultCard(
         icon: "CALENDAR",
       },
     ],
-    href: `/schedule?month=${monthKey}&recurrence=${encodeURIComponent(rule.id)}`,
+    href:
+      options?.linkToRule === false || hasEnded
+        ? `/schedule?month=${monthKey}`
+        : `/schedule?month=${monthKey}&recurrence=${encodeURIComponent(rule.id)}`,
     actionLabel: "View schedule",
     suggestedActions: [],
   };
@@ -2386,7 +2404,7 @@ async function executeCatalog(name: string, args: ToolArguments) {
     }
     case "update_subject": {
       const id = stringValue(args, "id");
-      const subject = (await listSubjects()).find((item) => item.id === id);
+      const subject = await getSubject(id);
       if (!subject) throw new Error("Subject not found");
       const updated = await updateSubjectOffering(id, {
         name: (args.name as string | undefined) ?? subject.name,
@@ -2878,7 +2896,11 @@ async function executeSchedule(
   }
 }
 
-async function executeRecurrence(name: string, args: ToolArguments) {
+async function executeRecurrence(
+  name: string,
+  args: ToolArguments,
+  context: AssistantToolExecutionContext,
+) {
   switch (name) {
     case "list_recurring_schedules": {
       const enrollmentId = args.enrollmentId as string | undefined;
@@ -2968,7 +2990,9 @@ async function executeRecurrence(name: string, args: ToolArguments) {
         return toolResult(
           { ended: true },
           "/schedule",
-          recurrenceResultCard(rule, "Recurring schedule ended"),
+          recurrenceResultCard(rule, "Recurring schedule ended", {
+            linkToRule: false,
+          }),
         );
       });
     }
@@ -2996,6 +3020,11 @@ async function executeRecurrence(name: string, args: ToolArguments) {
         new Date(stringValue(args, "occurrenceFor")),
         new Date(stringValue(args, "newScheduledFor")),
         (args.overrides ?? {}) as never,
+        confirmedRecurrenceUpdatedAt(
+          args,
+          ruleId,
+          context.confirmationApproved,
+        ),
       );
       return resultAfterMutation(
         { rescheduled: true },
@@ -3022,7 +3051,9 @@ async function executeRecurrence(name: string, args: ToolArguments) {
       return mutationToolResult(
         { ruleId, deleted: true },
         "/schedule",
-        recurrenceResultCard(rule, "Recurring schedule deleted"),
+        recurrenceResultCard(rule, "Recurring schedule deleted", {
+          linkToRule: false,
+        }),
       );
     }
     case "set_schedule_color": {
@@ -3559,7 +3590,7 @@ export async function executeAssistantTool(input: {
     case "attendance":
       return executeAttendance(input.name, args);
     case "recurrence":
-      return executeRecurrence(input.name, args);
+      return executeRecurrence(input.name, args, currentContext);
     case "billing":
       return executeBilling(input.name, args, currentContext);
     case "communications":

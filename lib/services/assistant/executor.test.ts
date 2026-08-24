@@ -25,6 +25,9 @@ const enrollmentServiceMocks = vi.hoisted(() => ({
   addDiscountToEnrollment: vi.fn(),
   removeDiscount: vi.fn(),
 }));
+const subjectServiceMocks = vi.hoisted(() => ({
+  updateSubjectOffering: vi.fn(),
+}));
 const sessionServiceMocks = vi.hoisted(() => ({
   cancelSessionById: vi.fn(),
   cancelVirtualOccurrence: vi.fn(),
@@ -38,6 +41,7 @@ const sessionServiceMocks = vi.hoisted(() => ({
   getRecurringSchedulePreview: vi.fn(),
   listRecurrenceRulesForAssistant: vi.fn(),
   markSessionAttendance: vi.fn(),
+  rescheduleVirtualOccurrence: vi.fn(),
   splitRecurrenceRule: vi.fn(),
   updateScheduledSession: vi.fn(),
   updateSessionStatus: vi.fn(),
@@ -133,6 +137,11 @@ vi.mock("@/lib/services/students", () => ({
 }));
 
 vi.mock("@/lib/services/enrollments", () => enrollmentServiceMocks);
+vi.mock("@/lib/services/subjects", () => ({
+  createSubjectOffering: vi.fn(),
+  updateSubjectOffering: subjectServiceMocks.updateSubjectOffering,
+  deleteSubjectOffering: vi.fn(),
+}));
 
 vi.mock("@/lib/services/sessions", () => ({
   cancelSessionById: sessionServiceMocks.cancelSessionById,
@@ -152,7 +161,8 @@ vi.mock("@/lib/services/sessions", () => ({
   listRecurrenceRulesForAssistant:
     sessionServiceMocks.listRecurrenceRulesForAssistant,
   markSessionAttendance: sessionServiceMocks.markSessionAttendance,
-  rescheduleVirtualOccurrence: vi.fn(),
+  rescheduleVirtualOccurrence:
+    sessionServiceMocks.rescheduleVirtualOccurrence,
   splitRecurrenceRule: sessionServiceMocks.splitRecurrenceRule,
   updateEnrollmentRecurrenceColor: vi.fn(),
   updateScheduledSession: sessionServiceMocks.updateScheduledSession,
@@ -356,6 +366,89 @@ describe("assistant tool result cards", () => {
     expect(sessionServiceMocks.deleteRecurringSchedule).toHaveBeenCalledWith(
       "rule-1",
       updatedAt,
+    );
+  });
+
+  it("pins an approved occurrence reschedule to the reviewed rule version", async () => {
+    const updatedAt = new Date("2026-08-23T12:00:00.000Z");
+    sessionDataMocks.getRecurrenceRuleForAssistant.mockResolvedValue({
+      id: "rule-1",
+      updatedAt,
+      dayOfWeek: 1,
+      startTime: "15:30",
+      durationMinutes: 60,
+      startsOn: new Date("2026-08-24T00:00:00.000Z"),
+      enrollment: null,
+      group: null,
+    });
+
+    const confirmed = await resolveAssistantConfirmationArguments({
+      namespace: "recurrence",
+      name: "reschedule_occurrence",
+      argumentsValue: {
+        ruleId: "rule-1",
+        occurrenceFor: "2026-08-24T15:30:00.000Z",
+        newScheduledFor: "2026-08-25T15:30:00.000Z",
+        overrides: {},
+      },
+    });
+
+    await executeAssistantTool({
+      namespace: "recurrence",
+      name: "reschedule_occurrence",
+      argumentsValue: confirmed,
+      context: {
+        admin: { id: "admin-1", role: "STAFF" },
+        provenanceValidated: true,
+        confirmationApproved: true,
+      },
+    });
+
+    expect(
+      sessionServiceMocks.rescheduleVirtualOccurrence,
+    ).toHaveBeenCalledWith(
+      "rule-1",
+      new Date("2026-08-24T15:30:00.000Z"),
+      new Date("2026-08-25T15:30:00.000Z"),
+      {},
+      updatedAt,
+    );
+  });
+
+  it("keeps explicit routine occurrence reschedules immediate", async () => {
+    sessionDataMocks.getRecurrenceRuleForAssistant.mockResolvedValue({
+      id: "rule-1",
+      dayOfWeek: 1,
+      startTime: "15:30",
+      durationMinutes: 60,
+      startsOn: new Date("2026-08-24T00:00:00.000Z"),
+      enrollment: null,
+      group: null,
+    });
+
+    await executeAssistantTool({
+      namespace: "recurrence",
+      name: "reschedule_occurrence",
+      argumentsValue: {
+        ruleId: "rule-1",
+        occurrenceFor: "2026-08-24T15:30:00.000Z",
+        newScheduledFor: "2026-08-25T15:30:00.000Z",
+        overrides: {},
+      },
+      context: {
+        admin: { id: "admin-1", role: "STAFF" },
+        provenanceValidated: true,
+      },
+    });
+
+    expect(
+      sessionServiceMocks.rescheduleVirtualOccurrence,
+    ).toHaveBeenCalledWith(
+      "rule-1",
+      new Date("2026-08-24T15:30:00.000Z"),
+      new Date("2026-08-25T15:30:00.000Z"),
+      {},
+      undefined,
     );
   });
 
@@ -1794,6 +1887,81 @@ describe("assistant tool result cards", () => {
       data: { id: "rule-1" },
       card: { entityKey: "recurrence:rule-1", title: "Maya Chen · Math" },
     });
+  });
+
+  it("updates a subject through the exact lookup instead of a directory scan", async () => {
+    referenceDataMocks.getSubject.mockResolvedValue({
+      id: "subject-1",
+      name: "Mathematics",
+      description: "Current description",
+    });
+    subjectServiceMocks.updateSubjectOffering.mockResolvedValue({
+      id: "subject-1",
+      name: "Advanced Mathematics",
+      description: "Current description",
+    });
+
+    await executeAssistantTool({
+      namespace: "catalog",
+      name: "update_subject",
+      argumentsValue: { id: "subject-1", name: "Advanced Mathematics" },
+      context: {
+        admin: { id: "admin-1", role: "STAFF" },
+        provenanceValidated: true,
+      },
+    });
+
+    expect(referenceDataMocks.getSubject).toHaveBeenCalledWith("subject-1");
+    expect(subjectServiceMocks.updateSubjectOffering).toHaveBeenCalledWith(
+      "subject-1",
+      {
+        name: "Advanced Mathematics",
+        description: "Current description",
+      },
+    );
+  });
+
+  it("does not emit a broken modal target after ending a recurrence", async () => {
+    const updatedAt = new Date("2026-08-23T12:00:00.000Z");
+    sessionDataMocks.getRecurrenceRuleForAssistant.mockResolvedValue({
+      id: "rule-1",
+      updatedAt,
+      dayOfWeek: 1,
+      startTime: "15:30",
+      durationMinutes: 60,
+      startsOn: new Date("2026-08-10T00:00:00.000Z"),
+      enrollment: {
+        student: { firstName: "Maya", lastName: "Chen" },
+        subject: { name: "Math" },
+      },
+      group: null,
+    });
+
+    const result = await executeAssistantTool({
+      namespace: "recurrence",
+      name: "end_recurring_schedule",
+      argumentsValue: {
+        ruleId: "rule-1",
+        occurrenceFor: "2026-08-24T15:30:00.000Z",
+        __assistantRecurrenceVersion: {
+          ruleId: "rule-1",
+          updatedAt: updatedAt.toISOString(),
+        },
+      },
+      context: {
+        admin: { id: "admin-1", role: "STAFF" },
+        provenanceValidated: true,
+        confirmationApproved: true,
+      },
+    });
+
+    expect(result).toMatchObject({
+      card: {
+        entityKey: "recurrence:rule-1",
+        href: "/schedule?month=2026-08",
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain("recurrence=");
   });
 
   it("previews schedule capacity and recurrence proposals without writing", async () => {

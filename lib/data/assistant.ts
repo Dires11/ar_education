@@ -7,6 +7,7 @@ import {
   AssistantToolRunStatus,
   Prisma,
 } from "@/generated/prisma";
+import { isAssistantEntityReference } from "@/lib/validators/assistant";
 
 const ACTIVE_RUN_STATUSES: AssistantRunStatus[] = [
   "RUNNING",
@@ -15,6 +16,12 @@ const ACTIVE_RUN_STATUSES: AssistantRunStatus[] = [
 // Keep this above the route's five-minute execution window so a legitimate
 // long-running response cannot be reclaimed by a second browser tab.
 export const ASSISTANT_RUN_STALE_AFTER_MS = 6 * 60 * 1000;
+export const ASSISTANT_SUMMARY_RETAIN_RECENT = 30;
+// A turn's user message is persisted before context is loaded. Keeping one
+// extra message bridges that in-flight turn until the completion summary has
+// advanced through the previous window.
+export const ASSISTANT_CONTEXT_MESSAGE_LIMIT =
+  ASSISTANT_SUMMARY_RETAIN_RECENT + 1;
 
 async function expireAssistantRunsInTransaction(
   tx: Prisma.TransactionClient,
@@ -346,7 +353,7 @@ export async function getAssistantThread(
 export async function getAssistantContext(
   adminId: string,
   threadId: string,
-  take = 30,
+  take = ASSISTANT_CONTEXT_MESSAGE_LIMIT,
 ) {
   const thread = await prisma.assistantThread.findFirst({
     where: { id: threadId, adminId },
@@ -452,9 +459,7 @@ function assistantResultEntityKey(result: Prisma.JsonValue | null) {
   const card = result.card;
   if (!card || typeof card !== "object" || Array.isArray(card)) return null;
   const entityKey = card.entityKey;
-  return typeof entityKey === "string" &&
-    entityKey.length <= 256 &&
-    /^[A-Za-z][A-Za-z0-9_-]*:\S+$/.test(entityKey)
+  return isAssistantEntityReference(entityKey)
     ? entityKey
     : null;
 }
@@ -462,7 +467,7 @@ function assistantResultEntityKey(result: Prisma.JsonValue | null) {
 export async function getAssistantSummarySource(
   adminId: string,
   threadId: string,
-  retainRecent = 20,
+  retainRecent = ASSISTANT_SUMMARY_RETAIN_RECENT,
 ) {
   const maxSummaryBatch = 40;
   const thread = await prisma.assistantThread.findFirst({
@@ -475,7 +480,7 @@ export async function getAssistantSummarySource(
       },
     },
   });
-  if (!thread || thread._count.messages <= 40) return null;
+  if (!thread || thread._count.messages <= retainRecent) return null;
 
   const summarizeThrough = Math.min(
     thread._count.messages - retainRecent,
@@ -526,6 +531,34 @@ export async function getAssistantSummarySource(
 function threadTitle(message: string) {
   const compact = message.replace(/\s+/g, " ").trim();
   return compact.length > 64 ? `${compact.slice(0, 61)}…` : compact;
+}
+
+async function replayAssistantTurnAfterUniqueRace(
+  adminId: string,
+  clientTurnId: string,
+) {
+  const run = await prisma.assistantRun.findUnique({
+    where: { clientTurnId },
+    include: {
+      thread: true,
+      messages: true,
+      toolRuns: true,
+    },
+  });
+  if (!run || run.thread.adminId !== adminId || run.thread.archivedAt) {
+    throw new Error("Assistant request identifier is unavailable");
+  }
+  return {
+    thread: run.thread,
+    run,
+    duplicate: true,
+    messageCount: await prisma.assistantMessage.count({
+      where: {
+        threadId: run.threadId,
+        OR: [{ runId: null }, { run: { supersededAt: null } }],
+      },
+    }),
+  };
 }
 
 export async function createAssistantTurn(input: {
@@ -725,6 +758,15 @@ export async function createAssistantTurn(input: {
       error.code === "P2034"
     ) {
       throw new Error("This conversation already has an active request");
+    }
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2002"
+    ) {
+      return replayAssistantTurnAfterUniqueRace(
+        input.adminId,
+        input.clientTurnId,
+      );
     }
     throw error;
   }

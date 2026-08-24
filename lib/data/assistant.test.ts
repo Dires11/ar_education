@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { Prisma } from "@/generated/prisma";
 
 const prismaMock = vi.hoisted(() => ({
   assistantThread: {
@@ -9,7 +10,8 @@ const prismaMock = vi.hoisted(() => ({
   assistantToolRun: {
     upsert: vi.fn(),
   },
-  assistantMessage: { findMany: vi.fn() },
+  assistantRun: { findUnique: vi.fn() },
+  assistantMessage: { findMany: vi.fn(), count: vi.fn() },
   $transaction: vi.fn(),
 }));
 
@@ -163,6 +165,14 @@ describe("assistant persistence guarantees", () => {
                       card: { entityKey: "student:student-42" },
                     },
                   },
+                  {
+                    result: {
+                      card: {
+                        entityKey:
+                          "payment-reminder:enrollment-1:2026-08",
+                      },
+                    },
+                  },
                 ],
               }
             : null,
@@ -175,7 +185,10 @@ describe("assistant persistence guarantees", () => {
       summarizeThrough: 40,
       messages: [
         expect.objectContaining({
-          entityKeys: ["student:student-42"],
+          entityKeys: [
+            "student:student-42",
+            "payment-reminder:enrollment-1:2026-08",
+          ],
         }),
         ...Array.from({ length: 39 }, () => expect.any(Object)),
       ],
@@ -193,6 +206,59 @@ describe("assistant persistence guarantees", () => {
               }),
             },
           },
+        }),
+      }),
+    );
+  });
+
+  it.each([
+    { count: 30, summarizeThrough: null },
+    { count: 31, summarizeThrough: 1 },
+    { count: 40, summarizeThrough: 10 },
+    { count: 41, summarizeThrough: 11 },
+  ])(
+    "keeps summary coverage aligned at the $count-message boundary",
+    async ({ count, summarizeThrough }) => {
+      prismaMock.assistantThread.findFirst.mockResolvedValue({
+        contextSummary: null,
+        summarizedMessageCount: 0,
+        _count: { messages: count },
+      });
+      prismaMock.assistantMessage.findMany.mockResolvedValue([]);
+
+      const source = await getAssistantSummarySource(
+        "admin-1",
+        "thread-1",
+      );
+
+      if (summarizeThrough === null) {
+        expect(source).toBeNull();
+        expect(prismaMock.assistantMessage.findMany).not.toHaveBeenCalled();
+      } else {
+        expect(source).toMatchObject({ summarizeThrough });
+        expect(prismaMock.assistantMessage.findMany).toHaveBeenCalledWith(
+          expect.objectContaining({
+            skip: 0,
+            take: summarizeThrough,
+          }),
+        );
+      }
+    },
+  );
+
+  it("keeps one in-flight user message beyond the summarized recent window", async () => {
+    prismaMock.assistantThread.findFirst.mockResolvedValue({
+      contextSummary: "Earlier summary",
+      _count: { runs: 0 },
+      messages: [],
+    });
+
+    await getAssistantContext("admin-1", "thread-1");
+
+    expect(prismaMock.assistantThread.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        select: expect.objectContaining({
+          messages: expect.objectContaining({ take: 31 }),
         }),
       }),
     );
@@ -321,6 +387,98 @@ describe("assistant persistence guarantees", () => {
     expect(prismaMock.$transaction).toHaveBeenCalledWith(expect.any(Function), {
       isolationLevel: "Serializable",
     });
+  });
+
+  it("replays the winning run when identical client turns race on the unique key", async () => {
+    const thread = {
+      id: "thread-1",
+      adminId: "admin-1",
+      archivedAt: null,
+    };
+    const winningRun = {
+      id: "run-1",
+      threadId: thread.id,
+      clientTurnId: "turn-1",
+      status: "RUNNING",
+      thread,
+      messages: [{ id: "message-1", role: "USER" }],
+      toolRuns: [],
+    };
+    prismaMock.$transaction.mockRejectedValueOnce(
+      new Prisma.PrismaClientKnownRequestError(
+        "Unique constraint failed on clientTurnId",
+        {
+          code: "P2002",
+          clientVersion: "test",
+          meta: { target: ["clientTurnId"] },
+        },
+      ),
+    );
+    prismaMock.assistantRun.findUnique.mockResolvedValue(winningRun);
+    prismaMock.assistantMessage.count.mockResolvedValue(1);
+
+    await expect(
+      createAssistantTurn({
+        adminId: "admin-1",
+        threadId: "thread-1",
+        clientTurnId: "turn-1",
+        message: "Submit once",
+        model: "gpt-5.6-luna",
+      }),
+    ).resolves.toEqual({
+      thread,
+      run: winningRun,
+      duplicate: true,
+      messageCount: 1,
+    });
+    expect(prismaMock.assistantRun.findUnique).toHaveBeenCalledWith({
+      where: { clientTurnId: "turn-1" },
+      include: {
+        thread: true,
+        messages: true,
+        toolRuns: true,
+      },
+    });
+    expect(prismaMock.assistantMessage.count).toHaveBeenCalledWith({
+      where: {
+        threadId: "thread-1",
+        OR: [{ runId: null }, { run: { supersededAt: null } }],
+      },
+    });
+  });
+
+  it("does not replay a raced client turn owned by another administrator", async () => {
+    prismaMock.$transaction.mockRejectedValueOnce(
+      new Prisma.PrismaClientKnownRequestError(
+        "Unique constraint failed on clientTurnId",
+        {
+          code: "P2002",
+          clientVersion: "test",
+          meta: { target: ["clientTurnId"] },
+        },
+      ),
+    );
+    prismaMock.assistantRun.findUnique.mockResolvedValue({
+      id: "run-other",
+      threadId: "thread-other",
+      thread: {
+        id: "thread-other",
+        adminId: "admin-other",
+        archivedAt: null,
+      },
+      messages: [],
+      toolRuns: [],
+    });
+
+    await expect(
+      createAssistantTurn({
+        adminId: "admin-1",
+        clientTurnId: "turn-shared",
+        message: "Submit once",
+        model: "gpt-5.6-luna",
+      }),
+    ).rejects.toThrow("identifier is unavailable");
+    expect(prismaMock.assistantMessage.count).not.toHaveBeenCalled();
   });
 
   it("restarts a failed client turn only when it never reached a tool", async () => {

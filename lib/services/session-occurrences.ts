@@ -124,6 +124,7 @@ export async function rescheduleVirtualOccurrence(
   originalScheduledFor: Date,
   newScheduledFor: Date,
   overrides: { durationMinutes?: number; room?: string | null },
+  expectedUpdatedAt?: Date,
 ) {
   const rule = await getRecurrenceRuleWithParticipants(ruleId);
   if (!rule) throw new Error("Recurrence rule not found");
@@ -160,5 +161,6 @@ export async function rescheduleVirtualOccurrence(
       recurrenceRuleId: ruleId,
     },
     target.attendances,
+    expectedUpdatedAt ? { ruleId, updatedAt: expectedUpdatedAt } : undefined,
   );
 }

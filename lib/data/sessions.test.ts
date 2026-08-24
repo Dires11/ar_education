@@ -10,6 +10,7 @@ const prismaMock = vi.hoisted(() => ({
 vi.mock("@/lib/prisma", () => ({ prisma: prismaMock }));
 
 import {
+  createSessionWithAttendances,
   deleteRecurringScheduleData,
   deleteSession,
   getGroupRecurrenceRulesForMonth,
@@ -129,6 +130,44 @@ describe("assistant recurrence lookup", () => {
     expect(tx.$queryRaw).toHaveBeenCalledTimes(1);
     expect(tx.session.deleteMany).not.toHaveBeenCalled();
     expect(tx.recurrenceRule.delete).not.toHaveBeenCalled();
+  });
+
+  it("locks and rejects a stale recurrence before creating a rescheduled occurrence", async () => {
+    const tx = {
+      $queryRaw: vi
+        .fn()
+        .mockResolvedValue([
+          { updatedAt: new Date("2026-08-23T13:00:00.000Z") },
+        ]),
+      session: { create: vi.fn() },
+      sessionAttendance: { createMany: vi.fn() },
+    };
+    prismaMock.$transaction.mockImplementationOnce(
+      (callback: (client: typeof tx) => unknown) => callback(tx),
+    );
+
+    await expect(
+      createSessionWithAttendances(
+        {
+          tutorId: "tutor-1",
+          subjectId: "subject-1",
+          scheduledFor: new Date("2026-08-25T15:30:00.000Z"),
+          durationMinutes: 60,
+          recurrenceRuleId: "rule-1",
+          recurrenceOccurrenceFor: new Date(
+            "2026-08-24T15:30:00.000Z",
+          ),
+        },
+        [{ studentId: "student-1", enrollmentId: "enrollment-1" }],
+        {
+          ruleId: "rule-1",
+          updatedAt: new Date("2026-08-23T12:00:00.000Z"),
+        },
+      ),
+    ).rejects.toThrow("changed after approval");
+    expect(tx.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(tx.session.create).not.toHaveBeenCalled();
+    expect(tx.sessionAttendance.createMany).not.toHaveBeenCalled();
   });
 
   it("can include ended group rules for historical inspection", async () => {

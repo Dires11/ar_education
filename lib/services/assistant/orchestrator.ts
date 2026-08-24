@@ -63,7 +63,10 @@ import { ASSISTANT_MODEL } from "@/lib/services/assistant/config";
 import { classifyFailedAssistantRun } from "@/lib/services/assistant/recovery";
 import { parseAssistantAttachmentMetadata } from "@/lib/services/assistant/dto";
 import { ExternalMutationOutcomeUnknownError } from "@/lib/utils/email-errors";
-import { normalizeAssistantResultCard } from "@/lib/validators/assistant";
+import {
+  isAssistantEntityReference,
+  normalizeAssistantResultCard,
+} from "@/lib/validators/assistant";
 
 const MAX_TOOL_CALLS = 12;
 const CONFIRMATION_TTL_MS = 24 * 60 * 60 * 1000;
@@ -201,7 +204,7 @@ function formatEntityReferenceHistoryNote(
     const card = normalizeAssistantResultCard(
       (result as Record<string, unknown>).card,
     );
-    if (!card || !/^[a-z-]+:[A-Za-z0-9_-]{1,128}$/.test(card.entityKey)) {
+    if (!card || !isAssistantEntityReference(card.entityKey)) {
       return [];
     }
     return [card.entityKey];

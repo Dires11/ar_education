@@ -218,6 +218,22 @@ export const assistantResultCardSchema = z.object({
     .default([]),
 });
 
+const assistantEntityReferenceSchema = z
+  .string()
+  .trim()
+  .max(160)
+  .regex(
+    /^[A-Za-z][A-Za-z0-9_-]*(?::[A-Za-z0-9@._+-]{1,128})+$/,
+    "Invalid assistant entity reference",
+  );
+
+export function isAssistantEntityReference(
+  value: unknown,
+): value is string {
+  const parsed = assistantEntityReferenceSchema.safeParse(value);
+  return parsed.success && parsed.data === value;
+}
+
 export type AssistantTurnInput = z.input<typeof assistantTurnSchema>;
 export type AssistantDecisionInput = z.infer<typeof assistantDecisionSchema>;
 export type AssistantAttachmentInput = z.infer<
