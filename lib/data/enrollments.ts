@@ -30,6 +30,7 @@ export async function searchEnrollmentsForAssistant(filters: {
   studentId?: string;
   tutorId?: string;
   status?: EnrollmentStatus;
+  page: number;
   limit: number;
 }) {
   const where = {
@@ -59,7 +60,8 @@ export async function searchEnrollmentsForAssistant(filters: {
         subject: { select: { id: true, name: true } },
         group: { select: { id: true, name: true } },
       },
-      orderBy: { createdAt: "desc" },
+      orderBy: [{ createdAt: "desc" }, { id: "asc" }],
+      skip: (filters.page - 1) * filters.limit,
       take: filters.limit,
     }),
     prisma.enrollment.count({ where }),
@@ -67,8 +69,9 @@ export async function searchEnrollmentsForAssistant(filters: {
   return {
     enrollments,
     total,
+    page: filters.page,
     limit: filters.limit,
-    hasMore: total > enrollments.length,
+    hasMore: filters.page * filters.limit < total,
   };
 }
 

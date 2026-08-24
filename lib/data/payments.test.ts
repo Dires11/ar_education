@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const prismaMock = vi.hoisted(() => ({
   enrollment: {
+    aggregate: vi.fn(),
     count: vi.fn(),
     findMany: vi.fn(),
   },
@@ -67,6 +68,9 @@ describe("payment persistence", () => {
   it("pages subscription enrollments and only loads payment coverage in the requested window", async () => {
     prismaMock.enrollment.count.mockResolvedValue(250);
     prismaMock.enrollment.findMany.mockResolvedValue([{ id: "enrollment-101" }]);
+    prismaMock.enrollment.aggregate.mockResolvedValue({
+      _min: { startDate: new Date("2024-04-15T00:00:00.000Z") },
+    });
     prismaMock.$transaction.mockImplementation((queries: Promise<unknown>[]) =>
       Promise.all(queries),
     );
@@ -83,6 +87,7 @@ describe("payment persistence", () => {
       page: 2,
       limit: 100,
       hasMore: true,
+      oldestApplicableStartDate: new Date("2024-04-15T00:00:00.000Z"),
     });
     expect(prismaMock.enrollment.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -98,6 +103,13 @@ describe("payment persistence", () => {
         }),
       }),
     );
+    expect(prismaMock.enrollment.aggregate).toHaveBeenCalledWith({
+      where: {
+        status: "ACTIVE",
+        package: { type: "MONTHLY" },
+      },
+      _min: { startDate: true },
+    });
   });
 
   it("returns an explicit continuation signal for payment history", async () => {

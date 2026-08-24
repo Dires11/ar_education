@@ -123,7 +123,7 @@ import {
   getEmailDeliveryConfirmation,
 } from "@/lib/services/emails";
 import {
-  getTeamPageData,
+  getTeamAdminForAssistant,
   getPendingTeamInvitation,
   getTeamPageForAssistant,
   inviteTeamMember,
@@ -147,6 +147,7 @@ import {
   getConfiguredCenterTimeZone,
 } from "@/lib/services/session-dates";
 import { formatCalendarDate, formatDateTime } from "@/lib/utils/dates";
+import { DeliveryOutcomeUnknownError } from "@/lib/utils/email-errors";
 import { getInstantCalendarDateKey } from "@/lib/utils/time-zone";
 import {
   normalizeAssistantResultCard,
@@ -1768,9 +1769,10 @@ export async function getAssistantConfirmationCard(input: {
           })
         : undefined;
     }
-    const team = await getTeamPageData();
     const adminId = value("adminId");
-    const admin = team.admins.find((item) => item.id === adminId);
+    const admin = adminId
+      ? await getTeamAdminForAssistant(adminId)
+      : undefined;
     if (!admin) return undefined;
     return teamResultCard({
       entityKey: `team-admin:${admin.id}`,
@@ -2164,6 +2166,7 @@ async function executeCatalog(name: string, args: ToolArguments) {
       return toolResult(
         await listSubjectsForAssistant({
           id: args.id as string | undefined,
+          page: Number(args.page),
           limit: Number(args.limit),
         }),
         "/subjects",
@@ -2206,6 +2209,7 @@ async function executeCatalog(name: string, args: ToolArguments) {
     case "list_packages": {
       const result = await listPackagesForAssistant({
         activeOnly: Boolean(args.activeOnly),
+        page: Number(args.page),
         limit: Number(args.limit),
       });
       return toolResult(
@@ -2321,6 +2325,7 @@ async function executeEnrollments(name: string, args: ToolArguments) {
           studentId: args.studentId as string | undefined,
           tutorId: args.tutorId as string | undefined,
           status: args.status as never,
+          page: Number(args.page),
           limit: Number(args.limit ?? 20),
         }),
         "/enrollments",
@@ -2445,6 +2450,7 @@ async function executeEnrollments(name: string, args: ToolArguments) {
           groupId: args.groupId as string | undefined,
           tutorId: args.tutorId as string | undefined,
           subjectId: args.subjectId as string | undefined,
+          page: Number(args.page),
           limit: Number(args.limit),
         }),
         "/enrollments",
@@ -2937,23 +2943,38 @@ async function executeBilling(
       ) {
         throw new Error("The payment reminder batch changed after approval");
       }
+      const results: Array<{
+        enrollmentId: string;
+        month: string;
+        success: boolean;
+      }> = [];
       for (const [index, reminder] of reminders.entries()) {
-        await sendPaymentReminderEmail(
-          reminder.enrollmentId,
-          reminder.month,
-          context.idempotencyKey
-            ? `${context.idempotencyKey}:${index}`
-            : undefined,
-          deliveries[index].digest,
-        );
+        try {
+          await sendPaymentReminderEmail(
+            reminder.enrollmentId,
+            reminder.month,
+            context.idempotencyKey
+              ? `${context.idempotencyKey}:${index}`
+              : undefined,
+            deliveries[index].digest,
+          );
+          results.push({ ...reminder, success: true });
+        } catch (error) {
+          if (error instanceof DeliveryOutcomeUnknownError) throw error;
+          results.push({ ...reminder, success: false });
+        }
       }
+      const sent = results.filter((result) => result.success).length;
+      const failed = results.length - sent;
       return mutationToolResult(
-        { sent: reminders.length },
+        { sent, failed, results },
         "/payments",
         emailResultCard({
           entityKey: `payment-reminder-batch:${reminderConfirmation.digest}`,
-          title: `${reminders.length} payment reminders sent`,
-          subtitle: "Reminder batch completed",
+          title: `${sent} payment reminder${sent === 1 ? "" : "s"} sent`,
+          subtitle: failed
+            ? `${failed} reminder${failed === 1 ? "" : "s"} failed`
+            : "Reminder batch completed",
           recipientSummary: reminderConfirmation.recipientSummary,
           subject: reminderConfirmation.subject,
           messagePreview: reminderConfirmation.bodyPreview,
@@ -2992,7 +3013,10 @@ async function executeCommunications(
       );
     case "list_email_templates": {
       return toolResult(
-        await listEmailTemplatesForAssistant(Number(args.limit)),
+        await listEmailTemplatesForAssistant({
+          page: Number(args.page),
+          limit: Number(args.limit),
+        }),
         "/emails",
       );
     }
@@ -3144,9 +3168,7 @@ async function executeTeam(
     }
     case "update_team_role": {
       const adminId = stringValue(args, "adminId");
-      const member = (await getTeamPageData()).admins.find(
-        (item) => item.id === adminId,
-      );
+      const member = await getTeamAdminForAssistant(adminId);
       if (!member) throw new Error("Team member not found");
       const role = args.role as "OWNER" | "STAFF";
       await updateTeamMemberRole(
@@ -3168,9 +3190,7 @@ async function executeTeam(
     }
     case "remove_team_member": {
       const adminId = stringValue(args, "adminId");
-      const member = (await getTeamPageData()).admins.find(
-        (item) => item.id === adminId,
-      );
+      const member = await getTeamAdminForAssistant(adminId);
       if (!member) throw new Error("Team member not found");
       const result = await removeTeamMember(context.admin.id, adminId);
       return mutationToolResult(

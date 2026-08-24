@@ -135,6 +135,7 @@ export const ASSISTANT_ROUTING_EVAL_CASES: AssistantRoutingEvalCase[] = [
       "Send the payment reminder for enrollment ID enrollment_123 for 2026-08.",
     expectedNamespace: "billing",
     expectedTool: "send_payment_reminder",
+    acceptableAlternativeTools: ["billing.send_payment_reminders"],
     requiredLookupGroups: [["enrollments.get_enrollment"]],
     expectedConfirmation: true,
   },

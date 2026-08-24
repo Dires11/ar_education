@@ -10,6 +10,8 @@ const prismaMock = vi.hoisted(() => ({
 vi.mock("@/lib/prisma", () => ({ prisma: prismaMock }));
 
 import {
+  getGroupRecurrenceRulesForMonth,
+  getRecurrenceRulesForMonth,
   getSessionForAssistant,
   getSessionParticipantsForAssistant,
   getSessionsForAssistantMonth,
@@ -134,6 +136,27 @@ describe("assistant recurrence lookup", () => {
     expect(prismaMock.session.findMany.mock.calls[1][0]).toMatchObject({
       take: 5_001,
       orderBy: { scheduledFor: "asc" },
+    });
+  });
+
+  it("bounds recurrence rules and nested group membership for assistant callers", async () => {
+    const start = new Date("2026-08-01T00:00:00.000Z");
+    const end = new Date("2026-08-31T00:00:00.000Z");
+
+    await getRecurrenceRulesForMonth(start, end, 1_000);
+    expect(prismaMock.recurrenceRule.findMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({ take: 1_001 }),
+    );
+
+    await getGroupRecurrenceRulesForMonth(start, end, {
+      rules: 1_000,
+      groupEnrollments: 100,
+    });
+    const groupQuery = prismaMock.recurrenceRule.findMany.mock.calls.at(-1)?.[0];
+    expect(groupQuery.take).toBe(1_001);
+    expect(groupQuery.include.group.include.enrollments).toMatchObject({
+      orderBy: { id: "asc" },
+      take: 101,
     });
   });
 

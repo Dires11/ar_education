@@ -41,6 +41,7 @@ export async function listGroupsForAssistant(input: {
   groupId?: string;
   tutorId?: string;
   subjectId?: string;
+  page: number;
   limit: number;
 }) {
   const where = {
@@ -72,13 +73,16 @@ export async function listGroupsForAssistant(input: {
           take: 20,
         },
       },
-      orderBy: { name: "asc" },
+      orderBy: [{ name: "asc" }, { id: "asc" }],
+      skip: (input.page - 1) * input.limit,
       take: input.limit,
     }),
   ]);
   return {
     total,
-    hasMore: total > groups.length,
+    page: input.page,
+    limit: input.limit,
+    hasMore: input.page * input.limit < total,
     groups: groups.map((group) => ({
       id: group.id,
       name: group.name,

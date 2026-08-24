@@ -696,10 +696,19 @@ async function runModelLoop(input: {
       return undefined;
     })();
     const records = Array.isArray(arrayValue) ? arrayValue : [];
-    const totalValue =
-      data && typeof data === "object" && !Array.isArray(data)
-        ? (data as Record<string, unknown>).total
-        : undefined;
+    const totalValue = (() => {
+      if (!data || typeof data !== "object" || Array.isArray(data)) {
+        return undefined;
+      }
+      const record = data as Record<string, unknown>;
+      if (key === "team.get_team") {
+        const adminTotal = record.adminTotal;
+        const invitationTotal = record.invitationTotal;
+        return (typeof adminTotal === "number" ? adminTotal : 0) +
+          (typeof invitationTotal === "number" ? invitationTotal : 0);
+      }
+      return record.total;
+    })();
     return {
       records,
       total: typeof totalValue === "number" ? totalValue : records.length,
@@ -730,9 +739,10 @@ async function runModelLoop(input: {
       "recurrence.list_recurring_schedules": "recurrence",
     };
     if (key === "billing.get_upcoming_dues") {
-      return typeof record.enrollmentId === "string"
-        ? [{ kind: "enrollment", id: record.enrollmentId }]
-        : [];
+      // Due rows grant only the enrollment/month pair used by the bulk
+      // reminder tool. They are not an exact enrollment lookup and must not
+      // authorize pricing, status, discount, or schedule mutations.
+      return [];
     }
     if (key === "team.get_team") {
       const kind = record.__assistantEntityKind;

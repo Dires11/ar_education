@@ -243,7 +243,10 @@ describe("student directory data queries", () => {
         skip: 100,
         take: 100,
         select: expect.objectContaining({
-          guardians: expect.objectContaining({ take: 1 }),
+          guardians: expect.objectContaining({
+            where: { isPrimary: true },
+            take: 1,
+          }),
         }),
       }),
     );

@@ -223,6 +223,7 @@ export async function resolveStudentCommunicationRecipientsData(input: {
         status: true,
         email: true,
         guardians: {
+          where: { isPrimary: true },
           select: {
             guardian: {
               select: {

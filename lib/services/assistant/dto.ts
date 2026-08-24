@@ -109,6 +109,7 @@ const ALLOWED_ASSISTANT_FIELDS = new Set([
   "billable",
   "total",
   "count",
+  "candidateTotal",
   "totalSessions",
   "totalPlanned",
   "proposedSessions",

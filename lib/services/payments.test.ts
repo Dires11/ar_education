@@ -146,6 +146,7 @@ describe("assistant payment due coverage", () => {
       page: 1,
       limit: 25,
       hasMore: false,
+      oldestApplicableStartDate: new Date("2024-04-15T00:00:00.000Z"),
       enrollments: [
         {
           id: "enrollment-quarterly",
@@ -187,6 +188,10 @@ describe("assistant payment due coverage", () => {
       "2026-04",
       "2026-07",
     ]);
+    expect(result).toMatchObject({
+      oldestApplicableMonth: "2024-04",
+      earlierHistoryAvailable: true,
+    });
     expect(result.dues[0]).toMatchObject({
       amount: "300.00",
       isOverdue: true,

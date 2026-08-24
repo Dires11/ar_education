@@ -19,6 +19,7 @@ vi.mock("@clerk/nextjs/server", () => ({
 
 import {
   getPendingTeamInvitation,
+  getTeamAdminForAssistant,
   getTeamPageData,
   getTeamPageForAssistant,
   removeTeamMember,
@@ -128,5 +129,33 @@ describe("team removal", () => {
       limit: 100,
       offset: 0,
     });
+  });
+
+  it("loads one exact admin without scanning Clerk invitations or the team", async () => {
+    dataMocks.listAdminsForAssistant.mockResolvedValue({
+      total: 1,
+      page: 1,
+      limit: 1,
+      hasMore: false,
+      admins: [
+        {
+          id: "admin-2",
+          name: "Ada Owner",
+          email: "ada@example.com",
+          role: "OWNER",
+        },
+      ],
+    });
+
+    await expect(getTeamAdminForAssistant("admin-2")).resolves.toMatchObject({
+      id: "admin-2",
+    });
+    expect(dataMocks.listAdminsForAssistant).toHaveBeenCalledWith({
+      adminId: "admin-2",
+      page: 1,
+      limit: 1,
+    });
+    expect(clerkMocks.getInvitationList).not.toHaveBeenCalled();
+    expect(dataMocks.listAdmins).not.toHaveBeenCalled();
   });
 });

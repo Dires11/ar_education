@@ -7,7 +7,10 @@ export async function listEmailTemplates() {
   return prisma.emailTemplate.findMany({ orderBy: { createdAt: "desc" } });
 }
 
-export async function listEmailTemplatesForAssistant(limit: number) {
+export async function listEmailTemplatesForAssistant(input: {
+  page: number;
+  limit: number;
+}) {
   const [total, templates] = await prisma.$transaction([
     prisma.emailTemplate.count(),
     prisma.emailTemplate.findMany({
@@ -18,11 +21,18 @@ export async function listEmailTemplatesForAssistant(limit: number) {
         subject: true,
         updatedAt: true,
       },
-      orderBy: { createdAt: "desc" },
-      take: limit,
+      orderBy: [{ createdAt: "desc" }, { id: "asc" }],
+      skip: (input.page - 1) * input.limit,
+      take: input.limit,
     }),
   ]);
-  return { total, hasMore: total > templates.length, templates };
+  return {
+    total,
+    page: input.page,
+    limit: input.limit,
+    hasMore: input.page * input.limit < total,
+    templates,
+  };
 }
 
 export async function getEmailTemplate(id: string) {

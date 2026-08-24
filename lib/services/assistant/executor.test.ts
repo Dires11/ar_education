@@ -674,8 +674,11 @@ describe("assistant tool result cards", () => {
         ]),
       },
     });
+    paymentServiceMocks.sendPaymentReminderEmail.mockRejectedValueOnce(
+      new Error("provider rejected one recipient"),
+    );
 
-    await executeAssistantTool({
+    const result = await executeAssistantTool({
       namespace: "billing",
       name: "send_payment_reminders",
       argumentsValue: resolved,
@@ -687,6 +690,7 @@ describe("assistant tool result cards", () => {
     });
 
     expect(paymentServiceMocks.sendPaymentReminderEmail).toHaveBeenCalledTimes(20);
+    expect(result).toMatchObject({ data: { sent: 19, failed: 1 } });
     expect(paymentServiceMocks.sendPaymentReminderEmail).toHaveBeenLastCalledWith(
       "enrollment-20",
       "2026-08",

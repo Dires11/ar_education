@@ -8,6 +8,7 @@ export async function listSubjects() {
 
 export async function listSubjectsForAssistant(input: {
   id?: string;
+  page: number;
   limit: number;
 }) {
   const where = input.id ? { id: input.id } : undefined;
@@ -16,11 +17,18 @@ export async function listSubjectsForAssistant(input: {
     prisma.subject.findMany({
       where,
       select: { id: true, name: true },
-      orderBy: { name: "asc" },
+      orderBy: [{ name: "asc" }, { id: "asc" }],
+      skip: (input.page - 1) * input.limit,
       take: input.limit,
     }),
   ]);
-  return { total, hasMore: total > subjects.length, subjects };
+  return {
+    total,
+    page: input.page,
+    limit: input.limit,
+    hasMore: input.page * input.limit < total,
+    subjects,
+  };
 }
 
 export async function getSubject(id: string) {

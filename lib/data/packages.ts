@@ -12,6 +12,7 @@ export async function listPackages(activeOnly = false) {
 
 export async function listPackagesForAssistant(input: {
   activeOnly: boolean;
+  page: number;
   limit: number;
 }) {
   const where = input.activeOnly ? { isActive: true } : undefined;
@@ -31,11 +32,18 @@ export async function listPackagesForAssistant(input: {
         durationMinutes: true,
         isActive: true,
       },
-      orderBy: [{ type: "asc" }, { name: "asc" }],
+      orderBy: [{ type: "asc" }, { name: "asc" }, { id: "asc" }],
+      skip: (input.page - 1) * input.limit,
       take: input.limit,
     }),
   ]);
-  return { total, hasMore: total > packages.length, packages };
+  return {
+    total,
+    page: input.page,
+    limit: input.limit,
+    hasMore: input.page * input.limit < total,
+    packages,
+  };
 }
 
 export async function getPackage(id: string) {

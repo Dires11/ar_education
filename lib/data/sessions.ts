@@ -545,6 +545,7 @@ export async function createManySessionAttendances(
 export async function getRecurrenceRulesForMonth(
   calendarMonthStart: Date,
   calendarMonthEnd: Date,
+  limit?: number,
 ) {
   const rules = await prisma.recurrenceRule.findMany({
     where: {
@@ -558,7 +559,9 @@ export async function getRecurrenceRulesForMonth(
       },
     },
     orderBy: { startsOn: "asc" },
+    take: limit === undefined ? undefined : limit + 1,
   });
+  if (limit !== undefined && rules.length > limit) return rules;
   // Exclude invalid rules (endsOn before startsOn — garbage from cascading splits)
   return rules.filter((r) => !r.endsOn || r.endsOn >= r.startsOn);
 }
@@ -566,6 +569,7 @@ export async function getRecurrenceRulesForMonth(
 export async function getGroupRecurrenceRulesForMonth(
   calendarMonthStart: Date,
   calendarMonthEnd: Date,
+  limits?: { rules: number; groupEnrollments: number },
 ) {
   const rules = await prisma.recurrenceRule.findMany({
     where: {
@@ -581,12 +585,17 @@ export async function getGroupRecurrenceRulesForMonth(
           enrollments: {
             where: { status: { in: ["ACTIVE", "PAUSED"] } },
             include: { student: true },
+            orderBy: { id: "asc" },
+            take:
+              limits === undefined ? undefined : limits.groupEnrollments + 1,
           },
         },
       },
     },
     orderBy: { startsOn: "asc" },
+    take: limits === undefined ? undefined : limits.rules + 1,
   });
+  if (limits !== undefined && rules.length > limits.rules) return rules;
   return rules.filter((r) => !r.endsOn || r.endsOn >= r.startsOn);
 }
 

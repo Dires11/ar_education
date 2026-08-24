@@ -386,7 +386,7 @@ export async function getActiveSubscriptionEnrollments(input: {
     status: "ACTIVE" as const,
     package: { type: "MONTHLY" as const },
   };
-  const [total, enrollments] = await prisma.$transaction([
+  const [total, enrollments, oldest] = await prisma.$transaction([
     prisma.enrollment.count({ where }),
     prisma.enrollment.findMany({
       where,
@@ -416,12 +416,17 @@ export async function getActiveSubscriptionEnrollments(input: {
       skip: (input.page - 1) * input.limit,
       take: input.limit,
     }),
+    prisma.enrollment.aggregate({
+      where,
+      _min: { startDate: true },
+    }),
   ]);
   return {
     total,
     page: input.page,
     limit: input.limit,
     hasMore: input.page * input.limit < total,
+    oldestApplicableStartDate: oldest._min.startDate,
     enrollments,
   };
 }

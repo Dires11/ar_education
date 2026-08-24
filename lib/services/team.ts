@@ -69,6 +69,15 @@ export async function getTeamPageForAssistant(input: {
   };
 }
 
+export async function getTeamAdminForAssistant(adminId: string) {
+  const page = await listAdminsForAssistant({
+    adminId,
+    page: 1,
+    limit: 1,
+  });
+  return page.admins[0];
+}
+
 export async function getPendingTeamInvitation(input: {
   invitationId?: string;
   email?: string;

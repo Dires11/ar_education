@@ -374,11 +374,31 @@ type RealSessionSlim = {
 
 type MonthRules = Awaited<ReturnType<typeof getRecurrenceRulesForMonth>>;
 
+const ASSISTANT_RECURRENCE_LIMITS = {
+  rules: 1_000,
+  groupEnrollments: 100,
+  virtualSessions: 5_000,
+} as const;
+
+type VirtualSessionSafetyLimits = typeof ASSISTANT_RECURRENCE_LIMITS;
+
+function assertVirtualSessionCapacity(
+  currentCount: number,
+  limits?: VirtualSessionSafetyLimits,
+) {
+  if (limits && currentCount >= limits.virtualSessions) {
+    throw new Error(
+      "The schedule exceeds the 5,000-virtual-session assistant safety bound. Narrow the request to a smaller date range or an exact record.",
+    );
+  }
+}
+
 export async function getVirtualSessionsForMonth(
   monthStart: Date,
   realSessions: RealSessionSlim[],
   prefetchedRules?: MonthRules,
   includePast = false,
+  safetyLimits?: VirtualSessionSafetyLimits,
 ): Promise<VirtualSession[]> {
   const calendarMonthStart = new Date(
     Date.UTC(monthStart.getUTCFullYear(), monthStart.getUTCMonth(), 1),
@@ -390,7 +410,16 @@ export async function getVirtualSessionsForMonth(
   const centerTimeZone = getConfiguredCenterTimeZone();
   const rules =
     prefetchedRules ??
-    (await getRecurrenceRulesForMonth(calendarMonthStart, calendarMonthEnd));
+    (await getRecurrenceRulesForMonth(
+      calendarMonthStart,
+      calendarMonthEnd,
+      safetyLimits?.rules,
+    ));
+  if (safetyLimits && rules.length > safetyLimits.rules) {
+    throw new Error(
+      "The schedule exceeds the 1,000-recurrence-rule assistant safety bound. Narrow the request to an exact enrollment, group, or rule.",
+    );
+  }
 
   const plannedPerEnrollmentWeek = new Map<string, number>();
   for (const s of realSessions) {
@@ -471,6 +500,7 @@ export async function getVirtualSessionsForMonth(
             ? "VIRTUAL_DEPLETED"
             : "VIRTUAL_UPCOMING";
 
+        assertVirtualSessionCapacity(virtual.length, safetyLimits);
         virtual.push({
           id: `virtual_${rule.id}_${format(scheduledFor, "yyyyMMddHHmm")}`,
           scheduledFor: scheduledFor.toISOString(),
@@ -513,10 +543,24 @@ export async function getVirtualSessionsForMonth(
   const groupRules = await getGroupRecurrenceRulesForMonth(
     calendarMonthStart,
     calendarMonthEnd,
+    safetyLimits,
   );
+  if (safetyLimits && groupRules.length > safetyLimits.rules) {
+    throw new Error(
+      "The schedule exceeds the 1,000-group-recurrence-rule assistant safety bound. Narrow the request to an exact group or rule.",
+    );
+  }
 
   for (const rule of groupRules) {
     if (!rule.group) continue;
+    if (
+      safetyLimits &&
+      rule.group.enrollments.length > safetyLimits.groupEnrollments
+    ) {
+      throw new Error(
+        "A recurring group exceeds the 100-member assistant safety bound. Open the group record to inspect its schedule.",
+      );
+    }
 
     let current = getFirstMatchingDate(new Date(rule.startsOn), rule.dayOfWeek);
     while (current < calendarMonthStart) {
@@ -547,6 +591,7 @@ export async function getVirtualSessionsForMonth(
       );
 
       if (!hasReal && (includePast || !isBefore(scheduledFor, today))) {
+        assertVirtualSessionCapacity(virtual.length, safetyLimits);
         virtual.push({
           id: `virtual_${rule.id}_${format(scheduledFor, "yyyyMMddHHmm")}`,
           scheduledFor: scheduledFor.toISOString(),
@@ -952,7 +997,11 @@ export async function getMonthScheduleForAssistant(
       limit,
       page,
     ),
-    getRecurrenceRulesForMonth(range.calendarStart, range.calendarEnd),
+    getRecurrenceRulesForMonth(
+      range.calendarStart,
+      range.calendarEnd,
+      ASSISTANT_RECURRENCE_LIMITS.rules,
+    ),
   ]);
   if (real.slotsTruncated) {
     throw new Error(
@@ -963,6 +1012,8 @@ export async function getMonthScheduleForAssistant(
     range.calendarStart,
     real.slots,
     rules,
+    false,
+    ASSISTANT_RECURRENCE_LIMITS,
   );
   const summarizeSession = (session: (typeof real.sessions)[number]) => ({
     id: session.id,
@@ -1045,7 +1096,11 @@ export async function getDashboardScheduleForAssistant(limit = 50) {
         const range = getCalendarMonthRange(monthKey, timeZone);
         const [slots, rules] = await Promise.all([
           getAssistantSessionSlots(range.start, range.endExclusive),
-          getRecurrenceRulesForMonth(range.calendarStart, range.calendarEnd),
+          getRecurrenceRulesForMonth(
+            range.calendarStart,
+            range.calendarEnd,
+            ASSISTANT_RECURRENCE_LIMITS.rules,
+          ),
         ]);
         if (slots.length > 5_000) {
           throw new Error(
@@ -1057,6 +1112,7 @@ export async function getDashboardScheduleForAssistant(limit = 50) {
           slots,
           rules,
           true,
+          ASSISTANT_RECURRENCE_LIMITS,
         );
         return { slots, virtual };
       }),

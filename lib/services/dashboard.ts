@@ -236,7 +236,7 @@ export async function getDashboardReportPageForAssistant(input: {
     }
   }
   return {
-    total: page.total,
+    candidateTotal: page.total,
     page: page.page,
     limit: page.limit,
     hasMore: page.hasMore,

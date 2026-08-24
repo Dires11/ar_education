@@ -2316,6 +2316,161 @@ describe("assistant orchestration", () => {
     expect(dataMocks.pauseAssistantRun).toHaveBeenCalledTimes(1);
   });
 
+  it("does not authorize an enrollment mutation from a due-row lookup", async () => {
+    responses.queue.push(
+      {
+        events: [],
+        final: {
+          output_text: "",
+          output: [{
+            type: "function_call",
+            namespace: "billing",
+            name: "get_upcoming_dues",
+            call_id: "call-one-due",
+            arguments: JSON.stringify({
+              status: "OVERDUE",
+              fromMonth: "2026-08",
+              toMonth: "2026-08",
+            }),
+          }],
+          usage,
+        },
+      },
+      {
+        events: [],
+        final: {
+          output_text: "",
+          output: [{
+            type: "function_call",
+            namespace: "enrollments",
+            name: "update_enrollment",
+            call_id: "call-update-from-due",
+            arguments: JSON.stringify({ id: "enrollment-1", status: "PAUSED" }),
+          }],
+          usage,
+        },
+      },
+      {
+        events: [],
+        final: {
+          output_text: "I need to inspect the enrollment before changing it.",
+          output: [],
+          usage,
+        },
+      },
+    );
+    dataMocks.createOrGetAssistantToolRun.mockResolvedValue({
+      id: "tool-one-due",
+      runId: "run-1",
+      callId: "call-one-due",
+      namespace: "billing",
+      toolName: "get_upcoming_dues",
+      arguments: {},
+      status: "RUNNING",
+      requiresConfirmation: false,
+    });
+    executeMock.mockResolvedValue({
+      ok: true,
+      data: {
+        total: 1,
+        hasMore: false,
+        dues: [{
+          enrollmentId: "enrollment-1",
+          studentId: "student-1",
+          month: "2026-08",
+        }],
+      },
+    });
+
+    await processAssistantTurn(
+      { id: "admin-1", role: "STAFF" },
+      {
+        clientTurnId: "b7bcb6f9-41e7-4c17-bf0d-3e1b04c8e0d4",
+        message: "Find the due row, then pause its enrollment.",
+      },
+      () => undefined,
+    );
+
+    expect(executeMock).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(responses.requests.at(-1)?.input)).toContain(
+      "mutation targets were not established",
+    );
+  });
+
+  it("does not treat a truncated team page as an exact administrator lookup", async () => {
+    responses.queue.push(
+      {
+        events: [],
+        final: {
+          output_text: "",
+          output: [{
+            type: "function_call",
+            namespace: "team",
+            name: "get_team",
+            call_id: "call-team-page",
+            arguments: JSON.stringify({ page: 1, limit: 1 }),
+          }],
+          usage,
+        },
+      },
+      {
+        events: [],
+        final: {
+          output_text: "",
+          output: [{
+            type: "function_call",
+            namespace: "team",
+            name: "remove_team_member",
+            call_id: "call-remove-from-page",
+            arguments: JSON.stringify({ adminId: "admin-2" }),
+          }],
+          usage,
+        },
+      },
+      {
+        events: [],
+        final: {
+          output_text: "I need an exact team-member lookup first.",
+          output: [],
+          usage,
+        },
+      },
+    );
+    dataMocks.createOrGetAssistantToolRun.mockResolvedValue({
+      id: "tool-team-page",
+      runId: "run-1",
+      callId: "call-team-page",
+      namespace: "team",
+      toolName: "get_team",
+      arguments: { page: 1, limit: 1 },
+      status: "RUNNING",
+      requiresConfirmation: false,
+    });
+    executeMock.mockResolvedValue({
+      ok: true,
+      data: {
+        admins: [{ id: "admin-2", name: "Alex" }],
+        adminTotal: 20,
+        pendingInvitations: [],
+        invitationTotal: 0,
+      },
+    });
+
+    await processAssistantTurn(
+      { id: "admin-1", role: "OWNER" },
+      {
+        clientTurnId: "a7bcb6f9-41e7-4c17-bf0d-3e1b04c8e0d4",
+        message: "List the team, then remove the first member.",
+      },
+      () => undefined,
+    );
+
+    expect(executeMock).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(responses.requests.at(-1)?.input)).toContain(
+      "mutation targets were not established",
+    );
+  });
+
   it("pauses a risky mutation and emits a deterministic confirmation", async () => {
     const paymentArguments = {
       studentId: "student-1",

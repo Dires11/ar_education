@@ -315,6 +315,7 @@ const toolSpecs: AssistantToolSpec[] = [
       "List a bounded summary of available subjects, optionally inspecting one exact subject ID.",
     schema: z.object({
       id: idSchema.optional(),
+      page: z.number().int().min(1).max(10_000).default(1),
       limit: z.number().int().min(1).max(100).default(50),
     }),
     requiresConfirmation: false,
@@ -347,6 +348,7 @@ const toolSpecs: AssistantToolSpec[] = [
       "List a bounded summary of packages, optionally active packages only.",
     schema: z.object({
       activeOnly: z.boolean().default(false),
+      page: z.number().int().min(1).max(10_000).default(1),
       limit: z.number().int().min(1).max(100).default(50),
     }),
     requiresConfirmation: false,
@@ -388,6 +390,7 @@ const toolSpecs: AssistantToolSpec[] = [
       studentId: idSchema.optional(),
       tutorId: idSchema.optional(),
       status: z.enum(["ACTIVE", "PAUSED", "COMPLETED", "CANCELLED"]).optional(),
+      page: z.number().int().min(1).max(10_000).default(1),
       limit: z.number().int().min(1).max(30).default(20),
     }),
     requiresConfirmation: false,
@@ -448,6 +451,7 @@ const toolSpecs: AssistantToolSpec[] = [
       groupId: idSchema.optional(),
       tutorId: idSchema.optional(),
       subjectId: idSchema.optional(),
+      page: z.number().int().min(1).max(10_000).default(1),
       limit: z.number().int().min(1).max(100).default(50),
     }),
     requiresConfirmation: false,
@@ -671,7 +675,7 @@ const toolSpecs: AssistantToolSpec[] = [
     namespace: "billing",
     name: "get_upcoming_dues",
     description:
-      "Page active subscription enrollments and list their overdue, current, future, or paid billing periods in an explicit window of up to 24 months. If fromMonth/toMonth are omitted, the response covers only the default recent window and must not be described as all historical debt.",
+      "Page active subscription enrollments and list their overdue, current, future, or paid billing periods in an explicit window of up to 24 months. The response includes oldestApplicableMonth and earlierHistoryAvailable so historical traversal has a deterministic boundary. If fromMonth/toMonth are omitted, the response covers only the default recent window and must not be described as all historical debt.",
     schema: z
       .object({
         status: z
@@ -684,7 +688,8 @@ const toolSpecs: AssistantToolSpec[] = [
       })
       .refine(
         (value) => {
-          if (!value.fromMonth || !value.toMonth) return true;
+          if (!value.fromMonth && !value.toMonth) return true;
+          if (!value.fromMonth || !value.toMonth) return false;
           const from = new Date(`${value.fromMonth}-01T00:00:00.000Z`);
           const to = new Date(`${value.toMonth}-01T00:00:00.000Z`);
           const months =
@@ -694,7 +699,10 @@ const toolSpecs: AssistantToolSpec[] = [
             1;
           return months >= 1 && months <= 24;
         },
-        { message: "Payment-due windows must cover 1 to 24 months" },
+        {
+          message:
+            "Provide both fromMonth and toMonth; payment-due windows must cover 1 to 24 months",
+        },
       ),
     requiresConfirmation: false,
   },
@@ -795,7 +803,10 @@ const toolSpecs: AssistantToolSpec[] = [
     name: "list_email_templates",
     description:
       "List bounded email-template summaries without transmitting every saved body.",
-    schema: z.object({ limit: z.number().int().min(1).max(100).default(50) }),
+    schema: z.object({
+      page: z.number().int().min(1).max(10_000).default(1),
+      limit: z.number().int().min(1).max(100).default(50),
+    }),
     requiresConfirmation: false,
   },
   {
@@ -887,7 +898,7 @@ const toolSpecs: AssistantToolSpec[] = [
     namespace: "reporting",
     name: "get_dashboard_summary",
     description:
-      "Get current dashboard totals or page through unpaid students, upcoming package endings, and tutor workload. Use section plus page to continue any truncated result set.",
+      "Get current dashboard totals or page through unpaid students, upcoming package endings, and tutor workload. Use section plus page to continue any truncated result set. For UNPAID_STUDENTS, candidateTotal is the number of active students being scanned, not an unpaid-student count; only results with calculationComplete true and a balance are confirmed unpaid.",
     schema: z.object({
       section: z
         .enum(["SUMMARY", "UNPAID_STUDENTS", "UPCOMING_ENDINGS", "TUTOR_WORKLOAD"])

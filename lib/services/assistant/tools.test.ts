@@ -297,7 +297,7 @@ describe("assistant tool registry", () => {
       "search_enrollments",
       "STAFF",
     )!;
-    expect(enrollmentSearch.schema.parse({})).toEqual({ limit: 20 });
+    expect(enrollmentSearch.schema.parse({})).toEqual({ page: 1, limit: 20 });
     expect(() => enrollmentSearch.schema.parse({ limit: 31 })).toThrow();
   });
 
@@ -430,6 +430,8 @@ describe("assistant tool registry", () => {
       dues.schema.safeParse({ fromMonth: "2024-01", toMonth: "2026-08" })
         .success,
     ).toBe(false);
+    expect(dues.schema.safeParse({ fromMonth: "2026-01" }).success).toBe(false);
+    expect(dues.schema.safeParse({ toMonth: "2026-08" }).success).toBe(false);
 
     const reminders = getAssistantToolSpec(
       "billing",

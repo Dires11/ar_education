@@ -339,6 +339,13 @@ export async function getPaymentDuesForAssistant(input: {
     hasMore: enrollmentPage.hasMore,
     from: input.fromMonth,
     to: input.toMonth,
+    oldestApplicableMonth: enrollmentPage.oldestApplicableStartDate
+      ? formatBillingMonth(enrollmentPage.oldestApplicableStartDate)
+      : null,
+    earlierHistoryAvailable: enrollmentPage.oldestApplicableStartDate
+      ? input.fromMonth >
+        formatBillingMonth(enrollmentPage.oldestApplicableStartDate)
+      : false,
     dues,
   };
 }

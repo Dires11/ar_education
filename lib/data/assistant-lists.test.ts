@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const prismaMock = vi.hoisted(() => ({
   $transaction: vi.fn(),
   emailTemplate: { count: vi.fn(), findMany: vi.fn() },
+  enrollment: { count: vi.fn(), findMany: vi.fn() },
   group: { count: vi.fn(), findMany: vi.fn() },
   package: { count: vi.fn(), findMany: vi.fn() },
   subject: { count: vi.fn(), findMany: vi.fn() },
@@ -11,6 +12,7 @@ const prismaMock = vi.hoisted(() => ({
 vi.mock("@/lib/prisma", () => ({ prisma: prismaMock }));
 
 import { listEmailTemplatesForAssistant } from "@/lib/data/emails";
+import { searchEnrollmentsForAssistant } from "@/lib/data/enrollments";
 import { listGroupsForAssistant } from "@/lib/data/groups";
 import { listPackagesForAssistant } from "@/lib/data/packages";
 import { listSubjectsForAssistant } from "@/lib/data/subjects";
@@ -34,14 +36,18 @@ describe("bounded assistant list queries", () => {
       ],
     ]);
 
-    await expect(listEmailTemplatesForAssistant(1)).resolves.toMatchObject({
+    await expect(
+      listEmailTemplatesForAssistant({ page: 2, limit: 1 }),
+    ).resolves.toMatchObject({
       total: 2,
-      hasMore: true,
+      page: 2,
+      hasMore: false,
       templates: [expect.not.objectContaining({ body: expect.anything() })],
     });
     expect(prismaMock.emailTemplate.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         take: 1,
+        skip: 1,
         select: expect.not.objectContaining({ body: expect.anything() }),
       }),
     );
@@ -71,9 +77,11 @@ describe("bounded assistant list queries", () => {
     ]);
 
     await expect(
-      listGroupsForAssistant({ tutorId: "tutor-1", limit: 1 }),
+      listGroupsForAssistant({ tutorId: "tutor-1", page: 2, limit: 1 }),
     ).resolves.toEqual({
       total: 3,
+      page: 2,
+      limit: 1,
       hasMore: true,
       groups: [
         {
@@ -89,6 +97,7 @@ describe("bounded assistant list queries", () => {
     expect(prismaMock.group.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         take: 1,
+        skip: 1,
         where: { tutorId: "tutor-1" },
         select: expect.not.objectContaining({
           email: expect.anything(),
@@ -107,14 +116,48 @@ describe("bounded assistant list queries", () => {
       ])
       .mockResolvedValueOnce([0, []]);
 
-    await listSubjectsForAssistant({ id: "subject-1", limit: 5 });
-    await listPackagesForAssistant({ activeOnly: true, limit: 10 });
+    await listSubjectsForAssistant({ id: "subject-1", page: 2, limit: 5 });
+    await listPackagesForAssistant({ activeOnly: true, page: 3, limit: 10 });
 
     expect(prismaMock.subject.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { id: "subject-1" }, take: 5 }),
+      expect.objectContaining({
+        where: { id: "subject-1" },
+        skip: 5,
+        take: 5,
+      }),
     );
     expect(prismaMock.package.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { isActive: true }, take: 10 }),
+      expect.objectContaining({
+        where: { isActive: true },
+        skip: 20,
+        take: 10,
+      }),
+    );
+  });
+
+  it("retrieves later enrollment pages with deterministic ordering", async () => {
+    prismaMock.enrollment.count.mockResolvedValue(45);
+    prismaMock.enrollment.findMany.mockResolvedValue([]);
+
+    await expect(
+      searchEnrollmentsForAssistant({
+        status: "ACTIVE",
+        page: 3,
+        limit: 20,
+      }),
+    ).resolves.toMatchObject({
+      total: 45,
+      page: 3,
+      limit: 20,
+      hasMore: false,
+    });
+    expect(prismaMock.enrollment.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { status: "ACTIVE" },
+        orderBy: [{ createdAt: "desc" }, { id: "asc" }],
+        skip: 40,
+        take: 20,
+      }),
     );
   });
 });
