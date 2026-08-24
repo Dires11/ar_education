@@ -818,6 +818,7 @@ export async function splitRecurrenceRule(
     intervalWeeks?: number;
     dayOfWeek?: number;
   },
+  expectedUpdatedAt?: Date,
 ) {
   const rule = await getRecurrenceRuleWithParticipants(ruleId);
   if (!rule) throw new Error("Recurrence rule not found");
@@ -896,10 +897,15 @@ export async function splitRecurrenceRule(
     update,
     oldRuleEndsOn: addCalendarDays(splitDay, -1),
     newRule,
+    expectedUpdatedAt,
   });
 }
 
-export async function endRecurrenceFromDate(ruleId: string, fromDate: Date) {
+export async function endRecurrenceFromDate(
+  ruleId: string,
+  fromDate: Date,
+  expectedUpdatedAt?: Date,
+) {
   const rule = await getRecurrenceRuleById(ruleId);
   if (!rule) throw new Error("Recurrence rule not found");
   const calendarDate = getCalendarDateInTimeZone(fromDate, rule.timeZone);
@@ -907,14 +913,18 @@ export async function endRecurrenceFromDate(ruleId: string, fromDate: Date) {
     ruleId,
     cutoff: combineDateAndTime(calendarDate, "00:00", rule.timeZone),
     endsOn: addCalendarDays(calendarDate, -1),
+    expectedUpdatedAt,
   });
 }
 
-export async function deleteRecurringSchedule(ruleId: string) {
+export async function deleteRecurringSchedule(
+  ruleId: string,
+  expectedUpdatedAt?: Date,
+) {
   const rule = await getRecurrenceRuleById(ruleId);
   if (!rule) throw new Error("Recurrence rule not found");
 
-  return deleteRecurringScheduleData(ruleId, new Date());
+  return deleteRecurringScheduleData(ruleId, new Date(), expectedUpdatedAt);
 }
 
 // ─── Optimized month fetch (sessions + rules fetched in parallel) ─────────────
@@ -992,12 +1002,7 @@ export async function getMonthScheduleForAssistant(
   const centerTimeZone = getConfiguredCenterTimeZone();
   const range = getCalendarMonthRange(monthKey, centerTimeZone);
   const [real, rules] = await Promise.all([
-    getSessionsForAssistantMonth(
-      range.start,
-      range.endExclusive,
-      limit,
-      page,
-    ),
+    getSessionsForAssistantMonth(range.start, range.endExclusive, limit, page),
     getRecurrenceRulesForMonth(
       range.calendarStart,
       range.calendarEnd,
@@ -1184,10 +1189,7 @@ export async function getDashboardScheduleForAssistant(limit = 50) {
     })),
     virtual: true as const,
   });
-  const section = (
-    real: typeof todayReal,
-    virtual: VirtualSession[],
-  ) => {
+  const section = (real: typeof todayReal, virtual: VirtualSession[]) => {
     const results = [
       ...real.sessions.map(summarizeReal),
       ...virtual.map(summarizeVirtual),

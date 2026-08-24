@@ -147,6 +147,8 @@ const ALLOWED_ASSISTANT_FIELDS = new Set([
   "hasMoreEnrollments",
   "hasMoreSubjects",
   "hasMoreDiscounts",
+  "discountPage",
+  "discountLimit",
   "rulesCreated",
   "materializedSessions",
   "materializableSessions",

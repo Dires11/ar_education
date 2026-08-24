@@ -5,6 +5,7 @@ import {
   listAdmins,
   listAdminsForAssistant,
   disableAdminSafely,
+  findAdminById,
   setAdminRoleSafely,
 } from "@/lib/data/team";
 import { ADMIN_INVITATION_METADATA } from "@/lib/services/admin-access";
@@ -80,6 +81,14 @@ export async function getTeamAdminForAssistant(adminId: string) {
     limit: 1,
   });
   return page.admins[0];
+}
+
+export async function getAssistantAdminAuthorization(adminId: string) {
+  const admin = await findAdminById(adminId);
+  if (admin.disabledAt) {
+    throw new Error("Administrator access has been disabled");
+  }
+  return { id: admin.id, role: admin.role };
 }
 
 export async function getPendingTeamInvitation(input: {

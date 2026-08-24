@@ -59,21 +59,18 @@ function getRecurrenceTarget(
     return {
       tutorId: rule.enrollment.tutorId,
       subjectId: rule.enrollment.subjectId,
-      attendances: [{
-        studentId: rule.enrollment.studentId,
-        enrollmentId: rule.enrollment.id,
-      }],
+      attendances: [
+        {
+          studentId: rule.enrollment.studentId,
+          enrollmentId: rule.enrollment.id,
+        },
+      ],
     };
   }
 
   if (rule.group) {
-    const eligibleEnrollments = rule.group.enrollments.filter(
-      (enrollment) =>
-        isEnrollmentEligibleForSession(
-          enrollment,
-          scheduledFor,
-          rule.timeZone,
-        ),
+    const eligibleEnrollments = rule.group.enrollments.filter((enrollment) =>
+      isEnrollmentEligibleForSession(enrollment, scheduledFor, rule.timeZone),
     );
     if (eligibleEnrollments.length === 0) {
       throw new Error("This group has no active enrollments on that date.");
@@ -91,7 +88,11 @@ function getRecurrenceTarget(
   throw new Error("Recurrence rule has no enrollment or group.");
 }
 
-export async function cancelVirtualOccurrence(ruleId: string, date: Date) {
+export async function cancelVirtualOccurrence(
+  ruleId: string,
+  date: Date,
+  expectedUpdatedAt?: Date,
+) {
   const rule = await getRecurrenceRuleWithParticipants(ruleId);
   if (!rule) throw new Error("Recurrence rule not found");
 
@@ -114,6 +115,7 @@ export async function cancelVirtualOccurrence(ruleId: string, date: Date) {
       status: "CANCELLED_BY_TUTOR" as const,
       billable: false,
     })),
+    expectedUpdatedAt ? { ruleId, updatedAt: expectedUpdatedAt } : undefined,
   );
 }
 
@@ -153,8 +155,8 @@ export async function rescheduleVirtualOccurrence(
       durationMinutes,
       room:
         overrides.room !== undefined
-          ? overrides.room ?? undefined
-          : rule.room ?? undefined,
+          ? (overrides.room ?? undefined)
+          : (rule.room ?? undefined),
       recurrenceRuleId: ruleId,
     },
     target.attendances,

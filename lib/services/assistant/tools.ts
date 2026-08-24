@@ -410,11 +410,13 @@ const toolSpecs: AssistantToolSpec[] = [
     namespace: "enrollments",
     name: "get_enrollment",
     description:
-      "Get an enrollment by enrollment ID, or resolve the owning enrollment by discount ID, including student, tutor, package, discounts, and bounded relation counts. Use schedule.get_schedule with an enrollment/date range for session history and billing.list_payments with enrollmentId for payments.",
+      "Get an enrollment by enrollment ID, or resolve the owning enrollment by discount ID, including student, tutor, package, a page of discounts, and bounded relation counts. Continue discountPage while hasMoreDiscounts is true to discover every discount. Use schedule.get_schedule with an enrollment/date range for session history and billing.list_payments with enrollmentId for payments.",
     schema: z
       .object({
         id: idSchema.optional(),
         discountId: idSchema.optional(),
+        discountPage: z.number().int().min(1).max(10_000).default(1),
+        discountLimit: z.number().int().min(1).max(100).default(20),
       })
       .refine((value) => Boolean(value.id || value.discountId), {
         message: "Provide id or discountId",

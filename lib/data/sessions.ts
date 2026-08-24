@@ -415,6 +415,7 @@ export async function getRecurrenceRuleForAssistant(id: string) {
       color: true,
       startsOn: true,
       endsOn: true,
+      updatedAt: true,
       enrollment: {
         select: {
           id: true,
@@ -535,40 +536,36 @@ export async function listRecurrenceRulesForAssistant(input: {
     prisma.recurrenceRule.findMany({
       where,
       select: {
-      id: true,
-      enrollmentId: true,
-      groupId: true,
-      dayOfWeek: true,
-      startTime: true,
-      timeZone: true,
-      durationMinutes: true,
-      intervalWeeks: true,
-      room: true,
-      color: true,
-      startsOn: true,
-      endsOn: true,
-      enrollment: {
-        select: {
-          id: true,
-          student: { select: { id: true, firstName: true, lastName: true } },
-          tutor: { select: { id: true, firstName: true, lastName: true } },
-          subject: { select: { id: true, name: true } },
+        id: true,
+        enrollmentId: true,
+        groupId: true,
+        dayOfWeek: true,
+        startTime: true,
+        timeZone: true,
+        durationMinutes: true,
+        intervalWeeks: true,
+        room: true,
+        color: true,
+        startsOn: true,
+        endsOn: true,
+        enrollment: {
+          select: {
+            id: true,
+            student: { select: { id: true, firstName: true, lastName: true } },
+            tutor: { select: { id: true, firstName: true, lastName: true } },
+            subject: { select: { id: true, name: true } },
+          },
+        },
+        group: {
+          select: {
+            id: true,
+            name: true,
+            tutor: { select: { id: true, firstName: true, lastName: true } },
+            subject: { select: { id: true, name: true } },
+          },
         },
       },
-      group: {
-        select: {
-          id: true,
-          name: true,
-          tutor: { select: { id: true, firstName: true, lastName: true } },
-          subject: { select: { id: true, name: true } },
-        },
-      },
-      },
-      orderBy: [
-        { updatedAt: "desc" },
-        { dayOfWeek: "asc" },
-        { id: "asc" },
-      ],
+      orderBy: [{ updatedAt: "desc" }, { dayOfWeek: "asc" }, { id: "asc" }],
       skip: (input.page - 1) * input.limit,
       take: input.limit,
     }),
@@ -615,8 +612,16 @@ export async function createSessionWithAttendances(
       | "CANCELLED_BY_STUDENT";
     billable?: boolean;
   }>,
+  expectedRecurrenceVersion?: { ruleId: string; updatedAt: Date },
 ) {
   return prisma.$transaction(async (tx) => {
+    if (expectedRecurrenceVersion) {
+      await assertRecurrenceRuleVersion(
+        tx,
+        expectedRecurrenceVersion.ruleId,
+        expectedRecurrenceVersion.updatedAt,
+      );
+    }
     const session = await tx.session.create({ data: sessionData });
     if (attendances.length > 0) {
       await tx.sessionAttendance.createMany({
@@ -909,6 +914,22 @@ export function updateRecurrenceRule(
 
 type RecurrenceRuleUpdateData = Parameters<typeof updateRecurrenceRule>[1];
 
+async function assertRecurrenceRuleVersion(
+  tx: Prisma.TransactionClient,
+  ruleId: string,
+  expectedUpdatedAt: Date,
+) {
+  const rows = await tx.$queryRaw<Array<{ updatedAt: Date }>>(
+    Prisma.sql`SELECT "updatedAt" FROM "RecurrenceRule" WHERE "id" = ${ruleId} FOR UPDATE`,
+  );
+  if (rows.length === 0) throw new Error("Recurrence rule not found");
+  if (rows[0].updatedAt.getTime() !== expectedUpdatedAt.getTime()) {
+    throw new Error(
+      "The recurring schedule changed after approval was requested. Review it and approve again.",
+    );
+  }
+}
+
 function futureRecurrenceSessionsWhere(
   recurrenceRuleId: string,
   cutoff: Date,
@@ -932,8 +953,16 @@ export function splitRecurrenceRuleData(input: {
   update: RecurrenceRuleUpdateData;
   oldRuleEndsOn?: Date;
   newRule?: RecurrenceRuleCreateData;
+  expectedUpdatedAt?: Date;
 }) {
   return prisma.$transaction(async (tx) => {
+    if (input.expectedUpdatedAt) {
+      await assertRecurrenceRuleVersion(
+        tx,
+        input.ruleId,
+        input.expectedUpdatedAt,
+      );
+    }
     await tx.session.deleteMany({
       where: futureRecurrenceSessionsWhere(input.ruleId, input.cutoff),
     });
@@ -958,8 +987,16 @@ export function endRecurrenceRuleData(input: {
   ruleId: string;
   cutoff: Date;
   endsOn: Date;
+  expectedUpdatedAt?: Date;
 }) {
   return prisma.$transaction(async (tx) => {
+    if (input.expectedUpdatedAt) {
+      await assertRecurrenceRuleVersion(
+        tx,
+        input.ruleId,
+        input.expectedUpdatedAt,
+      );
+    }
     await tx.session.deleteMany({
       where: futureRecurrenceSessionsWhere(input.ruleId, input.cutoff),
     });
@@ -970,8 +1007,15 @@ export function endRecurrenceRuleData(input: {
   });
 }
 
-export function deleteRecurringScheduleData(ruleId: string, cutoff: Date) {
+export function deleteRecurringScheduleData(
+  ruleId: string,
+  cutoff: Date,
+  expectedUpdatedAt?: Date,
+) {
   return prisma.$transaction(async (tx) => {
+    if (expectedUpdatedAt) {
+      await assertRecurrenceRuleVersion(tx, ruleId, expectedUpdatedAt);
+    }
     await tx.session.deleteMany({
       where: futureRecurrenceSessionsWhere(ruleId, cutoff),
     });

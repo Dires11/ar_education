@@ -26,12 +26,16 @@ const enrollmentServiceMocks = vi.hoisted(() => ({
   removeDiscount: vi.fn(),
 }));
 const sessionServiceMocks = vi.hoisted(() => ({
+  cancelVirtualOccurrence: vi.fn(),
+  deleteRecurringSchedule: vi.fn(),
+  endRecurrenceFromDate: vi.fn(),
   getEnrollmentMonthSummary: vi.fn(),
   getDashboardScheduleForAssistant: vi.fn(),
   getMonthScheduleForAssistant: vi.fn(),
   querySessionsForAssistant: vi.fn(),
   getRecurringSchedulePreview: vi.fn(),
   listRecurrenceRulesForAssistant: vi.fn(),
+  splitRecurrenceRule: vi.fn(),
 }));
 const paymentServiceMocks = vi.hoisted(() => ({
   getPaymentDueQuote: vi.fn(),
@@ -53,6 +57,16 @@ const emailDataMocks = vi.hoisted(() => ({
 const dashboardMocks = vi.hoisted(() => ({
   getDashboardReportPageForAssistant: vi.fn(),
   getDashboardStats: vi.fn(),
+}));
+const teamServiceMocks = vi.hoisted(() => ({
+  getAssistantAdminAuthorization: vi.fn(),
+  getPendingTeamInvitation: vi.fn(),
+  getTeamAdminForAssistant: vi.fn(),
+  getTeamPageForAssistant: vi.fn(),
+  inviteTeamMember: vi.fn(),
+  removeTeamMember: vi.fn(),
+  revokeTeamInvitation: vi.fn(),
+  updateTeamMemberRole: vi.fn(),
 }));
 const referenceDataMocks = vi.hoisted(() => ({
   getTutor: vi.fn(),
@@ -117,12 +131,12 @@ vi.mock("@/lib/services/enrollments", () => enrollmentServiceMocks);
 
 vi.mock("@/lib/services/sessions", () => ({
   cancelSessionById: vi.fn(),
-  cancelVirtualOccurrence: vi.fn(),
+  cancelVirtualOccurrence: sessionServiceMocks.cancelVirtualOccurrence,
   createAdHocSession: vi.fn(),
   createRecurringSchedule: vi.fn(),
-  deleteRecurringSchedule: vi.fn(),
+  deleteRecurringSchedule: sessionServiceMocks.deleteRecurringSchedule,
   deleteSessionById: vi.fn(),
-  endRecurrenceFromDate: vi.fn(),
+  endRecurrenceFromDate: sessionServiceMocks.endRecurrenceFromDate,
   getEnrollmentMonthSummary: sessionServiceMocks.getEnrollmentMonthSummary,
   getDashboardScheduleForAssistant:
     sessionServiceMocks.getDashboardScheduleForAssistant,
@@ -134,7 +148,7 @@ vi.mock("@/lib/services/sessions", () => ({
     sessionServiceMocks.listRecurrenceRulesForAssistant,
   markSessionAttendance: vi.fn(),
   rescheduleVirtualOccurrence: vi.fn(),
-  splitRecurrenceRule: vi.fn(),
+  splitRecurrenceRule: sessionServiceMocks.splitRecurrenceRule,
   updateEnrollmentRecurrenceColor: vi.fn(),
   updateScheduledSession: vi.fn(),
   updateSessionStatus: vi.fn(),
@@ -164,6 +178,7 @@ vi.mock("@/lib/services/emails", () => ({
   updateTemplate: vi.fn(),
 }));
 vi.mock("@/lib/services/dashboard", () => dashboardMocks);
+vi.mock("@/lib/services/team", () => teamServiceMocks);
 
 import {
   collectAssistantIdentifierValues,
@@ -177,6 +192,10 @@ import {
 describe("assistant tool result cards", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    teamServiceMocks.getAssistantAdminAuthorization.mockResolvedValue({
+      id: "admin-1",
+      role: "OWNER",
+    });
     studentMocks.getStudentForAssistant.mockImplementation((id: string) =>
       studentMocks.getStudent(id),
     );
@@ -231,6 +250,107 @@ describe("assistant tool result cards", () => {
           ),
         };
       },
+    );
+  });
+
+  it("rechecks current owner access before executing an owner-only tool", async () => {
+    teamServiceMocks.getAssistantAdminAuthorization.mockResolvedValue({
+      id: "admin-1",
+      role: "STAFF",
+    });
+
+    await expect(
+      executeAssistantTool({
+        namespace: "team",
+        name: "get_team",
+        argumentsValue: { page: 1, limit: 20 },
+        context: { admin: { id: "admin-1", role: "OWNER" } },
+      }),
+    ).rejects.toThrow("not available");
+    await expect(
+      executeAssistantTool({
+        namespace: "team",
+        name: "invite_team_member",
+        argumentsValue: { email: "new@example.com" },
+        context: {
+          admin: { id: "admin-1", role: "OWNER" },
+          idempotencyKey: "approved-tool-run-1",
+          provenanceValidated: true,
+        },
+      }),
+    ).rejects.toThrow("not available");
+    expect(teamServiceMocks.getTeamPageForAssistant).not.toHaveBeenCalled();
+    expect(teamServiceMocks.inviteTeamMember).not.toHaveBeenCalled();
+  });
+
+  it("blocks normal and approved tool execution after the admin is disabled", async () => {
+    teamServiceMocks.getAssistantAdminAuthorization.mockRejectedValue(
+      new Error("Administrator access has been disabled"),
+    );
+
+    await expect(
+      executeAssistantTool({
+        namespace: "team",
+        name: "get_team",
+        argumentsValue: { page: 1, limit: 20 },
+        context: { admin: { id: "admin-1", role: "OWNER" } },
+      }),
+    ).rejects.toThrow("disabled");
+    await expect(
+      executeAssistantTool({
+        namespace: "team",
+        name: "invite_team_member",
+        argumentsValue: { email: "new@example.com" },
+        context: {
+          admin: { id: "admin-1", role: "OWNER" },
+          idempotencyKey: "approved-tool-run-2",
+          provenanceValidated: true,
+        },
+      }),
+    ).rejects.toThrow("disabled");
+    expect(teamServiceMocks.getTeamPageForAssistant).not.toHaveBeenCalled();
+    expect(teamServiceMocks.inviteTeamMember).not.toHaveBeenCalled();
+  });
+
+  it("pins recurring-schedule approvals to the reviewed rule version", async () => {
+    const updatedAt = new Date("2026-08-23T12:00:00.000Z");
+    sessionDataMocks.getRecurrenceRuleForAssistant.mockResolvedValue({
+      id: "rule-1",
+      updatedAt,
+      dayOfWeek: 1,
+      startTime: "15:30",
+      durationMinutes: 60,
+      startsOn: new Date("2026-08-24T00:00:00.000Z"),
+      enrollment: null,
+      group: null,
+    });
+
+    const confirmed = await resolveAssistantConfirmationArguments({
+      namespace: "recurrence",
+      name: "delete_recurring_schedule",
+      argumentsValue: { ruleId: "rule-1" },
+    });
+
+    expect(confirmed).toMatchObject({
+      __assistantRecurrenceVersion: {
+        ruleId: "rule-1",
+        updatedAt: updatedAt.toISOString(),
+      },
+    });
+
+    await executeAssistantTool({
+      namespace: "recurrence",
+      name: "delete_recurring_schedule",
+      argumentsValue: confirmed,
+      context: {
+        admin: { id: "admin-1", role: "STAFF" },
+        provenanceValidated: true,
+      },
+    });
+
+    expect(sessionServiceMocks.deleteRecurringSchedule).toHaveBeenCalledWith(
+      "rule-1",
+      updatedAt,
     );
   });
 
@@ -1244,6 +1364,61 @@ describe("assistant tool result cards", () => {
         paymentTotal: 0,
       },
       card: { kind: "ENROLLMENT", title: "Maya Chen · Mathematics" },
+    });
+  });
+
+  it("pages every enrollment discount instead of stranding later IDs", async () => {
+    referenceDataMocks.getEnrollmentForAssistant.mockResolvedValue({
+      id: "enrollment-1",
+      status: "ACTIVE",
+      startDate: new Date("2026-08-24T00:00:00.000Z"),
+      endDate: null,
+      priceAtEnrollment: "240",
+      customPriceOverride: null,
+      studentId: "student-1",
+      tutorId: "tutor-1",
+      subjectId: "subject-1",
+      packageId: "package-1",
+      student: {
+        id: "student-1",
+        firstName: "Maya",
+        lastName: "Chen",
+        avatarUrl: null,
+      },
+      tutor: { id: "tutor-1", firstName: "Theo", lastName: "Grant" },
+      subject: { id: "subject-1", name: "Mathematics" },
+      package: {
+        id: "package-1",
+        name: "Private Math",
+        lessonType: "ONE_ON_ONE",
+      },
+      discounts: [{ id: "discount-21", kind: "FIXED", value: "10" }],
+      _count: { discounts: 45, sessions: 0, payments: 0 },
+    });
+
+    const result = await executeAssistantTool({
+      namespace: "enrollments",
+      name: "get_enrollment",
+      argumentsValue: {
+        id: "enrollment-1",
+        discountPage: 2,
+        discountLimit: 20,
+      },
+      context: { admin: { id: "admin-1", role: "STAFF" } },
+    });
+
+    expect(referenceDataMocks.getEnrollmentForAssistant).toHaveBeenCalledWith(
+      "enrollment-1",
+      2,
+      20,
+    );
+    expect(result).toMatchObject({
+      data: {
+        discounts: [{ id: "discount-21" }],
+        discountPage: 2,
+        discountLimit: 20,
+        hasMoreDiscounts: true,
+      },
     });
   });
 

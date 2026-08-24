@@ -101,7 +101,11 @@ export async function getEnrollment(id: string) {
   });
 }
 
-export async function getEnrollmentForAssistant(id: string) {
+export async function getEnrollmentForAssistant(
+  id: string,
+  discountPage = 1,
+  discountLimit = 20,
+) {
   return prisma.enrollment.findUnique({
     where: { id },
     select: {
@@ -148,8 +152,9 @@ export async function getEnrollmentForAssistant(id: string) {
           validUntil: true,
           usesRemaining: true,
         },
-        orderBy: { createdAt: "desc" },
-        take: 20,
+        orderBy: [{ createdAt: "desc" }, { id: "asc" }],
+        skip: (discountPage - 1) * discountLimit,
+        take: discountLimit,
       },
       _count: { select: { discounts: true, sessions: true, payments: true } },
     },
@@ -241,10 +246,7 @@ export async function updateEnrollmentLifecycle(input: {
         where: {
           enrollmentId: input.id,
           startsOn: { lte: input.closeRecurrencesOn },
-          OR: [
-            { endsOn: null },
-            { endsOn: { gt: input.closeRecurrencesOn } },
-          ],
+          OR: [{ endsOn: null }, { endsOn: { gt: input.closeRecurrencesOn } }],
         },
         data: { endsOn: input.closeRecurrencesOn },
       });
@@ -257,7 +259,12 @@ export async function updateEnrollmentLifecycle(input: {
 export async function createDiscount(data: {
   enrollmentId?: string;
   studentId?: string;
-  kind: "PERCENT_OFF" | "FIXED_OFF" | "FREE_SESSIONS" | "FREE_MONTH" | "REDUCED_RATE";
+  kind:
+    | "PERCENT_OFF"
+    | "FIXED_OFF"
+    | "FREE_SESSIONS"
+    | "FREE_MONTH"
+    | "REDUCED_RATE";
   value: string;
   temporary: boolean;
   validFrom?: Date | null;

@@ -426,8 +426,19 @@ describe("assistant tool registry", () => {
       "STAFF",
     )!;
     expect(enrollmentLookup.schema.parse({ discountId: "discount-1" })).toEqual(
-      { discountId: "discount-1" },
+      {
+        discountId: "discount-1",
+        discountPage: 1,
+        discountLimit: 20,
+      },
     );
+    expect(
+      enrollmentLookup.schema.parse({ id: "enrollment-1", discountPage: 3 }),
+    ).toEqual({
+      id: "enrollment-1",
+      discountPage: 3,
+      discountLimit: 20,
+    });
   });
 
   it("provides one bounded student-directory tool for rankings", () => {

@@ -88,9 +88,7 @@ describe("assistant persistence guarantees", () => {
       Array.from({ length: 51 }, (_, index) => ({
         id: `thread-${String(index).padStart(2, "0")}`,
         title: `Thread ${index}`,
-        updatedAt: new Date(
-          Date.UTC(2026, 7, 23, 12, 0, 0) - index * 1_000,
-        ),
+        updatedAt: new Date(Date.UTC(2026, 7, 23, 12, 0, 0) - index * 1_000),
         _count: { messages: index },
       })),
     );
@@ -116,9 +114,7 @@ describe("assistant persistence guarantees", () => {
         role: index % 2 === 0 ? "USER" : "ASSISTANT",
         content: `Message ${index}`,
         attachments: null,
-        createdAt: new Date(
-          Date.UTC(2026, 7, 23, 12, 0, 0) - index * 1_000,
-        ),
+        createdAt: new Date(Date.UTC(2026, 7, 23, 12, 0, 0) - index * 1_000),
         run: null,
       })),
     );
@@ -158,15 +154,47 @@ describe("assistant persistence guarantees", () => {
       Array.from({ length: 40 }, (_, index) => ({
         role: index % 2 === 0 ? "USER" : "ASSISTANT",
         content: `message-${index}`,
-        run: null,
+        run:
+          index === 0
+            ? {
+                toolRuns: [
+                  {
+                    result: {
+                      card: { entityKey: "student:student-42" },
+                    },
+                  },
+                ],
+              }
+            : null,
       })),
     );
 
     await expect(
       getAssistantSummarySource("admin-1", "thread-1"),
-    ).resolves.toMatchObject({ summarizeThrough: 40 });
+    ).resolves.toMatchObject({
+      summarizeThrough: 40,
+      messages: [
+        expect.objectContaining({
+          entityKeys: ["student:student-42"],
+        }),
+        ...Array.from({ length: 39 }, () => expect.any(Object)),
+      ],
+    });
     expect(prismaMock.assistantMessage.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ skip: 0, take: 40 }),
+      expect.objectContaining({
+        skip: 0,
+        take: 40,
+        select: expect.objectContaining({
+          run: {
+            select: {
+              toolRuns: expect.objectContaining({
+                where: { status: "COMPLETED" },
+                take: 12,
+              }),
+            },
+          },
+        }),
+      }),
     );
   });
 
@@ -189,7 +217,9 @@ describe("assistant persistence guarantees", () => {
           createdAt: new Date(),
           run: {
             _count: { toolRuns: 1 },
-            toolRuns: [{ result: { card: { entityKey: "student:student-1" } } }],
+            toolRuns: [
+              { result: { card: { entityKey: "student:student-1" } } },
+            ],
           },
         },
       ],
@@ -454,12 +484,7 @@ describe("assistant persistence guarantees", () => {
       .mockResolvedValueOnce({ count: 1 })
       .mockResolvedValueOnce({ count: 0 });
 
-    await setAssistantThreadSummary(
-      "admin-1",
-      "thread-1",
-      "Newer summary",
-      80,
-    );
+    await setAssistantThreadSummary("admin-1", "thread-1", "Newer summary", 80);
     await setAssistantThreadSummary(
       "admin-1",
       "thread-1",
@@ -753,9 +778,9 @@ describe("assistant persistence guarantees", () => {
         findFirst: vi.fn(),
       },
       assistantToolRun: {
-        findMany: vi.fn().mockResolvedValue([
-          { id: "tool-expired", runId: "run-expired" },
-        ]),
+        findMany: vi
+          .fn()
+          .mockResolvedValue([{ id: "tool-expired", runId: "run-expired" }]),
         updateMany: vi.fn().mockResolvedValue({ count: 1 }),
       },
       assistantRun: {

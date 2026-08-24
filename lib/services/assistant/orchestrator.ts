@@ -465,7 +465,11 @@ async function refreshAssistantSummary(
   const transcript = source.messages
     .map(
       (message) =>
-        `${message.role === "USER" ? "Administrator" : "Assistant"}: ${message.content}`,
+        `${message.role === "USER" ? "Administrator" : "Assistant"}: ${message.content}${
+          message.entityKeys.length > 0
+            ? `\n[Server-generated CRM entity references: ${message.entityKeys.join(", ")}]`
+            : ""
+        }`,
     )
     .join("\n\n");
   const response = await client.responses.create(

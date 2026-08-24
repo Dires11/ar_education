@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const prismaMock = vi.hoisted(() => ({
-  recurrenceRule: { count: vi.fn(), findMany: vi.fn() },
+  recurrenceRule: { count: vi.fn(), findMany: vi.fn(), findUnique: vi.fn() },
   session: { count: vi.fn(), findMany: vi.fn(), findUnique: vi.fn() },
   sessionAttendance: { count: vi.fn(), findMany: vi.fn() },
   $transaction: vi.fn(),
@@ -10,7 +10,9 @@ const prismaMock = vi.hoisted(() => ({
 vi.mock("@/lib/prisma", () => ({ prisma: prismaMock }));
 
 import {
+  deleteRecurringScheduleData,
   getGroupRecurrenceRulesForMonth,
+  getRecurrenceRuleForAssistant,
   getRecurrenceRulesForMonth,
   getSessionForAssistant,
   getSessionParticipantsForAssistant,
@@ -48,16 +50,51 @@ describe("assistant recurrence lookup", () => {
           OR: [{ endsOn: null }, { endsOn: { gte: calendarDate } }],
         },
         take: 20,
-        orderBy: [
-          { updatedAt: "desc" },
-          { dayOfWeek: "asc" },
-          { id: "asc" },
-        ],
+        orderBy: [{ updatedAt: "desc" }, { dayOfWeek: "asc" }, { id: "asc" }],
       }),
     );
     expect(
       prismaMock.recurrenceRule.findMany.mock.calls[0][0].where,
     ).not.toHaveProperty("startsOn");
+  });
+
+  it("loads the recurrence version used by approval cards", async () => {
+    prismaMock.recurrenceRule.findUnique.mockResolvedValue(null);
+
+    await getRecurrenceRuleForAssistant("rule-1");
+
+    expect(prismaMock.recurrenceRule.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "rule-1" },
+        select: expect.objectContaining({ updatedAt: true }),
+      }),
+    );
+  });
+
+  it("locks and rejects a stale recurring-schedule approval before deleting sessions", async () => {
+    const tx = {
+      $queryRaw: vi
+        .fn()
+        .mockResolvedValue([
+          { updatedAt: new Date("2026-08-23T13:00:00.000Z") },
+        ]),
+      session: { deleteMany: vi.fn(), updateMany: vi.fn() },
+      recurrenceRule: { delete: vi.fn() },
+    };
+    prismaMock.$transaction.mockImplementationOnce(
+      (callback: (client: typeof tx) => unknown) => callback(tx),
+    );
+
+    await expect(
+      deleteRecurringScheduleData(
+        "rule-1",
+        new Date("2026-08-24T00:00:00.000Z"),
+        new Date("2026-08-23T12:00:00.000Z"),
+      ),
+    ).rejects.toThrow("changed after approval");
+    expect(tx.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(tx.session.deleteMany).not.toHaveBeenCalled();
+    expect(tx.recurrenceRule.delete).not.toHaveBeenCalled();
   });
 
   it("can include ended group rules for historical inspection", async () => {
@@ -158,7 +195,8 @@ describe("assistant recurrence lookup", () => {
       rules: 1_000,
       groupEnrollments: 100,
     });
-    const groupQuery = prismaMock.recurrenceRule.findMany.mock.calls.at(-1)?.[0];
+    const groupQuery =
+      prismaMock.recurrenceRule.findMany.mock.calls.at(-1)?.[0];
     expect(groupQuery.take).toBe(1_001);
     expect(groupQuery.include.group.include.enrollments).toMatchObject({
       orderBy: { id: "asc" },
@@ -173,16 +211,16 @@ describe("assistant recurrence lookup", () => {
       new Date("2026-08-02T00:00:00.000Z"),
       50,
     );
-    expect(prismaMock.session.findMany.mock.calls[0][0].select.attendance.take).toBe(
-      10,
-    );
+    expect(
+      prismaMock.session.findMany.mock.calls[0][0].select.attendance.take,
+    ).toBe(10);
 
     prismaMock.session.findMany.mockClear();
     prismaMock.session.findUnique.mockResolvedValue(null);
     await getSessionForAssistant("session-1");
-    expect(prismaMock.session.findUnique.mock.calls[0][0].select.attendance.take).toBe(
-      100,
-    );
+    expect(
+      prismaMock.session.findUnique.mock.calls[0][0].select.attendance.take,
+    ).toBe(100);
   });
 
   it("pages filtered next and prior session history with stable DB ordering", async () => {
@@ -240,10 +278,7 @@ describe("assistant recurrence lookup", () => {
       limit: 1,
     });
     query = prismaMock.session.findMany.mock.calls.at(-1)?.[0];
-    expect(query.orderBy).toEqual([
-      { scheduledFor: "desc" },
-      { id: "desc" },
-    ]);
+    expect(query.orderBy).toEqual([{ scheduledFor: "desc" }, { id: "desc" }]);
   });
 
   it("pages and filters compact session participants for large attendance rosters", async () => {

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const dataMocks = vi.hoisted(() => ({
   disableAdminSafely: vi.fn(),
+  findAdminById: vi.fn(),
   listAdmins: vi.fn(),
   listAdminsForAssistant: vi.fn(),
   setAdminRoleSafely: vi.fn(),
@@ -20,6 +21,7 @@ vi.mock("@clerk/nextjs/server", () => ({
 }));
 
 import {
+  getAssistantAdminAuthorization,
   getPendingTeamInvitation,
   getTeamAdminForAssistant,
   getTeamPageData,
@@ -38,6 +40,11 @@ describe("team removal", () => {
       id: "admin-2",
       clerkUserId: "clerk-2",
     });
+    dataMocks.findAdminById.mockResolvedValue({
+      id: "admin-1",
+      role: "OWNER",
+      disabledAt: null,
+    });
     clerkMocks.getInvitationList.mockResolvedValue({
       data: [],
       totalCount: 0,
@@ -50,6 +57,19 @@ describe("team removal", () => {
         revokeInvitation: clerkMocks.revokeInvitation,
       },
     });
+  });
+
+  it("reloads current assistant authorization and rejects disabled admins", async () => {
+    dataMocks.findAdminById.mockResolvedValue({
+      id: "admin-1",
+      role: "OWNER",
+      disabledAt: new Date("2026-08-23T12:00:00.000Z"),
+    });
+
+    await expect(getAssistantAdminAuthorization("admin-1")).rejects.toThrow(
+      "disabled",
+    );
+    expect(dataMocks.findAdminById).toHaveBeenCalledWith("admin-1");
   });
 
   it("marks an interrupted invitation response as an unknown mutation outcome", async () => {

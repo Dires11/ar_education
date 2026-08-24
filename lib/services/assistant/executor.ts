@@ -117,6 +117,7 @@ import {
   getEmailDeliveryConfirmation,
 } from "@/lib/services/emails";
 import {
+  getAssistantAdminAuthorization,
   getTeamAdminForAssistant,
   getPendingTeamInvitation,
   getTeamPageForAssistant,
@@ -169,6 +170,16 @@ const assistantConfirmationSnapshotSchema = z.object({
     .max(100)
     .optional(),
 });
+const assistantRecurrenceVersionSchema = z.object({
+  ruleId: z.string().min(1).max(128),
+  updatedAt: isoDateTimeSchema,
+});
+const VERSIONED_RECURRENCE_CONFIRMATION_TOOLS = new Set([
+  "split_recurring_schedule",
+  "end_recurring_schedule",
+  "cancel_occurrence",
+  "delete_recurring_schedule",
+]);
 
 export type AssistantToolExecutionContext = {
   admin: Pick<Admin, "id" | "role">;
@@ -229,6 +240,21 @@ export async function resolveAssistantConfirmationArguments(input: {
   name: string;
   argumentsValue: Record<string, unknown>;
 }) {
+  if (
+    input.namespace === "recurrence" &&
+    VERSIONED_RECURRENCE_CONFIRMATION_TOOLS.has(input.name)
+  ) {
+    const ruleId = z.string().parse(input.argumentsValue.ruleId);
+    const rule = await getRecurrenceRuleForAssistant(ruleId);
+    if (!rule) throw new Error("Recurring schedule not found");
+    return {
+      ...input.argumentsValue,
+      __assistantRecurrenceVersion: {
+        ruleId,
+        updatedAt: rule.updatedAt.toISOString(),
+      },
+    };
+  }
   if (input.namespace === "billing" && input.name === "mark_due_paid") {
     const quote = await getPaymentDueQuote(input.argumentsValue);
     return quote.confirmationArguments as Record<string, unknown>;
@@ -437,6 +463,12 @@ function parsedArguments(spec: AssistantToolSpec, value: unknown) {
       original.__assistantConfirmation,
     );
   }
+  if (original.__assistantRecurrenceVersion) {
+    parsed.__assistantRecurrenceVersion =
+      assistantRecurrenceVersionSchema.parse(
+        original.__assistantRecurrenceVersion,
+      );
+  }
   return parsed;
 }
 
@@ -444,6 +476,18 @@ function confirmationSnapshot(args: ToolArguments) {
   return assistantConfirmationSnapshotSchema.parse(
     args.__assistantConfirmation,
   );
+}
+
+function confirmedRecurrenceUpdatedAt(args: ToolArguments, ruleId: string) {
+  const version = assistantRecurrenceVersionSchema.safeParse(
+    args.__assistantRecurrenceVersion,
+  );
+  if (!version.success || version.data.ruleId !== ruleId) {
+    throw new Error(
+      "This recurring schedule approval is missing its version. Review it and approve again.",
+    );
+  }
+  return new Date(version.data.updatedAt);
 }
 
 function stringValue(args: ToolArguments, key: string) {
@@ -2383,11 +2427,17 @@ async function executeEnrollments(name: string, args: ToolArguments) {
         "/enrollments",
       );
     case "get_enrollment": {
+      const discountPage = Number(args.discountPage);
+      const discountLimit = Number(args.discountLimit);
       const discountId = args.discountId as string | undefined;
       if (discountId) {
         const discount = await getDiscountForAssistant(discountId);
         if (!discount?.enrollmentId) throw new Error("Discount not found");
-        const result = await getEnrollmentForAssistant(discount.enrollmentId);
+        const result = await getEnrollmentForAssistant(
+          discount.enrollmentId,
+          discountPage,
+          discountLimit,
+        );
         if (!result) throw new Error("Enrollment not found");
         const { _count, ...enrollment } = result;
         return toolResult(
@@ -2398,7 +2448,9 @@ async function executeEnrollments(name: string, args: ToolArguments) {
               discountTotal: _count.discounts,
               sessionTotal: _count.sessions,
               paymentTotal: _count.payments,
-              hasMoreDiscounts: _count.discounts > enrollment.discounts.length,
+              hasMoreDiscounts: discountPage * discountLimit < _count.discounts,
+              discountPage,
+              discountLimit,
             },
           },
           `/enrollments?enrollment=${enrollment.id}`,
@@ -2406,7 +2458,11 @@ async function executeEnrollments(name: string, args: ToolArguments) {
         );
       }
       const id = stringValue(args, "id");
-      const result = await getEnrollmentForAssistant(id);
+      const result = await getEnrollmentForAssistant(
+        id,
+        discountPage,
+        discountLimit,
+      );
       if (!result) throw new Error("Enrollment not found");
       const { _count, ...enrollment } = result;
       return toolResult(
@@ -2415,7 +2471,9 @@ async function executeEnrollments(name: string, args: ToolArguments) {
           discountTotal: _count.discounts,
           sessionTotal: _count.sessions,
           paymentTotal: _count.payments,
-          hasMoreDiscounts: _count.discounts > enrollment.discounts.length,
+          hasMoreDiscounts: discountPage * discountLimit < _count.discounts,
+          discountPage,
+          discountLimit,
         },
         `/enrollments?enrollment=${id}`,
         enrollmentResultCard(enrollment, "Enrollment details"),
@@ -2731,6 +2789,7 @@ async function executeRecurrence(name: string, args: ToolArguments) {
         ruleId,
         new Date(stringValue(args, "splitDate")),
         params as never,
+        confirmedRecurrenceUpdatedAt(args, ruleId),
       );
       return resultAfterMutation({ updated: true }, "/schedule", async () => {
         const rule = await getRecurrenceRuleForAssistant(ruleId);
@@ -2748,6 +2807,7 @@ async function executeRecurrence(name: string, args: ToolArguments) {
       await endRecurrenceFromDate(
         ruleId,
         new Date(stringValue(args, "occurrenceFor")),
+        confirmedRecurrenceUpdatedAt(args, ruleId),
       );
       return resultAfterMutation({ ended: true }, "/schedule", async () => {
         const rule = await getRecurrenceRuleForAssistant(ruleId);
@@ -2765,6 +2825,7 @@ async function executeRecurrence(name: string, args: ToolArguments) {
       await cancelVirtualOccurrence(
         ruleId,
         new Date(stringValue(args, "occurrenceFor")),
+        confirmedRecurrenceUpdatedAt(args, ruleId),
       );
       return resultAfterMutation({ cancelled: true }, "/schedule", async () => {
         const rule = await getRecurrenceRuleForAssistant(ruleId);
@@ -2802,7 +2863,10 @@ async function executeRecurrence(name: string, args: ToolArguments) {
       const ruleId = stringValue(args, "ruleId");
       const rule = await getRecurrenceRuleForAssistant(ruleId);
       if (!rule) throw new Error("Recurring schedule not found");
-      await deleteRecurringSchedule(ruleId);
+      await deleteRecurringSchedule(
+        ruleId,
+        confirmedRecurrenceUpdatedAt(args, ruleId),
+      );
       return mutationToolResult(
         { ruleId, deleted: true },
         "/schedule",
@@ -3299,10 +3363,17 @@ export async function executeAssistantTool(input: {
   argumentsValue: unknown;
   context: AssistantToolExecutionContext;
 }) {
+  const currentAdmin = await getAssistantAdminAuthorization(
+    input.context.admin.id,
+  );
+  const currentContext: AssistantToolExecutionContext = {
+    ...input.context,
+    admin: currentAdmin,
+  };
   const spec = getAssistantToolSpec(
     input.namespace,
     input.name,
-    input.context.admin.role,
+    currentAdmin.role,
   );
   if (!spec) throw new Error("Tool is not available for this administrator");
   const args = parsedArguments(spec, input.argumentsValue);
@@ -3335,11 +3406,11 @@ export async function executeAssistantTool(input: {
     case "recurrence":
       return executeRecurrence(input.name, args);
     case "billing":
-      return executeBilling(input.name, args, input.context);
+      return executeBilling(input.name, args, currentContext);
     case "communications":
-      return executeCommunications(input.name, args, input.context);
+      return executeCommunications(input.name, args, currentContext);
     case "team":
-      return executeTeam(input.name, args, input.context);
+      return executeTeam(input.name, args, currentContext);
     case "reporting": {
       const section = args.section as
         "SUMMARY" | "UNPAID_STUDENTS" | "UPCOMING_ENDINGS" | "TUTOR_WORKLOAD";

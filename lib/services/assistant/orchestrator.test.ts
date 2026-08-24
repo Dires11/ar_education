@@ -7,6 +7,8 @@ const responses = vi.hoisted(() => ({
   }>,
   requests: [] as Array<Record<string, unknown>>,
   options: [] as Array<{ signal?: AbortSignal } | undefined>,
+  summaryRequests: [] as Array<Record<string, unknown>>,
+  summaryResponseText: "Durable summary",
 }));
 
 const dataMocks = vi.hoisted(() => ({
@@ -23,7 +25,7 @@ const dataMocks = vi.hoisted(() => ({
   markAssistantToolRunUnknown: vi.fn(async () => undefined),
   getAssistantContext: vi.fn(),
   getAssistantRunForRetry: vi.fn(),
-  getAssistantSummarySource: vi.fn(async () => null),
+  getAssistantSummarySource: vi.fn(async (): Promise<unknown> => null),
   getAssistantThread: vi.fn(),
   getAssistantThreadMessageCount: vi.fn(async () => 2),
   getAssistantToolRunForDecision: vi.fn(),
@@ -81,7 +83,10 @@ vi.mock("openai", () => ({
           finalResponse: async () => ({ status: "completed", ...item.final }),
         };
       },
-      create: vi.fn(),
+      create: async (request: Record<string, unknown>) => {
+        responses.summaryRequests.push(request);
+        return { output_text: responses.summaryResponseText };
+      },
     };
   },
 }));
@@ -157,6 +162,8 @@ describe("assistant orchestration", () => {
     responses.queue.length = 0;
     responses.requests.length = 0;
     responses.options.length = 0;
+    responses.summaryRequests.length = 0;
+    responses.summaryResponseText = "Durable summary";
     process.env.OPENAI_API_KEY = "test-key";
     confirmationCardMock.mockResolvedValue(undefined);
     confirmationArgumentsMock.mockImplementation(
@@ -373,6 +380,55 @@ describe("assistant orchestration", () => {
       },
       { role: "assistant", content: "No further changes yet." },
     ]);
+  });
+
+  it("preserves server card identities when old messages roll into a summary", async () => {
+    dataMocks.getAssistantSummarySource.mockResolvedValueOnce({
+      previousSummary: "Earlier conversation",
+      summarizeThrough: 40,
+      messages: [
+        {
+          role: "USER",
+          content: "Create the student from our earlier discussion.",
+          entityKeys: ["student:student-42"],
+        },
+        {
+          role: "ASSISTANT",
+          content: "The student was created; use the record card.",
+          entityKeys: [],
+        },
+      ],
+    });
+    responses.queue.push({
+      events: [],
+      final: {
+        output_text: "The record is still available.",
+        output: [],
+        usage,
+      },
+    });
+
+    await processAssistantTurn(
+      { id: "admin-1", role: "STAFF" },
+      {
+        clientTurnId: "c7bcb6f9-41e7-4c17-bf0d-3e1b04c8e0d4",
+        message: "What about that student?",
+      },
+      () => undefined,
+    );
+
+    const summaryInput = responses.summaryRequests[0].input as Array<{
+      content: string;
+    }>;
+    expect(summaryInput[0].content).toContain(
+      "[Server-generated CRM entity references: student:student-42]",
+    );
+    expect(dataMocks.setAssistantThreadSummary).toHaveBeenCalledWith(
+      "admin-1",
+      "thread-1",
+      "Durable summary",
+      40,
+    );
   });
 
   it("persists an incomplete OpenAI response as a retryable failure", async () => {

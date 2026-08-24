@@ -271,9 +271,7 @@ export async function listAssistantThreads(
     threads,
     hasMore,
     nextCursor:
-      hasMore && oldest
-        ? { updatedAt: oldest.updatedAt, id: oldest.id }
-        : null,
+      hasMore && oldest ? { updatedAt: oldest.updatedAt, id: oldest.id } : null,
   };
 }
 
@@ -316,9 +314,7 @@ export async function getAssistantThreadMessages(
     messages: descending.reverse(),
     hasMore,
     nextCursor:
-      hasMore && oldest
-        ? { createdAt: oldest.createdAt, id: oldest.id }
-        : null,
+      hasMore && oldest ? { createdAt: oldest.createdAt, id: oldest.id } : null,
   };
 }
 
@@ -449,6 +445,20 @@ export async function setAssistantThreadSummary(
   });
 }
 
+function assistantResultEntityKey(result: Prisma.JsonValue | null) {
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    return null;
+  }
+  const card = result.card;
+  if (!card || typeof card !== "object" || Array.isArray(card)) return null;
+  const entityKey = card.entityKey;
+  return typeof entityKey === "string" &&
+    entityKey.length <= 256 &&
+    /^[A-Za-z][A-Za-z0-9_-]*:\S+$/.test(entityKey)
+    ? entityKey
+    : null;
+}
+
 export async function getAssistantSummarySource(
   adminId: string,
   threadId: string,
@@ -481,11 +491,34 @@ export async function getAssistantSummarySource(
     select: {
       role: true,
       content: true,
+      run: {
+        select: {
+          toolRuns: {
+            where: { status: "COMPLETED" },
+            orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+            take: 12,
+            select: { result: true },
+          },
+        },
+      },
     },
   });
   return {
     previousSummary: thread.contextSummary,
-    messages,
+    messages: messages.map((message) => ({
+      role: message.role,
+      content: message.content,
+      entityKeys:
+        message.role === "USER"
+          ? [
+              ...new Set(
+                (message.run?.toolRuns ?? [])
+                  .map((toolRun) => assistantResultEntityKey(toolRun.result))
+                  .filter((value): value is string => Boolean(value)),
+              ),
+            ]
+          : [],
+    })),
     summarizeThrough,
   };
 }
@@ -697,10 +730,7 @@ export async function createAssistantTurn(input: {
   }
 }
 
-export function getAssistantRunForRetry(
-  adminId: string,
-  clientTurnId: string,
-) {
+export function getAssistantRunForRetry(adminId: string, clientTurnId: string) {
   return prisma.assistantRun.findFirst({
     where: {
       clientTurnId,
