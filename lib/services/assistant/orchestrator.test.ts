@@ -558,18 +558,71 @@ describe("assistant orchestration", () => {
       },
     );
     expect(
-      dataMocks.recordAssistantResponse.mock.invocationCallOrder[0],
-    ).toBeLessThan(
       dataMocks.setAssistantThreadSummary.mock.invocationCallOrder[0],
+    ).toBeLessThan(
+      dataMocks.recordAssistantResponse.mock.invocationCallOrder[0],
     );
     expect(
-      dataMocks.setAssistantThreadSummary.mock.invocationCallOrder[0],
+      dataMocks.recordAssistantResponse.mock.invocationCallOrder[0],
     ).toBeLessThan(dataMocks.completeAssistantRun.mock.invocationCallOrder[0]);
   });
 
-  it("publishes a deterministic summary before releasing the run when the summary model fails", async () => {
+  it("does not advance summary coverage when a long history cannot be summarized", async () => {
+    const previousSummary = `${"Earlier durable context. ".repeat(300)}PRIOR-END`;
+    const firstMessage = `${"First pending detail. ".repeat(180)}FIRST-END`;
+    const secondMessage = `${"Second pending detail. ".repeat(180)}SECOND-END`;
     dataMocks.getAssistantSummarySource.mockResolvedValueOnce({
-      previousSummary: "Earlier context",
+      previousSummary,
+      summarizeThrough: 12,
+      expectedSummarizedMessageCount: 10,
+      expectedMessageCount: 42,
+      expectedUpdatedAt: new Date("2026-08-23T12:00:00.000Z"),
+      messages: [
+        {
+          role: "USER",
+          content: firstMessage,
+          entityKeys: [],
+          operationAudit: null,
+        },
+        {
+          role: "ASSISTANT",
+          content: secondMessage,
+          entityKeys: [],
+          operationAudit: null,
+        },
+      ],
+    });
+    responses.summaryError = new Error("Summary model unavailable");
+
+    await expect(
+      processAssistantTurn(
+        { id: "admin-1", role: "STAFF" },
+        {
+          clientTurnId: "c7bcb6f9-41e7-4c17-bf0d-3e1b04c8e0d4",
+          message: "Find Maya",
+        },
+        () => undefined,
+      ),
+    ).rejects.toThrow("Conversation history could not be prepared");
+
+    const summaryInput = responses.summaryRequests[0].input as Array<{
+      content: string;
+    }>;
+    expect(summaryInput[0].content).toContain("PRIOR-END");
+    expect(summaryInput[0].content).toContain("FIRST-END");
+    expect(summaryInput[0].content).toContain("SECOND-END");
+    expect(dataMocks.setAssistantThreadSummary).not.toHaveBeenCalled();
+    expect(dataMocks.getAssistantContext).not.toHaveBeenCalled();
+    expect(responses.requests).toHaveLength(0);
+    expect(dataMocks.failAssistantRun).toHaveBeenCalledWith(
+      "run-1",
+      expect.stringContaining("Conversation history could not be prepared"),
+    );
+  });
+
+  it("does not advance summary coverage when the summary model returns empty text", async () => {
+    dataMocks.getAssistantSummarySource.mockResolvedValueOnce({
+      previousSummary: `${"Prior context. ".repeat(500)}PRIOR-END`,
       summarizeThrough: 1,
       expectedSummarizedMessageCount: 0,
       expectedMessageCount: 31,
@@ -577,40 +630,69 @@ describe("assistant orchestration", () => {
       messages: [
         {
           role: "USER",
-          content: "Find Maya",
+          content: `${"Pending context. ".repeat(500)}TRANSCRIPT-END`,
           entityKeys: [],
           operationAudit: null,
         },
       ],
     });
-    responses.summaryError = new Error("Summary model unavailable");
+    responses.summaryResponseText = "   ";
+
+    await expect(
+      processAssistantTurn(
+        { id: "admin-1", role: "STAFF" },
+        {
+          clientTurnId: "c7bcb6f9-41e7-4c17-bf0d-3e1b04c8e0d4",
+          message: "Continue",
+        },
+        () => undefined,
+      ),
+    ).rejects.toThrow("Conversation history could not be prepared");
+
+    expect(dataMocks.setAssistantThreadSummary).not.toHaveBeenCalled();
+    expect(dataMocks.getAssistantContext).not.toHaveBeenCalled();
+    expect(responses.requests).toHaveLength(0);
+  });
+
+  it("repairs every uncovered summary batch before loading model context", async () => {
+    const source = (from: number, through: number) => ({
+      previousSummary: from === 0 ? null : `Summary through ${from}`,
+      summarizeThrough: through,
+      expectedSummarizedMessageCount: from,
+      expectedMessageCount: 120,
+      expectedUpdatedAt: new Date("2026-08-23T12:00:00.000Z"),
+      messages: [
+        {
+          role: "USER",
+          content: `Messages ${from + 1} through ${through}`,
+          entityKeys: [],
+          operationAudit: null,
+        },
+      ],
+    });
+    dataMocks.getAssistantSummarySource
+      .mockResolvedValueOnce(source(0, 40))
+      .mockResolvedValueOnce(source(40, 80))
+      .mockResolvedValueOnce(source(80, 90))
+      .mockResolvedValueOnce(null);
     responses.queue.push({
       events: [],
-      final: { output_text: "Maya was found.", output: [], usage },
+      final: { output_text: "All caught up.", output: [], usage },
     });
 
     await processAssistantTurn(
       { id: "admin-1", role: "STAFF" },
       {
         clientTurnId: "c7bcb6f9-41e7-4c17-bf0d-3e1b04c8e0d4",
-        message: "Find Maya",
+        message: "Continue",
       },
       () => undefined,
     );
 
-    expect(dataMocks.setAssistantThreadSummary).toHaveBeenCalledWith(
-      "admin-1",
-      "thread-1",
-      expect.objectContaining({
-        contextSummary: expect.stringContaining(
-          "Additional conversation:\nAdministrator: Find Maya",
-        ),
-        summarizedMessageCount: 1,
-      }),
-    );
+    expect(dataMocks.setAssistantThreadSummary).toHaveBeenCalledTimes(3);
     expect(
-      dataMocks.setAssistantThreadSummary.mock.invocationCallOrder[0],
-    ).toBeLessThan(dataMocks.completeAssistantRun.mock.invocationCallOrder[0]);
+      dataMocks.setAssistantThreadSummary.mock.invocationCallOrder[2],
+    ).toBeLessThan(dataMocks.getAssistantContext.mock.invocationCallOrder[0]);
   });
 
   it("persists an incomplete OpenAI response as a retryable failure", async () => {

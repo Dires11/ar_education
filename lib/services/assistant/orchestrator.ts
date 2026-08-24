@@ -570,7 +570,9 @@ async function refreshAssistantSummary(
   signal?: AbortSignal,
 ) {
   const source = await getAssistantSummarySource(admin.id, threadId);
-  if (!source) return;
+  if (!source) return false;
+
+  signal?.throwIfAborted();
 
   const transcript = source.messages
     .map(
@@ -582,46 +584,40 @@ async function refreshAssistantSummary(
         }${formatOperationAuditHistoryNote(message.operationAudit)}`,
     )
     .join("\n\n");
-  const deterministicFallback = [
-    source.previousSummary
-      ? `Earlier durable summary:\n${source.previousSummary.slice(0, 6_000)}`
-      : "",
-    `Additional conversation:\n${transcript.slice(0, 6_000)}`,
-  ]
-    .filter(Boolean)
-    .join("\n\n")
-    .slice(0, 12_000);
-  let contextSummary = deterministicFallback;
-  if (!signal?.aborted) {
-    try {
-      const response = await client.responses.create(
-        {
-          model: ASSISTANT_MODEL,
-          instructions:
-            "Summarize durable CRM conversation context. Preserve entity names and IDs, completed actions, pending decisions, constraints, dates, administrator preferences, and every server-generated operation audit warning verbatim in substance. Never remove or soften an unverified-outcome or do-not-repeat warning. Do not add facts. Return concise plain text.",
-          input: [
-            {
-              role: "user",
-              content: `Previous summary:\n${source.previousSummary ?? "(none)"}\n\nNew transcript:\n${transcript}`,
-            },
-          ],
-          reasoning: { effort: "low", context: "current_turn" },
-          max_output_tokens: 1_200,
-          store: false,
-          safety_identifier: safetyIdentifier(admin.id),
-        },
-        { signal },
-      );
-      if (response.output_text.trim()) {
-        contextSummary = response.output_text.trim().slice(0, 12_000);
-      }
-    } catch {
-      // A deterministic local summary keeps the context window contiguous
-      // when the optional model-generated summary is unavailable.
-    }
+  let response: Awaited<ReturnType<OpenAI["responses"]["create"]>>;
+  try {
+    response = await client.responses.create(
+      {
+        model: ASSISTANT_MODEL,
+        instructions:
+          "Summarize durable CRM conversation context. Preserve entity names and IDs, completed actions, pending decisions, constraints, dates, administrator preferences, and every server-generated operation audit warning verbatim in substance. Never remove or soften an unverified-outcome or do-not-repeat warning. Do not add facts. Return concise plain text.",
+        input: [
+          {
+            role: "user",
+            content: `Previous summary:\n${source.previousSummary ?? "(none)"}\n\nNew transcript:\n${transcript}`,
+          },
+        ],
+        reasoning: { effort: "low", context: "current_turn" },
+        max_output_tokens: 1_200,
+        store: false,
+        safety_identifier: safetyIdentifier(admin.id),
+      },
+      { signal },
+    );
+  } catch (error) {
+    throw new Error(
+      "Conversation history could not be prepared. Retry this request before continuing.",
+      { cause: error },
+    );
+  }
+  const contextSummary = response.output_text.trim();
+  if (!contextSummary) {
+    throw new Error(
+      "Conversation history could not be prepared. Retry this request before continuing.",
+    );
   }
   const saved = await setAssistantThreadSummary(admin.id, threadId, {
-    contextSummary,
+    contextSummary: contextSummary.slice(0, 12_000),
     summarizedMessageCount: source.summarizeThrough,
     expectedSummarizedMessageCount: source.expectedSummarizedMessageCount,
     expectedMessageCount: source.expectedMessageCount,
@@ -631,6 +627,35 @@ async function refreshAssistantSummary(
     throw new Error(
       "Conversation history changed while its summary was being prepared",
     );
+  }
+  return source.summarizeThrough;
+}
+
+async function prepareAssistantContextSummary(
+  client: OpenAI,
+  admin: AdminContext,
+  threadId: string,
+  signal?: AbortSignal,
+) {
+  // Existing threads can contain more than one 40-message summary batch. The
+  // active run serializes this repair, and context is not loaded until every
+  // uncovered batch has been durably summarized.
+  let lastSummarizedMessageCount = -1;
+  while (true) {
+    const summarizedMessageCount = await refreshAssistantSummary(
+      client,
+      admin,
+      threadId,
+      signal,
+    );
+    if (summarizedMessageCount === false) return;
+    if (summarizedMessageCount <= lastSummarizedMessageCount) {
+      throw new Error(
+        "Conversation history did not advance while its summary was being prepared",
+      );
+    }
+    lastSummarizedMessageCount = summarizedMessageCount;
+    signal?.throwIfAborted();
   }
 }
 
@@ -726,6 +751,7 @@ async function executeRecordedTool(input: {
 }
 
 async function runModelLoop(input: {
+  client?: OpenAI;
   admin: AdminContext;
   runId: string;
   threadId: string;
@@ -744,7 +770,7 @@ async function runModelLoop(input: {
   }>;
   signal?: AbortSignal;
 }) {
-  const client = getOpenAIClient();
+  const client = input.client ?? getOpenAIClient();
   const tools = getAssistantOpenAITools(input.admin.role);
   let responseInput = input.responseInput;
   let assistantContent = input.initialAssistantContent ?? "";
@@ -1440,12 +1466,6 @@ async function runModelLoop(input: {
           threadId: input.threadId,
           content,
         });
-        await refreshAssistantSummary(
-          client,
-          input.admin,
-          input.threadId,
-          input.signal,
-        );
         const completed = await completeAssistantRun({
           runId: input.runId,
           threadId: input.threadId,
@@ -1760,6 +1780,13 @@ export async function processAssistantTurn(
   }
 
   try {
+    const client = getOpenAIClient();
+    await prepareAssistantContextSummary(
+      client,
+      admin,
+      created.thread.id,
+      signal,
+    );
     const context = await getAssistantContext(admin.id, created.thread.id);
     if (!context) throw new Error("Assistant thread not found");
     await runModelLoop({
@@ -1774,6 +1801,7 @@ export async function processAssistantTurn(
       hasAttachments: attachments.length > 0,
       hasHistoricalUntrustedContext: context.hasUntrustedHistory,
       signal,
+      client,
     });
   } catch (error) {
     const message =
