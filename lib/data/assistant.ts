@@ -185,10 +185,70 @@ export function expireAssistantRuns(adminId: string, threadId?: string) {
   );
 }
 
-export async function listAssistantThreads(adminId: string) {
-  return prisma.assistantThread.findMany({
-    where: { adminId, archivedAt: null },
-    orderBy: { updatedAt: "desc" },
+export type AssistantThreadHistoryCursor = {
+  updatedAt: Date;
+  id: string;
+};
+
+export type AssistantMessageHistoryCursor = {
+  createdAt: Date;
+  id: string;
+};
+
+const visibleAssistantMessageWhere = {
+  OR: [{ runId: null }, { run: { supersededAt: null } }],
+} satisfies Prisma.AssistantMessageWhereInput;
+
+const assistantHistoryMessageInclude = {
+  run: {
+    select: {
+      id: true,
+      clientTurnId: true,
+      status: true,
+      hasAttachments: true,
+      error: true,
+      toolRuns: {
+        orderBy: [{ createdAt: "asc" as const }, { id: "asc" as const }],
+        select: {
+          id: true,
+          namespace: true,
+          toolName: true,
+          preview: true,
+          result: true,
+          status: true,
+          requiresConfirmation: true,
+          expiresAt: true,
+          error: true,
+        },
+      },
+    },
+  },
+} satisfies Prisma.AssistantMessageInclude;
+
+export async function listAssistantThreads(
+  adminId: string,
+  input: { limit: number; before?: AssistantThreadHistoryCursor } = {
+    limit: 50,
+  },
+) {
+  const rows = await prisma.assistantThread.findMany({
+    where: {
+      adminId,
+      archivedAt: null,
+      ...(input.before
+        ? {
+            OR: [
+              { updatedAt: { lt: input.before.updatedAt } },
+              {
+                updatedAt: input.before.updatedAt,
+                id: { lt: input.before.id },
+              },
+            ],
+          }
+        : {}),
+    },
+    orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+    take: input.limit + 1,
     select: {
       id: true,
       title: true,
@@ -204,45 +264,87 @@ export async function listAssistantThreads(adminId: string) {
       },
     },
   });
+  const hasMore = rows.length > input.limit;
+  const threads = rows.slice(0, input.limit);
+  const oldest = threads.at(-1);
+  return {
+    threads,
+    hasMore,
+    nextCursor:
+      hasMore && oldest
+        ? { updatedAt: oldest.updatedAt, id: oldest.id }
+        : null,
+  };
 }
 
-export async function getAssistantThread(adminId: string, threadId: string) {
-  return prisma.assistantThread.findFirst({
+export async function getAssistantThreadMessages(
+  adminId: string,
+  threadId: string,
+  input: { limit: number; before?: AssistantMessageHistoryCursor } = {
+    limit: 40,
+  },
+) {
+  const rows = await prisma.assistantMessage.findMany({
+    where: {
+      threadId,
+      thread: { adminId },
+      AND: [
+        visibleAssistantMessageWhere,
+        ...(input.before
+          ? [
+              {
+                OR: [
+                  { createdAt: { lt: input.before.createdAt } },
+                  {
+                    createdAt: input.before.createdAt,
+                    id: { lt: input.before.id },
+                  },
+                ],
+              } satisfies Prisma.AssistantMessageWhereInput,
+            ]
+          : []),
+      ],
+    },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    take: input.limit + 1,
+    include: assistantHistoryMessageInclude,
+  });
+  const hasMore = rows.length > input.limit;
+  const descending = rows.slice(0, input.limit);
+  const oldest = descending.at(-1);
+  return {
+    messages: descending.reverse(),
+    hasMore,
+    nextCursor:
+      hasMore && oldest
+        ? { createdAt: oldest.createdAt, id: oldest.id }
+        : null,
+  };
+}
+
+export async function getAssistantThread(
+  adminId: string,
+  threadId: string,
+  messageLimit = 40,
+) {
+  const thread = await prisma.assistantThread.findFirst({
     where: { id: threadId, adminId },
-    include: {
-      messages: {
-        where: {
-          OR: [{ runId: null }, { run: { supersededAt: null } }],
-        },
-        orderBy: { createdAt: "asc" },
-        include: {
-          run: {
-            select: {
-              id: true,
-              clientTurnId: true,
-              status: true,
-              hasAttachments: true,
-              error: true,
-              toolRuns: {
-                orderBy: { createdAt: "asc" },
-                select: {
-                  id: true,
-                  namespace: true,
-                  toolName: true,
-                  preview: true,
-                  result: true,
-                  status: true,
-                  requiresConfirmation: true,
-                  expiresAt: true,
-                  error: true,
-                },
-              },
-            },
-          },
+    select: {
+      id: true,
+      title: true,
+      updatedAt: true,
+      _count: {
+        select: {
+          messages: { where: visibleAssistantMessageWhere },
         },
       },
     },
   });
+  if (!thread) return null;
+  const page = await getAssistantThreadMessages(adminId, threadId, {
+    limit: messageLimit,
+  });
+  return { ...thread, ...page };
 }
 
 export async function getAssistantContext(
@@ -261,7 +363,7 @@ export async function getAssistantContext(
         where: {
           OR: [{ runId: null }, { run: { supersededAt: null } }],
         },
-        orderBy: { createdAt: "desc" },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
         take,
         select: {
           role: true,
@@ -272,6 +374,12 @@ export async function getAssistantContext(
             select: {
               hasAttachments: true,
               _count: { select: { toolRuns: true } },
+              toolRuns: {
+                where: { status: "COMPLETED" },
+                orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+                take: 12,
+                select: { result: true },
+              },
             },
           },
         },
@@ -295,6 +403,10 @@ export async function getAssistantContext(
       content: message.content,
       attachments: message.attachments,
       createdAt: message.createdAt,
+      toolResults:
+        message.role === "USER"
+          ? (message.run?.toolRuns ?? []).map((toolRun) => toolRun.result)
+          : [],
     })),
   };
 }
@@ -328,7 +440,11 @@ export async function setAssistantThreadSummary(
   summarizedMessageCount: number,
 ) {
   return prisma.assistantThread.updateMany({
-    where: { id: threadId, adminId },
+    where: {
+      id: threadId,
+      adminId,
+      summarizedMessageCount: { lt: summarizedMessageCount },
+    },
     data: { contextSummary, summarizedMessageCount },
   });
 }
@@ -344,7 +460,9 @@ export async function getAssistantSummarySource(
     select: {
       contextSummary: true,
       summarizedMessageCount: true,
-      _count: { select: { messages: true } },
+      _count: {
+        select: { messages: { where: visibleAssistantMessageWhere } },
+      },
     },
   });
   if (!thread || thread._count.messages <= 40) return null;
@@ -356,21 +474,18 @@ export async function getAssistantSummarySource(
   if (summarizeThrough <= thread.summarizedMessageCount) return null;
 
   const messages = await prisma.assistantMessage.findMany({
-    where: { threadId },
-    orderBy: { createdAt: "asc" },
+    where: { threadId, ...visibleAssistantMessageWhere },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
     skip: thread.summarizedMessageCount,
     take: summarizeThrough - thread.summarizedMessageCount,
     select: {
       role: true,
       content: true,
-      run: { select: { supersededAt: true } },
     },
   });
   return {
     previousSummary: thread.contextSummary,
-    messages: messages
-      .filter((message) => !message.run?.supersededAt)
-      .map(({ role, content }) => ({ role, content })),
+    messages,
     summarizeThrough,
   };
 }
@@ -554,9 +669,6 @@ export async function createAssistantTurn(input: {
           where: { id: thread.id },
           data: {
             updatedAt: new Date(),
-            ...(input.supersedesRunId
-              ? { contextSummary: null, summarizedMessageCount: 0 }
-              : {}),
           },
         });
 
@@ -753,7 +865,9 @@ export async function getAssistantToolRunForDecision(
         include: {
           thread: true,
           messages: true,
-          toolRuns: { orderBy: { createdAt: "asc" } },
+          toolRuns: {
+            orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+          },
         },
       },
     },
@@ -983,38 +1097,48 @@ export async function archiveAssistantThread(
     if (restored.count !== 1) throw new Error("Assistant thread not found");
     return;
   }
+  return prisma.$transaction(
+    async (tx) => {
+      const now = new Date();
+      await expireAssistantRunsInTransaction(tx, {
+        adminId,
+        threadId,
+        now,
+      });
+      const result = await tx.assistantThread.updateMany({
+        where: {
+          id: threadId,
+          adminId,
+          archivedAt: null,
+          runs: {
+            none: { status: { in: ACTIVE_RUN_STATUSES } },
+          },
+        },
+        data: { archivedAt: now },
+      });
+      if (result.count === 1) return;
 
-  const result = await prisma.assistantThread.updateMany({
-    where: {
-      id: threadId,
-      adminId,
-      archivedAt: null,
-      runs: {
-        none: { status: { in: ACTIVE_RUN_STATUSES } },
-      },
+      const thread = await tx.assistantThread.findFirst({
+        where: { id: threadId, adminId },
+        select: {
+          id: true,
+          archivedAt: true,
+          runs: {
+            where: { status: { in: ACTIVE_RUN_STATUSES } },
+            select: { id: true },
+            take: 1,
+          },
+        },
+      });
+      if (!thread) throw new Error("Assistant thread not found");
+      if (thread.runs.length > 0) {
+        throw new Error(
+          "This conversation has an active request or pending approval and cannot be archived yet",
+        );
+      }
     },
-    data: { archivedAt: new Date() },
-  });
-  if (result.count === 1) return;
-
-  const thread = await prisma.assistantThread.findFirst({
-    where: { id: threadId, adminId },
-    select: {
-      id: true,
-      archivedAt: true,
-      runs: {
-        where: { status: { in: ACTIVE_RUN_STATUSES } },
-        select: { id: true },
-        take: 1,
-      },
-    },
-  });
-  if (!thread) throw new Error("Assistant thread not found");
-  if (thread.runs.length > 0) {
-    throw new Error(
-      "This conversation has an active request or pending approval and cannot be archived yet",
-    );
-  }
+    { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+  );
 }
 
 export async function getAssistantRun(adminId: string, runId: string) {

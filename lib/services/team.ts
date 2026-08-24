@@ -8,6 +8,10 @@ import {
   setAdminRoleSafely,
 } from "@/lib/data/team";
 import { ADMIN_INVITATION_METADATA } from "@/lib/services/admin-access";
+import {
+  ExternalMutationOutcomeUnknownError,
+  isAmbiguousExternalMutationError,
+} from "@/lib/utils/email-errors";
 
 export async function getTeamPageData() {
   const client = await clerkClient();
@@ -114,16 +118,36 @@ export async function inviteTeamMember(email: string) {
   );
   if (existing) return existing;
 
-  return client.invitations.createInvitation({
-    emailAddress: email,
-    publicMetadata: ADMIN_INVITATION_METADATA,
-    redirectUrl: new URL("/sign-up", appUrl).toString(),
-  });
+  try {
+    return await client.invitations.createInvitation({
+      emailAddress: email,
+      publicMetadata: ADMIN_INVITATION_METADATA,
+      redirectUrl: new URL("/sign-up", appUrl).toString(),
+    });
+  } catch (error) {
+    if (isAmbiguousExternalMutationError(error)) {
+      throw new ExternalMutationOutcomeUnknownError(
+        "The invitation request may have reached Clerk, but its final state could not be verified.",
+        { cause: error },
+      );
+    }
+    throw error;
+  }
 }
 
 export async function revokeTeamInvitation(invitationId: string) {
   const client = await clerkClient();
-  await client.invitations.revokeInvitation(invitationId);
+  try {
+    await client.invitations.revokeInvitation(invitationId);
+  } catch (error) {
+    if (isAmbiguousExternalMutationError(error)) {
+      throw new ExternalMutationOutcomeUnknownError(
+        "The revocation request may have reached Clerk, but its final state could not be verified.",
+        { cause: error },
+      );
+    }
+    throw error;
+  }
 }
 
 export async function updateTeamMemberRole(

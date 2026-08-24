@@ -40,7 +40,7 @@ describe("team access persistence", () => {
     await listAdmins();
     expect(prismaMock.admin.findMany).toHaveBeenCalledWith({
       where: { disabledAt: null },
-      orderBy: { createdAt: "asc" },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
     });
   });
 
@@ -61,7 +61,7 @@ describe("team access persistence", () => {
         email: { equals: "owner@example.com", mode: "insensitive" },
       },
       select: { id: true, name: true, email: true, role: true },
-      orderBy: { createdAt: "asc" },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
       skip: 10,
       take: 10,
     });

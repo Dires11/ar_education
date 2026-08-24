@@ -78,6 +78,8 @@ type ThreadListItem = {
   messageCount: number;
 };
 
+type HistoryCursor = { at: string; id: string };
+
 type ToolStatus =
   | "PENDING_CONFIRMATION"
   | "RUNNING"
@@ -137,6 +139,8 @@ type SelectedThread = {
   id: string;
   title: string;
   messages: ChatMessage[];
+  hasMoreMessages: boolean;
+  messageCursor: HistoryCursor | null;
 };
 
 type ConversationTurn = {
@@ -432,6 +436,9 @@ function ThreadList({
   onArchive,
   archiveDisabledId,
   archiving,
+  hasMore,
+  loadingMore,
+  onLoadMore,
 }: {
   threads: ThreadListItem[];
   selectedId: string | null;
@@ -439,6 +446,9 @@ function ThreadList({
   onArchive: (threadId: string) => void;
   archiveDisabledId: string | null;
   archiving: boolean;
+  hasMore: boolean;
+  loadingMore: boolean;
+  onLoadMore: () => void;
 }) {
   return (
     <div className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">
@@ -451,7 +461,8 @@ function ThreadList({
           </p>
         </div>
       ) : (
-        threads.map((thread) => (
+        <>
+          {threads.map((thread) => (
           <div
             key={thread.id}
             className={cn(
@@ -490,7 +501,21 @@ function ThreadList({
               <Archive />
             </Button>
           </div>
-        ))
+          ))}
+          {hasMore ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="mt-2 w-full text-muted-foreground"
+              disabled={loadingMore}
+              onClick={onLoadMore}
+            >
+              {loadingMore ? <Loader2 className="animate-spin" /> : null}
+              Load older threads
+            </Button>
+          ) : null}
+        </>
       )}
     </div>
   );
@@ -810,18 +835,32 @@ function ToolActivity({
 export function AssistantShell({
   configured,
   initialThreads,
+  initialHasMoreThreads,
+  initialThreadCursor,
   initialThread,
 }: {
   configured: boolean;
   initialThreads: ThreadListItem[];
+  initialHasMoreThreads: boolean;
+  initialThreadCursor: HistoryCursor | null;
   initialThread: SelectedThread | null;
 }) {
   const router = useRouter();
   const [threads, setThreads] = useState(initialThreads);
+  const [hasMoreThreads, setHasMoreThreads] = useState(initialHasMoreThreads);
+  const [threadCursor, setThreadCursor] = useState(initialThreadCursor);
+  const [loadingMoreThreads, setLoadingMoreThreads] = useState(false);
   const [threadId, setThreadId] = useState(initialThread?.id ?? null);
   const [messages, setMessages] = useState<ChatMessage[]>(
     initialThread?.messages ?? [],
   );
+  const [hasMoreMessages, setHasMoreMessages] = useState(
+    initialThread?.hasMoreMessages ?? false,
+  );
+  const [messageCursor, setMessageCursor] = useState<HistoryCursor | null>(
+    initialThread?.messageCursor ?? null,
+  );
+  const [loadingMoreMessages, setLoadingMoreMessages] = useState(false);
   const [input, setInput] = useState("");
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [preparingAttachments, setPreparingAttachments] = useState(false);
@@ -843,6 +882,9 @@ export function AssistantShell({
   useEffect(() => {
     setThreadId(initialThread?.id ?? null);
     setMessages(initialThread?.messages ?? []);
+    setHasMoreMessages(initialThread?.hasMoreMessages ?? false);
+    setMessageCursor(initialThread?.messageCursor ?? null);
+    setLoadingMoreMessages(false);
     setAttachments([]);
     setStreamingText("");
     setFailedTurn(persistedFailedTurn(initialThread?.messages ?? []));
@@ -851,7 +893,10 @@ export function AssistantShell({
 
   useEffect(() => {
     setThreads(initialThreads);
-  }, [initialThreads]);
+    setHasMoreThreads(initialHasMoreThreads);
+    setThreadCursor(initialThreadCursor);
+    setLoadingMoreThreads(false);
+  }, [initialHasMoreThreads, initialThreadCursor, initialThreads]);
 
   useEffect(() => {
     const now = Date.now();
@@ -912,12 +957,104 @@ export function AssistantShell({
     setThreadSheetOpen(false);
     setThreadId(null);
     setMessages([]);
+    setHasMoreMessages(false);
+    setMessageCursor(null);
     setStreamingText("");
     setInput("");
     setAttachments([]);
     setFailedTurn(null);
     stickToBottomRef.current = true;
     router.push("/assistant?new=1");
+  }
+
+  async function loadMoreThreads() {
+    if (loadingMoreThreads || !hasMoreThreads || !threadCursor) return;
+    setLoadingMoreThreads(true);
+    try {
+      const query = new URLSearchParams({
+        kind: "threads",
+        beforeAt: threadCursor.at,
+        beforeId: threadCursor.id,
+      });
+      const response = await fetch(`/api/assistant/history?${query}`);
+      const payload = (await response.json()) as {
+        error?: string;
+        threads?: ThreadListItem[];
+        hasMore?: boolean;
+        nextCursor?: HistoryCursor | null;
+      };
+      if (!response.ok) throw new Error(payload.error ?? "Unable to load threads");
+      setThreads((current) => {
+        const seen = new Set(current.map((thread) => thread.id));
+        return [
+          ...current,
+          ...(payload.threads ?? []).filter((thread) => !seen.has(thread.id)),
+        ];
+      });
+      setHasMoreThreads(Boolean(payload.hasMore));
+      setThreadCursor(payload.nextCursor ?? null);
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Unable to load threads",
+      );
+    } finally {
+      setLoadingMoreThreads(false);
+    }
+  }
+
+  async function loadOlderMessages() {
+    if (
+      loadingMoreMessages ||
+      !hasMoreMessages ||
+      !messageCursor ||
+      !threadId
+    ) {
+      return;
+    }
+    setLoadingMoreMessages(true);
+    const scrollElement = scrollAreaRef.current;
+    const previousHeight = scrollElement?.scrollHeight ?? 0;
+    try {
+      const query = new URLSearchParams({
+        kind: "messages",
+        threadId,
+        beforeAt: messageCursor.at,
+        beforeId: messageCursor.id,
+      });
+      const response = await fetch(`/api/assistant/history?${query}`);
+      const payload = (await response.json()) as {
+        error?: string;
+        messages?: ChatMessage[];
+        hasMore?: boolean;
+        nextCursor?: HistoryCursor | null;
+      };
+      if (!response.ok) {
+        throw new Error(payload.error ?? "Unable to load older messages");
+      }
+      setMessages((current) => {
+        const seen = new Set(current.map((message) => message.id));
+        return [
+          ...(payload.messages ?? []).filter((message) => !seen.has(message.id)),
+          ...current,
+        ];
+      });
+      setHasMoreMessages(Boolean(payload.hasMore));
+      setMessageCursor(payload.nextCursor ?? null);
+      stickToBottomRef.current = false;
+      window.requestAnimationFrame(() => {
+        if (scrollElement) {
+          scrollElement.scrollTop += scrollElement.scrollHeight - previousHeight;
+        }
+      });
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Unable to load older messages",
+      );
+    } finally {
+      setLoadingMoreMessages(false);
+    }
   }
 
   async function handleAttachmentChange(event: ChangeEvent<HTMLInputElement>) {
@@ -1291,6 +1428,7 @@ export function AssistantShell({
     if (isArchiving || (threadId === id && (busy || pendingConfirmation))) {
       return;
     }
+    const archivedThread = threads.find((thread) => thread.id === id);
     startArchiving(async () => {
       try {
         await archiveAssistantThreadAction(id);
@@ -1302,7 +1440,36 @@ export function AssistantShell({
           setMessages([]);
           router.push(next ? `/assistant?thread=${next}` : "/assistant");
         }
-        toast.success("Conversation archived");
+        toast.success("Conversation archived", {
+          action: archivedThread
+            ? {
+                label: "Undo",
+                onClick: () => {
+                  void (async () => {
+                    try {
+                      await archiveAssistantThreadAction(id, false);
+                      setThreads((current) =>
+                        current.some((thread) => thread.id === id)
+                          ? current
+                          : [archivedThread, ...current].sort(
+                              (left, right) =>
+                                new Date(right.updatedAt).getTime() -
+                                new Date(left.updatedAt).getTime(),
+                            ),
+                      );
+                      toast.success("Conversation restored");
+                    } catch (error) {
+                      toast.error(
+                        error instanceof Error
+                          ? error.message
+                          : "Unable to restore conversation",
+                      );
+                    }
+                  })();
+                },
+              }
+            : undefined,
+        });
       } catch (error) {
         toast.error(
           error instanceof Error
@@ -1323,6 +1490,9 @@ export function AssistantShell({
         threadId && (busy || pendingConfirmation) ? threadId : null
       }
       archiving={isArchiving}
+      hasMore={hasMoreThreads}
+      loadingMore={loadingMoreThreads}
+      onLoadMore={() => void loadMoreThreads()}
     />
   );
 
@@ -1529,6 +1699,22 @@ export function AssistantShell({
             </div>
           ) : (
             <div className="mx-auto max-w-[48rem] space-y-10 px-4 py-8 sm:px-6 sm:py-10">
+              {hasMoreMessages ? (
+                <div className="flex justify-center">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={loadingMoreMessages || busy}
+                    onClick={() => void loadOlderMessages()}
+                  >
+                    {loadingMoreMessages ? (
+                      <Loader2 className="animate-spin" />
+                    ) : null}
+                    Load older messages
+                  </Button>
+                </div>
+              ) : null}
               {conversationTurns.map((turn, index) => {
                 const isLast = index === conversationTurns.length - 1;
                 const showAssistant =

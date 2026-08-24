@@ -69,7 +69,7 @@ export async function listGroupsForAssistant(input: {
           select: {
             student: { select: { id: true, firstName: true, lastName: true } },
           },
-          orderBy: { createdAt: "asc" },
+          orderBy: [{ createdAt: "asc" }, { id: "asc" }],
           take: 20,
         },
       },

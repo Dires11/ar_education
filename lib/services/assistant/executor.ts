@@ -3,15 +3,17 @@ import "server-only";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { Admin } from "@/generated/prisma";
+import { isoDateTimeSchema } from "@/lib/validators/common";
 import {
-  getStudent as getStudentData,
+  getStudentIdentityForAssistant,
+  getStudentProfileForAssistantMutation,
   getStudentForAssistant,
   getLinkedGuardianForAssistant,
   listStudents,
   resolveStudentCommunicationRecipientsData,
 } from "@/lib/data/students";
 import {
-  getTutor as getTutorData,
+  getTutorProfileForAssistantMutation,
   getTutorForAssistant,
   listTutors,
 } from "@/lib/data/tutors";
@@ -20,26 +22,19 @@ import {
   listSubjects,
   listSubjectsForAssistant,
 } from "@/lib/data/subjects";
-import {
-  getPackage,
-  listPackagesForAssistant,
-} from "@/lib/data/packages";
+import { getPackage, listPackagesForAssistant } from "@/lib/data/packages";
 import {
   getDiscountForAssistant,
-  getDiscountWithEnrollment,
-  getEnrollment,
   getEnrollmentForAssistant,
   searchEnrollmentsForAssistant,
 } from "@/lib/data/enrollments";
-import { listGroups, listGroupsForAssistant } from "@/lib/data/groups";
+import { listGroupsForAssistant } from "@/lib/data/groups";
 import {
   getPaymentForAssistantConfirmation,
   listPaymentsForAssistant,
 } from "@/lib/data/payments";
 import {
   getRecurrenceRuleForAssistant,
-  getRecurrenceRuleWithParticipants,
-  getSession as getSessionData,
   getSessionForAssistant,
   getSessionParticipantsForAssistant,
 } from "@/lib/data/sessions";
@@ -81,13 +76,12 @@ import {
   addDiscountToEnrollment,
   removeDiscount,
 } from "@/lib/services/enrollments";
-import {
-  updateExistingGroup,
-} from "@/lib/services/groups";
+import { updateExistingGroup } from "@/lib/services/groups";
 import {
   createAdHocSession,
   createRecurringSchedule,
   getMonthScheduleForAssistant,
+  querySessionsForAssistant,
   markSessionAttendance,
   updateScheduledSession,
   updateSessionStatus,
@@ -111,7 +105,7 @@ import {
   getPaymentDuesForAssistant,
   getPaymentStats,
   sendPaymentReminderEmail,
-  getStudentBalance,
+  getStudentBalanceForAssistant,
   getPaymentDueQuote,
   getPaymentReminderConfirmation,
 } from "@/lib/services/payments";
@@ -144,6 +138,7 @@ import { minimizeAssistantDto } from "@/lib/services/assistant/dto";
 import { collectAssistantIdentifierReferences } from "@/lib/services/assistant/provenance";
 import {
   addCalendarMonths,
+  getCalendarMonthKey,
   getConfiguredCenterTimeZone,
 } from "@/lib/services/session-dates";
 import { formatCalendarDate, formatDateTime } from "@/lib/utils/dates";
@@ -221,8 +216,8 @@ export function collectAssistantIdentifierValues(value: unknown): string[] {
       }
       return;
     }
-    Object.entries(item as Record<string, unknown>).forEach(([childKey, child]) =>
-      visit(child, childKey),
+    Object.entries(item as Record<string, unknown>).forEach(
+      ([childKey, child]) => visit(child, childKey),
     );
   };
   visit(value);
@@ -253,12 +248,14 @@ export async function resolveAssistantConfirmationArguments(input: {
     for (let offset = 0; offset < reminders.length; offset += 10) {
       confirmations.push(
         ...(await Promise.all(
-          reminders.slice(offset, offset + 10).map((reminder) =>
-            getPaymentReminderConfirmation(
-              reminder.enrollmentId,
-              reminder.month,
+          reminders
+            .slice(offset, offset + 10)
+            .map((reminder) =>
+              getPaymentReminderConfirmation(
+                reminder.enrollmentId,
+                reminder.month,
+              ),
             ),
-          ),
         )),
       );
     }
@@ -296,10 +293,7 @@ export async function resolveAssistantConfirmationArguments(input: {
       },
     };
   }
-  if (
-    input.namespace === "billing" &&
-    input.name === "send_payment_reminder"
-  ) {
+  if (input.namespace === "billing" && input.name === "send_payment_reminder") {
     const enrollmentId = z.string().parse(input.argumentsValue.enrollmentId);
     const month = z.string().parse(input.argumentsValue.month);
     const confirmation = await getPaymentReminderConfirmation(
@@ -362,7 +356,9 @@ export async function resolveAssistantConfirmationArguments(input: {
       .parse(input.argumentsValue);
     const attendancePreview = await Promise.all(
       parsed.attendances.map(async (attendance) => {
-        const student = await getStudentData(attendance.studentId);
+        const student = await getStudentIdentityForAssistant(
+          attendance.studentId,
+        );
         if (!student) {
           throw new Error(
             "Every attendance entry must reference an available student before approval.",
@@ -385,9 +381,7 @@ function safeJson<T>(value: T) {
 }
 
 function toolResult(data: unknown, href?: string, card?: AssistantResultCard) {
-  const normalizedCard = card
-    ? normalizeAssistantResultCard(card)
-    : undefined;
+  const normalizedCard = card ? normalizeAssistantResultCard(card) : undefined;
   if (card && !normalizedCard) {
     throw new Error("Assistant result card could not be rendered safely");
   }
@@ -457,7 +451,7 @@ function stringValue(args: ToolArguments, key: string) {
 }
 
 function dateValue(value: unknown) {
-  return new Date(z.iso.datetime().parse(value));
+  return new Date(isoDateTimeSchema.parse(value));
 }
 
 function ageInYears(dateOfBirth: Date, todayKey: string) {
@@ -505,6 +499,33 @@ type StudentCardSource = {
   activeEnrollmentCount?: number;
 };
 
+async function loadStudentCardSource(id: string) {
+  const result = await getStudentForAssistant(id, { page: 1, limit: 20 });
+  if (!result) return null;
+  return result;
+}
+
+async function loadTutorCardSource(id: string) {
+  const result = await getTutorForAssistant(id, { page: 1, limit: 20 });
+  if (!result) return null;
+  return result;
+}
+
+async function loadEnrollmentCardSource(id: string) {
+  const result = await getEnrollmentForAssistant(id);
+  if (!result) return null;
+  return result;
+}
+
+async function loadGroupCardSource(id: string) {
+  const result = await listGroupsForAssistant({
+    groupId: id,
+    page: 1,
+    limit: 1,
+  });
+  return result.groups[0] ?? null;
+}
+
 function studentResultCard(
   student: StudentCardSource,
   subtitle: string,
@@ -521,21 +542,23 @@ function studentResultCard(
   const hasActiveEnrollment =
     student.activeEnrollmentCount !== undefined
       ? student.activeEnrollmentCount > 0
-      : student.enrollments?.some((enrollment) => enrollment.status === "ACTIVE");
+      : student.enrollments?.some(
+          (enrollment) => enrollment.status === "ACTIVE",
+        );
   const suggestedActions: AssistantResultCard["suggestedActions"] = [];
 
   if (!primaryGuardian) {
     suggestedActions.push({
       kind: "PROMPT",
       label: "Add guardian",
-      prompt: `Add a guardian for ${fullName}.`,
+      prompt: "Add a guardian to this student.",
     });
   }
   if (!hasActiveEnrollment) {
     suggestedActions.push({
       kind: "PROMPT",
       label: "Enroll in a package",
-      prompt: `Enroll ${fullName} in a package.`,
+      prompt: "Enroll this student in a package.",
     });
   }
   suggestedActions.push({ kind: "DISMISS", label: "Done for now" });
@@ -639,14 +662,14 @@ function tutorResultCard(
     suggestedActions.push({
       kind: "PROMPT",
       label: "Assign subjects",
-      prompt: `Assign subjects to tutor ${fullName}.`,
+      prompt: "Assign subjects to this tutor.",
     });
   }
   suggestedActions.push(
     {
       kind: "PROMPT",
       label: "Create enrollment",
-      prompt: `Create an enrollment with tutor ${fullName}.`,
+      prompt: "Create an enrollment with this tutor.",
     },
     { kind: "DISMISS", label: "Done for now" },
   );
@@ -764,7 +787,7 @@ function packageResultCard(
       {
         kind: "PROMPT",
         label: "Create enrollment",
-        prompt: `Create a student enrollment using the ${pkg.name} package.`,
+        prompt: "Create a student enrollment using this package.",
       },
       { kind: "DISMISS", label: "Done for now" },
     ],
@@ -836,12 +859,12 @@ function enrollmentResultCard(
       {
         kind: "PROMPT",
         label: "Build schedule",
-        prompt: `Create a schedule for ${studentName}'s ${enrollment.subject.name} enrollment.`,
+        prompt: "Create a schedule for this enrollment.",
       },
       {
         kind: "PROMPT",
         label: "Record payment",
-        prompt: `Record a payment for ${studentName}'s ${enrollment.subject.name} enrollment.`,
+        prompt: "Record a payment for this enrollment.",
       },
       { kind: "DISMISS", label: "Done for now" },
     ],
@@ -857,6 +880,8 @@ function sessionResultCard(
   },
   subtitle: string,
 ): AssistantResultCard {
+  const timeZone = getConfiguredCenterTimeZone();
+  const monthKey = getCalendarMonthKey(session.scheduledFor, timeZone);
   return {
     kind: "SESSION",
     entityKey: `session:${session.id}`,
@@ -866,10 +891,7 @@ function sessionResultCard(
     fields: [
       {
         label: "Date & time",
-        value: formatDateTime(
-          session.scheduledFor,
-          getConfiguredCenterTimeZone(),
-        ),
+        value: formatDateTime(session.scheduledFor, timeZone),
         icon: "CALENDAR",
       },
       {
@@ -881,7 +903,7 @@ function sessionResultCard(
         ? [{ label: "Room", value: session.room, icon: "LOCATION" as const }]
         : []),
     ],
-    href: "/schedule",
+    href: `/schedule?month=${monthKey}&session=${encodeURIComponent(session.id)}`,
     actionLabel: "View schedule",
     suggestedActions: [
       {
@@ -914,6 +936,8 @@ function sessionDraftResultCard(
   ) {
     return undefined;
   }
+  const timeZone = getConfiguredCenterTimeZone();
+  const monthKey = getCalendarMonthKey(scheduledFor, timeZone);
   return {
     kind: "SESSION",
     entityKey: `session-draft:${scheduledFor.toISOString()}:${studentIds
@@ -929,10 +953,7 @@ function sessionDraftResultCard(
     fields: [
       {
         label: "Date & time",
-        value: formatDateTime(
-          scheduledFor,
-          getConfiguredCenterTimeZone(),
-        ),
+        value: formatDateTime(scheduledFor, timeZone),
         icon: "CALENDAR",
       },
       {
@@ -950,7 +971,7 @@ function sessionDraftResultCard(
           ]
         : []),
     ],
-    href: "/schedule",
+    href: `/schedule?month=${monthKey}`,
     actionLabel: "View schedule",
     suggestedActions: [],
   };
@@ -964,7 +985,10 @@ function paymentResultCard(
     paidAt: Date;
     coversMonth?: string | null;
   },
-  student: StudentCardSource,
+  student: Pick<
+    StudentCardSource,
+    "id" | "firstName" | "lastName" | "avatarUrl"
+  >,
   subtitle = "Payment recorded",
   destructive = false,
 ): AssistantResultCard {
@@ -1089,6 +1113,10 @@ function recurrenceResultCard(
   },
   subtitle: string,
 ): AssistantResultCard {
+  const monthKey = getCalendarMonthKey(
+    rule.startsOn,
+    getConfiguredCenterTimeZone(),
+  );
   const dayName = new Intl.DateTimeFormat("en-US", {
     weekday: "long",
     timeZone: "UTC",
@@ -1118,7 +1146,7 @@ function recurrenceResultCard(
         icon: "CALENDAR",
       },
     ],
-    href: "/schedule",
+    href: `/schedule?month=${monthKey}&recurrence=${encodeURIComponent(rule.id)}`,
     actionLabel: "View schedule",
     suggestedActions: [],
   };
@@ -1220,7 +1248,7 @@ function teamResultCard(input: {
 }
 
 function groupResultCard(
-  group: Awaited<ReturnType<typeof listGroups>>[number],
+  group: Awaited<ReturnType<typeof listGroupsForAssistant>>["groups"][number],
   subtitle: string,
 ): AssistantResultCard {
   return {
@@ -1230,8 +1258,8 @@ function groupResultCard(
     subtitle,
     badges: [
       {
-        label: `${group.enrollments.length} ${
-          group.enrollments.length === 1 ? "student" : "students"
+        label: `${group.activeStudentCount} ${
+          group.activeStudentCount === 1 ? "student" : "students"
         }`,
         tone: "NEUTRAL",
       },
@@ -1240,7 +1268,7 @@ function groupResultCard(
       { label: "Subject", value: group.subject.name, icon: "BOOK" },
       {
         label: "Tutor",
-        value: `${group.tutor.firstName} ${group.tutor.lastName}`,
+        value: group.tutor.name,
         icon: "USER",
       },
     ],
@@ -1281,10 +1309,12 @@ async function resolveAssistantReferenceFields(
       : [];
   const attendanceStudentIds = Array.isArray(argumentsValue.attendances)
     ? argumentsValue.attendances.flatMap((attendance) =>
-        attendance && typeof attendance === "object" && !Array.isArray(attendance)
-          ? [
-              (attendance as Record<string, unknown>).studentId,
-            ].filter((item): item is string => typeof item === "string")
+        attendance &&
+        typeof attendance === "object" &&
+        !Array.isArray(attendance)
+          ? [(attendance as Record<string, unknown>).studentId].filter(
+              (item): item is string => typeof item === "string",
+            )
           : [],
       )
     : [];
@@ -1296,7 +1326,9 @@ async function resolveAssistantReferenceFields(
     ]),
   ];
   if (studentIds.length > 0) {
-    const students = await Promise.all(studentIds.map(getStudentData));
+    const students = await Promise.all(
+      studentIds.map(getStudentIdentityForAssistant),
+    );
     if (students.some((student) => !student)) {
       throw new Error("A referenced student no longer exists");
     }
@@ -1311,7 +1343,7 @@ async function resolveAssistantReferenceFields(
 
   const tutorId = stringId("tutorId");
   if (tutorId) {
-    const tutor = await getTutorData(tutorId);
+    const tutor = await loadTutorCardSource(tutorId);
     if (!tutor) throw new Error("The referenced tutor no longer exists");
     fields.push({
       label: "Tutor",
@@ -1347,7 +1379,7 @@ async function resolveAssistantReferenceFields(
 
   const enrollmentId = stringId("enrollmentId");
   if (enrollmentId) {
-    const enrollment = await getEnrollment(enrollmentId);
+    const enrollment = await loadEnrollmentCardSource(enrollmentId);
     if (!enrollment) {
       throw new Error("The referenced enrollment no longer exists");
     }
@@ -1360,7 +1392,7 @@ async function resolveAssistantReferenceFields(
 
   const groupId = stringId("groupId");
   if (groupId) {
-    const group = (await listGroups()).find((item) => item.id === groupId);
+    const group = await loadGroupCardSource(groupId);
     if (!group) throw new Error("The referenced group no longer exists");
     fields.push({ label: "Group", value: group.name, icon: "USER" });
   }
@@ -1454,23 +1486,27 @@ export async function getAssistantMutationDraftCard(
       : null,
   ];
 
-  return enrichAssistantConfirmationCard({
-    kind: presentation.kind,
-    entityKey: `draft:${spec.namespace}:${spec.name}`,
-    title:
-      fullName ||
-      text("name") ||
-      spec.description.split(".")[0] ||
-      "Proposed CRM change",
-    subtitle: "Proposed change derived from untrusted evidence",
-    badges: [{ label: "Review required", tone: "WARNING" }],
-    fields: candidateFields.filter(
-      (field): field is AssistantResultCard["fields"][number] => Boolean(field),
-    ),
-    href: presentation.href,
-    actionLabel: "Open manual workspace",
-    suggestedActions: [],
-  }, argumentsValue);
+  return enrichAssistantConfirmationCard(
+    {
+      kind: presentation.kind,
+      entityKey: `draft:${spec.namespace}:${spec.name}`,
+      title:
+        fullName ||
+        text("name") ||
+        spec.description.split(".")[0] ||
+        "Proposed CRM change",
+      subtitle: "Proposed change derived from untrusted evidence",
+      badges: [{ label: "Review required", tone: "WARNING" }],
+      fields: candidateFields.filter(
+        (field): field is AssistantResultCard["fields"][number] =>
+          Boolean(field),
+      ),
+      href: presentation.href,
+      actionLabel: "Open manual workspace",
+      suggestedActions: [],
+    },
+    argumentsValue,
+  );
 }
 
 export async function getAssistantConfirmationCard(input: {
@@ -1487,7 +1523,7 @@ export async function getAssistantConfirmationCard(input: {
   if (namespace === "students") {
     const studentId = value("id");
     if (!studentId) return undefined;
-    const student = await getStudentData(studentId);
+    const student = await loadStudentCardSource(studentId);
     if (!student) return undefined;
     const subtitle =
       name === "delete_student"
@@ -1502,10 +1538,8 @@ export async function getAssistantConfirmationCard(input: {
     const studentId = value("studentId");
     const guardianId = value("guardianId");
     if (!studentId || !guardianId) return undefined;
-    const student = await getStudentData(studentId);
-    const guardian = student?.guardians.find(
-      (link) => link.guardianId === guardianId,
-    )?.guardian;
+    const link = await getLinkedGuardianForAssistant(studentId, guardianId);
+    const guardian = link?.guardian;
     const subtitle =
       name === "remove_guardian"
         ? "Guardian relationship selected for removal"
@@ -1518,7 +1552,7 @@ export async function getAssistantConfirmationCard(input: {
   if (namespace === "tutors") {
     const tutorId = value("id");
     if (!tutorId) return undefined;
-    const tutor = await getTutorData(tutorId);
+    const tutor = await loadTutorCardSource(tutorId);
     const subtitle =
       name === "archive_tutor"
         ? "Tutor selected for archiving"
@@ -1556,17 +1590,20 @@ export async function getAssistantConfirmationCard(input: {
     if (name === "remove_discount") {
       const discountId = value("discountId");
       if (!discountId) return undefined;
-      const discount = await getDiscountWithEnrollment(discountId);
-      return discount?.enrollment
+      const discount = await getDiscountForAssistant(discountId);
+      const enrollment = discount?.enrollmentId
+        ? await loadEnrollmentCardSource(discount.enrollmentId)
+        : null;
+      return discount && enrollment
         ? enrollmentResultCard(
-            discount.enrollment,
+            enrollment,
             `${titleCase(discount.kind)} discount selected for removal`,
           )
         : undefined;
     }
     const enrollmentId = value("id") ?? value("enrollmentId");
     if (!enrollmentId) return undefined;
-    const enrollment = await getEnrollment(enrollmentId);
+    const enrollment = await loadEnrollmentCardSource(enrollmentId);
     return enrollment
       ? enrollmentResultCard(enrollment, "Enrollment affected by this change")
       : undefined;
@@ -1575,21 +1612,21 @@ export async function getAssistantConfirmationCard(input: {
   if (namespace === "schedule") {
     const sessionId = value("sessionId");
     if (sessionId) {
-      const session = await getSessionData(sessionId);
+      const session = await getSessionForAssistant(sessionId);
       return session
         ? sessionResultCard(session, "Session affected by this change")
         : undefined;
     }
     const enrollmentId = value("enrollmentId");
     if (enrollmentId) {
-      const enrollment = await getEnrollment(enrollmentId);
+      const enrollment = await loadEnrollmentCardSource(enrollmentId);
       return enrollment
         ? enrollmentResultCard(enrollment, "New session from attached schedule")
         : undefined;
     }
     const groupId = value("groupId");
     if (groupId) {
-      const group = (await listGroups()).find((item) => item.id === groupId);
+      const group = await loadGroupCardSource(groupId);
       return group
         ? groupResultCard(group, "New group session from attached schedule")
         : undefined;
@@ -1600,7 +1637,7 @@ export async function getAssistantConfirmationCard(input: {
         )
       : [];
     if (studentIds.length === 1) {
-      const student = await getStudentData(studentIds[0]);
+      const student = await loadStudentCardSource(studentIds[0]);
       return student
         ? studentResultCard(student, "New session from attached schedule")
         : undefined;
@@ -1663,7 +1700,7 @@ export async function getAssistantConfirmationCard(input: {
     }
     const studentId = value("studentId");
     if (!studentId) return undefined;
-    const student = await getStudentData(studentId);
+    const student = await loadStudentCardSource(studentId);
     if (name === "mark_due_paid") {
       return student
         ? studentResultCard(
@@ -1680,21 +1717,21 @@ export async function getAssistantConfirmationCard(input: {
   if (namespace === "recurrence") {
     const ruleId = value("ruleId");
     if (ruleId) {
-      const rule = await getRecurrenceRuleWithParticipants(ruleId);
+      const rule = await getRecurrenceRuleForAssistant(ruleId);
       return rule
         ? recurrenceResultCard(rule, "Recurring schedule affected")
         : undefined;
     }
     const enrollmentId = value("enrollmentId");
     if (enrollmentId) {
-      const enrollment = await getEnrollment(enrollmentId);
+      const enrollment = await loadEnrollmentCardSource(enrollmentId);
       return enrollment
         ? enrollmentResultCard(enrollment, "Recurring schedule affected")
         : undefined;
     }
     const groupId = value("groupId");
     if (groupId) {
-      const group = (await listGroups()).find((item) => item.id === groupId);
+      const group = await loadGroupCardSource(groupId);
       return group
         ? groupResultCard(group, "Recurring schedule affected")
         : undefined;
@@ -1770,9 +1807,7 @@ export async function getAssistantConfirmationCard(input: {
         : undefined;
     }
     const adminId = value("adminId");
-    const admin = adminId
-      ? await getTeamAdminForAssistant(adminId)
-      : undefined;
+    const admin = adminId ? await getTeamAdminForAssistant(adminId) : undefined;
     if (!admin) return undefined;
     return teamResultCard({
       entityKey: `team-admin:${admin.id}`,
@@ -1795,10 +1830,14 @@ async function executeStudents(name: string, args: ToolArguments) {
       const result = await listStudents({
         search: args.query as string | undefined,
         status: args.status as "ACTIVE" | "PAUSED" | "INACTIVE" | undefined,
+        page: Number(args.page),
         pageSize: Number(args.limit ?? 10),
       });
       return toolResult({
         total: result.total,
+        page: result.page,
+        limit: result.pageSize,
+        hasMore: result.page * result.pageSize < result.total,
         students: result.students.map((student) => ({
           id: student.id,
           name: `${student.firstName} ${student.lastName}`,
@@ -1860,26 +1899,30 @@ async function executeStudents(name: string, args: ToolArguments) {
     }
     case "get_student": {
       const id = stringValue(args, "id");
-      const result = await getStudentForAssistant(id);
+      const page = Number(args.page);
+      const limit = Number(args.limit);
+      const result = await getStudentForAssistant(id, { page, limit });
       if (!result) throw new Error("Student not found");
       const { _count, ...student } = result;
       return toolResult(
         {
           ...student,
+          page,
+          limit,
           guardianTotal: _count.guardians,
           enrollmentTotal: _count.enrollments,
-          hasMoreGuardians: _count.guardians > student.guardians.length,
-          hasMoreEnrollments: _count.enrollments > student.enrollments.length,
+          hasMoreGuardians: page * limit < _count.guardians,
+          hasMoreEnrollments: page * limit < _count.enrollments,
         },
         `/students?student=${id}`,
-        studentResultCard(student, "Student record"),
+        page === 1 ? studentResultCard(student, "Student record") : undefined,
       );
     }
     case "create_student": {
       const created = await createStudentWithGuardian(args as never);
       const href = `/students?student=${created.id}`;
       return resultAfterMutation({ id: created.id }, href, async () => {
-        const student = await getStudentData(created.id);
+        const student = await loadStudentCardSource(created.id);
         if (!student) throw new Error("Created student could not be loaded");
         return toolResult(
           { id: student.id, name: `${student.firstName} ${student.lastName}` },
@@ -1893,7 +1936,7 @@ async function executeStudents(name: string, args: ToolArguments) {
     }
     case "update_student": {
       const id = stringValue(args, "id");
-      const current = await getStudentData(id);
+      const current = await getStudentProfileForAssistantMutation(id);
       if (!current) throw new Error("Student not found");
       const updated = await updateStudentProfile(id, {
         firstName: (args.firstName as string | undefined) ?? current.firstName,
@@ -1917,7 +1960,7 @@ async function executeStudents(name: string, args: ToolArguments) {
       });
       const href = `/students?student=${id}`;
       return resultAfterMutation({ id: updated.id }, href, async () => {
-        const student = await getStudentData(updated.id);
+        const student = await loadStudentCardSource(updated.id);
         if (!student) throw new Error("Updated student could not be loaded");
         return toolResult(
           { id: updated.id },
@@ -1936,7 +1979,7 @@ async function executeStudents(name: string, args: ToolArguments) {
         { id: updated.id, status: updated.status },
         href,
         async () => {
-          const student = await getStudentData(updated.id);
+          const student = await loadStudentCardSource(updated.id);
           if (!student) throw new Error("Updated student could not be loaded");
           return toolResult(
             { id: updated.id, status: updated.status },
@@ -1980,7 +2023,7 @@ async function executeGuardians(name: string, args: ToolArguments) {
         { id: created.id, studentId },
         href,
         async () => {
-          const student = await getStudentData(studentId);
+          const student = await loadStudentCardSource(studentId);
           if (!student) throw new Error("Student not found");
           return toolResult(
             { id: created.id, studentId },
@@ -2005,7 +2048,7 @@ async function executeGuardians(name: string, args: ToolArguments) {
         { id: updated.id, studentId },
         href,
         async () => {
-          const student = await getStudentData(studentId);
+          const student = await loadStudentCardSource(studentId);
           if (!student) throw new Error("Student not found");
           return toolResult(
             { id: updated.id, studentId },
@@ -2035,10 +2078,14 @@ async function executeTutors(name: string, args: ToolArguments) {
         search: args.query as string | undefined,
         status: args.status as "ACTIVE" | "PAUSED" | "INACTIVE" | undefined,
         subjectId: args.subjectId as string | undefined,
+        page: Number(args.page),
         pageSize: Number(args.limit ?? 10),
       });
       return toolResult({
         total: result.total,
+        page: result.page,
+        limit: result.pageSize,
+        hasMore: result.page * result.pageSize < result.total,
         tutors: result.tutors.map((tutor) => ({
           id: tutor.id,
           name: `${tutor.firstName} ${tutor.lastName}`,
@@ -2056,26 +2103,30 @@ async function executeTutors(name: string, args: ToolArguments) {
     }
     case "get_tutor": {
       const id = stringValue(args, "id");
-      const result = await getTutorForAssistant(id);
+      const page = Number(args.page);
+      const limit = Number(args.limit);
+      const result = await getTutorForAssistant(id, { page, limit });
       if (!result) throw new Error("Tutor not found");
       const { _count, ...tutor } = result;
       return toolResult(
         {
           ...tutor,
+          page,
+          limit,
           subjectTotal: _count.subjects,
           enrollmentTotal: _count.enrollments,
-          hasMoreSubjects: _count.subjects > tutor.subjects.length,
-          hasMoreEnrollments: _count.enrollments > tutor.enrollments.length,
+          hasMoreSubjects: page * limit < _count.subjects,
+          hasMoreEnrollments: page * limit < _count.enrollments,
         },
         `/tutors/${id}`,
-        tutorResultCard(tutor, "Tutor record"),
+        page === 1 ? tutorResultCard(tutor, "Tutor record") : undefined,
       );
     }
     case "create_tutor": {
       const created = await createTutorWithSubjects(args as never);
       const href = `/tutors/${created.id}`;
       return resultAfterMutation({ id: created.id }, href, async () => {
-        const tutor = await getTutorData(created.id);
+        const tutor = await loadTutorCardSource(created.id);
         if (!tutor) throw new Error("Created tutor could not be loaded");
         return toolResult(
           { id: tutor.id, name: `${tutor.firstName} ${tutor.lastName}` },
@@ -2086,7 +2137,7 @@ async function executeTutors(name: string, args: ToolArguments) {
     }
     case "update_tutor": {
       const id = stringValue(args, "id");
-      const current = await getTutorData(id);
+      const current = await getTutorProfileForAssistantMutation(id);
       if (!current) throw new Error("Tutor not found");
       const updated = await updateTutorProfile(id, {
         firstName: (args.firstName as string | undefined) ?? current.firstName,
@@ -2106,7 +2157,7 @@ async function executeTutors(name: string, args: ToolArguments) {
       });
       const href = `/tutors/${id}`;
       return resultAfterMutation({ id: updated.id }, href, async () => {
-        const tutor = await getTutorData(updated.id);
+        const tutor = await loadTutorCardSource(updated.id);
         if (!tutor) throw new Error("Updated tutor could not be loaded");
         return toolResult(
           { id: updated.id },
@@ -2126,7 +2177,7 @@ async function executeTutors(name: string, args: ToolArguments) {
         { id, subjectIds: args.subjectIds },
         href,
         async () => {
-          const tutor = await getTutorData(id);
+          const tutor = await loadTutorCardSource(id);
           if (!tutor) throw new Error("Tutor not found");
           return toolResult(
             { id, subjectIds: args.subjectIds },
@@ -2324,6 +2375,7 @@ async function executeEnrollments(name: string, args: ToolArguments) {
         await searchEnrollmentsForAssistant({
           studentId: args.studentId as string | undefined,
           tutorId: args.tutorId as string | undefined,
+          groupId: args.groupId as string | undefined,
           status: args.status as never,
           page: Number(args.page),
           limit: Number(args.limit ?? 20),
@@ -2346,15 +2398,11 @@ async function executeEnrollments(name: string, args: ToolArguments) {
               discountTotal: _count.discounts,
               sessionTotal: _count.sessions,
               paymentTotal: _count.payments,
-              hasMoreDiscounts:
-                _count.discounts > enrollment.discounts.length,
+              hasMoreDiscounts: _count.discounts > enrollment.discounts.length,
             },
           },
           `/enrollments?enrollment=${enrollment.id}`,
-          enrollmentResultCard(
-            enrollment,
-            "Enrollment and discount details",
-          ),
+          enrollmentResultCard(enrollment, "Enrollment and discount details"),
         );
       }
       const id = stringValue(args, "id");
@@ -2378,8 +2426,7 @@ async function executeEnrollments(name: string, args: ToolArguments) {
       const href = `/enrollments?enrollment=${created.id}`;
       return resultAfterMutation({ id: created.id }, href, async () => {
         const result = await getEnrollmentForAssistant(created.id);
-        if (!result)
-          throw new Error("Created enrollment could not be loaded");
+        if (!result) throw new Error("Created enrollment could not be loaded");
         const { _count, ...enrollment } = result;
         return toolResult(
           {
@@ -2404,8 +2451,7 @@ async function executeEnrollments(name: string, args: ToolArguments) {
       const href = `/enrollments?enrollment=${id}`;
       return resultAfterMutation({ id: updated.id }, href, async () => {
         const result = await getEnrollmentForAssistant(updated.id);
-        if (!result)
-          throw new Error("Updated enrollment could not be loaded");
+        if (!result) throw new Error("Updated enrollment could not be loaded");
         const { _count, ...enrollment } = result;
         return toolResult(
           {
@@ -2430,7 +2476,7 @@ async function executeEnrollments(name: string, args: ToolArguments) {
       );
       const href = `/enrollments?enrollment=${enrollmentId}`;
       return resultAfterMutation(created, href, async () => {
-        const enrollment = await getEnrollment(enrollmentId);
+        const enrollment = await loadEnrollmentCardSource(enrollmentId);
         if (!enrollment) throw new Error("Enrollment not found");
         return toolResult(
           created,
@@ -2462,7 +2508,7 @@ async function executeEnrollments(name: string, args: ToolArguments) {
         name: stringValue(args, "name"),
       });
       return resultAfterMutation(group, "/enrollments", async () => {
-        const loaded = (await listGroups()).find((item) => item.id === groupId);
+        const loaded = await loadGroupCardSource(groupId);
         if (!loaded) throw new Error("Updated group could not be loaded");
         return toolResult(
           group,
@@ -2492,6 +2538,24 @@ async function executeSchedule(name: string, args: ToolArguments) {
           },
           "/schedule",
           sessionResultCard(session, "Session details"),
+        );
+      }
+      if (args.from && args.to) {
+        return toolResult(
+          await querySessionsForAssistant({
+            from: dateValue(args.from),
+            to: dateValue(args.to),
+            studentId: args.studentId as string | undefined,
+            tutorId: args.tutorId as string | undefined,
+            enrollmentId: args.enrollmentId as string | undefined,
+            subjectId: args.subjectId as string | undefined,
+            status: args.status as never,
+            attendanceStatus: args.attendanceStatus as never,
+            direction: args.direction as "ASC" | "DESC",
+            page: Number(args.page),
+            limit: Number(args.limit),
+          }),
+          "/schedule",
         );
       }
       return toolResult(
@@ -2545,24 +2609,25 @@ async function executeSchedule(name: string, args: ToolArguments) {
       await markSessionAttendance(sessionId, {
         attendances: args.attendances as never,
       });
-      return resultAfterMutation({ sessionId, updated: true }, "/schedule", async () => {
-        const session = await getSessionData(sessionId);
-        if (!session) throw new Error("Updated session could not be loaded");
-        return toolResult(
-          { sessionId, updated: true },
-          "/schedule",
-          sessionResultCard(session, "Attendance updated"),
-        );
-      });
+      return resultAfterMutation(
+        { sessionId, updated: true },
+        "/schedule",
+        async () => {
+          const session = await getSessionForAssistant(sessionId);
+          if (!session) throw new Error("Updated session could not be loaded");
+          return toolResult(
+            { sessionId, updated: true },
+            "/schedule",
+            sessionResultCard(session, "Attendance updated"),
+          );
+        },
+      );
     }
     case "set_session_status": {
       const sessionId = stringValue(args, "sessionId");
-      const result = await updateSessionStatus(
-        sessionId,
-        args.status as never,
-      );
+      const result = await updateSessionStatus(sessionId, args.status as never);
       return resultAfterMutation(result, "/schedule", async () => {
-        const session = await getSessionData(sessionId);
+        const session = await getSessionForAssistant(sessionId);
         if (!session) throw new Error("Updated session could not be loaded");
         return toolResult(
           result,
@@ -2578,7 +2643,7 @@ async function executeSchedule(name: string, args: ToolArguments) {
         args.cancelledBy as "TUTOR" | "STUDENT",
       );
       return resultAfterMutation(result, "/schedule", async () => {
-        const session = await getSessionData(sessionId);
+        const session = await getSessionForAssistant(sessionId);
         if (!session) throw new Error("Cancelled session could not be loaded");
         return toolResult(
           result,
@@ -2589,7 +2654,7 @@ async function executeSchedule(name: string, args: ToolArguments) {
     }
     case "delete_session": {
       const sessionId = stringValue(args, "sessionId");
-      const session = await getSessionData(sessionId);
+      const session = await getSessionForAssistant(sessionId);
       if (!session) throw new Error("Session not found");
       await deleteSessionById(sessionId);
       return mutationToolResult(
@@ -2641,7 +2706,7 @@ async function executeRecurrence(name: string, args: ToolArguments) {
       return resultAfterMutation(result, "/schedule", async () => {
         const enrollmentId = args.enrollmentId as string | undefined;
         if (enrollmentId) {
-          const enrollment = await getEnrollment(enrollmentId);
+          const enrollment = await loadEnrollmentCardSource(enrollmentId);
           if (!enrollment) throw new Error("Enrollment not found");
           return toolResult(
             result,
@@ -2650,7 +2715,7 @@ async function executeRecurrence(name: string, args: ToolArguments) {
           );
         }
         const groupId = stringValue(args, "groupId");
-        const group = (await listGroups()).find((item) => item.id === groupId);
+        const group = await loadGroupCardSource(groupId);
         if (!group) throw new Error("Group not found");
         return toolResult(
           result,
@@ -2668,8 +2733,9 @@ async function executeRecurrence(name: string, args: ToolArguments) {
         params as never,
       );
       return resultAfterMutation({ updated: true }, "/schedule", async () => {
-        const rule = await getRecurrenceRuleWithParticipants(ruleId);
-        if (!rule) throw new Error("Updated recurring schedule could not be loaded");
+        const rule = await getRecurrenceRuleForAssistant(ruleId);
+        if (!rule)
+          throw new Error("Updated recurring schedule could not be loaded");
         return toolResult(
           { updated: true },
           "/schedule",
@@ -2684,8 +2750,9 @@ async function executeRecurrence(name: string, args: ToolArguments) {
         new Date(stringValue(args, "occurrenceFor")),
       );
       return resultAfterMutation({ ended: true }, "/schedule", async () => {
-        const rule = await getRecurrenceRuleWithParticipants(ruleId);
-        if (!rule) throw new Error("Ended recurring schedule could not be loaded");
+        const rule = await getRecurrenceRuleForAssistant(ruleId);
+        if (!rule)
+          throw new Error("Ended recurring schedule could not be loaded");
         return toolResult(
           { ended: true },
           "/schedule",
@@ -2700,7 +2767,7 @@ async function executeRecurrence(name: string, args: ToolArguments) {
         new Date(stringValue(args, "occurrenceFor")),
       );
       return resultAfterMutation({ cancelled: true }, "/schedule", async () => {
-        const rule = await getRecurrenceRuleWithParticipants(ruleId);
+        const rule = await getRecurrenceRuleForAssistant(ruleId);
         if (!rule) throw new Error("Recurring schedule could not be loaded");
         return toolResult(
           { cancelled: true },
@@ -2717,19 +2784,23 @@ async function executeRecurrence(name: string, args: ToolArguments) {
         new Date(stringValue(args, "newScheduledFor")),
         (args.overrides ?? {}) as never,
       );
-      return resultAfterMutation({ rescheduled: true }, "/schedule", async () => {
-        const rule = await getRecurrenceRuleWithParticipants(ruleId);
-        if (!rule) throw new Error("Recurring schedule could not be loaded");
-        return toolResult(
-          { rescheduled: true },
-          "/schedule",
-          recurrenceResultCard(rule, "Occurrence rescheduled"),
-        );
-      });
+      return resultAfterMutation(
+        { rescheduled: true },
+        "/schedule",
+        async () => {
+          const rule = await getRecurrenceRuleForAssistant(ruleId);
+          if (!rule) throw new Error("Recurring schedule could not be loaded");
+          return toolResult(
+            { rescheduled: true },
+            "/schedule",
+            recurrenceResultCard(rule, "Occurrence rescheduled"),
+          );
+        },
+      );
     }
     case "delete_recurring_schedule": {
       const ruleId = stringValue(args, "ruleId");
-      const rule = await getRecurrenceRuleWithParticipants(ruleId);
+      const rule = await getRecurrenceRuleForAssistant(ruleId);
       if (!rule) throw new Error("Recurring schedule not found");
       await deleteRecurringSchedule(ruleId);
       return mutationToolResult(
@@ -2745,7 +2816,7 @@ async function executeRecurrence(name: string, args: ToolArguments) {
         stringValue(args, "color"),
       );
       return resultAfterMutation({ updated: true }, "/schedule", async () => {
-        const enrollment = await getEnrollment(enrollmentId);
+        const enrollment = await loadEnrollmentCardSource(enrollmentId);
         if (!enrollment) throw new Error("Enrollment not found");
         return toolResult(
           { updated: true },
@@ -2782,14 +2853,30 @@ async function executeBilling(
   switch (name) {
     case "get_student_balance": {
       const studentId = stringValue(args, "studentId");
-      const student = await getStudentData(studentId);
+      const student = await loadStudentCardSource(studentId);
       if (!student) throw new Error("Student not found");
-      const balance = await getStudentBalance(studentId);
+      const balanceResult = await getStudentBalanceForAssistant(studentId);
+      if (!balanceResult) throw new Error("Student not found");
+      if (!balanceResult.calculationComplete) {
+        return toolResult(
+          {
+            studentId,
+            studentName: `${student.firstName} ${student.lastName}`,
+            calculationComplete: false,
+            warnings: balanceResult.warnings,
+          },
+          `/students?student=${studentId}`,
+          studentResultCard(student, "Balance requires detailed review"),
+        );
+      }
+      const balance = balanceResult.balance;
       return toolResult(
         {
           studentId,
           studentName: `${student.firstName} ${student.lastName}`,
           balance: balance.toFixed(2),
+          calculationComplete: true,
+          warnings: balanceResult.warnings,
         },
         `/students?student=${studentId}`,
         studentResultCard(
@@ -2826,11 +2913,7 @@ async function executeBilling(
         addCalendarMonths(currentMonthDate, 2).toISOString().slice(0, 7);
       const result = await getPaymentDuesForAssistant({
         status: args.status as
-          | "ALL"
-          | "OVERDUE"
-          | "DUE_THIS_MONTH"
-          | "UPCOMING"
-          | "PAID",
+          "ALL" | "OVERDUE" | "DUE_THIS_MONTH" | "UPCOMING" | "PAID",
         fromMonth,
         toMonth,
         page: Number(args.page),
@@ -2866,7 +2949,9 @@ async function executeBilling(
         context.idempotencyKey,
       );
       return resultAfterMutation(payment, "/payments", async () => {
-        const student = await getStudentData(stringValue(args, "studentId"));
+        const student = await getStudentIdentityForAssistant(
+          stringValue(args, "studentId"),
+        );
         if (!student) throw new Error("Student not found");
         return toolResult(
           payment,
@@ -2882,7 +2967,9 @@ async function executeBilling(
         context.idempotencyKey,
       );
       return resultAfterMutation(payment, "/payments", async () => {
-        const student = await getStudentData(stringValue(args, "studentId"));
+        const student = await getStudentIdentityForAssistant(
+          stringValue(args, "studentId"),
+        );
         if (!student) throw new Error("Student not found");
         return toolResult(
           payment,
@@ -2999,11 +3086,7 @@ async function executeCommunications(
         await resolveStudentCommunicationRecipientsData({
           studentIds: args.studentIds as string[] | undefined,
           query: args.query as string | undefined,
-          status: args.status as
-            | "ACTIVE"
-            | "PAUSED"
-            | "INACTIVE"
-            | undefined,
+          status: args.status as "ACTIVE" | "PAUSED" | "INACTIVE" | undefined,
           school: args.school as string | undefined,
           gradeLevel: args.gradeLevel as string | undefined,
           page: Number(args.page),
@@ -3063,18 +3146,21 @@ async function executeCommunications(
       const emailConfirmation = confirmationSnapshot(args);
       const studentIds = z.array(z.string()).parse(args.studentIds);
       const result = await sendEmailToStudents({
-          studentIds,
-          subject: stringValue(args, "subject"),
-          body: stringValue(args, "body"),
-          idempotencyKey: context.idempotencyKey,
-          expectedConfirmationDigest: emailConfirmation.digest,
-        });
+        studentIds,
+        subject: stringValue(args, "subject"),
+        body: stringValue(args, "body"),
+        idempotencyKey: context.idempotencyKey,
+        expectedConfirmationDigest: emailConfirmation.digest,
+      });
       return mutationToolResult(
         result,
         "/emails",
         emailResultCard({
           entityKey: `email-send:${emailConfirmation.digest}`,
-          title: studentIds.length === 1 ? "Email sent to 1 student" : `Email sent to ${studentIds.length} students`,
+          title:
+            studentIds.length === 1
+              ? "Email sent to 1 student"
+              : `Email sent to ${studentIds.length} students`,
           subtitle: `${result.sent} sent${result.failed ? ` · ${result.failed} failed` : ""}`,
           subject: emailConfirmation.subject,
           recipientSummary: emailConfirmation.recipientSummary,
@@ -3134,22 +3220,21 @@ async function executeTeam(
         "/team",
       );
     }
-    case "invite_team_member":
-      {
-        const email = stringValue(args, "email");
-        const invitation = await inviteTeamMember(email);
-        return mutationToolResult(
-          { invited: true, email },
-          "/team",
-          teamResultCard({
-            entityKey: `team-invite:${invitation.id}`,
-            title: email,
-            subtitle: "Team invitation sent",
-            email,
-            role: "STAFF",
-          }),
-        );
-      }
+    case "invite_team_member": {
+      const email = stringValue(args, "email");
+      const invitation = await inviteTeamMember(email);
+      return mutationToolResult(
+        { invited: true, email },
+        "/team",
+        teamResultCard({
+          entityKey: `team-invite:${invitation.id}`,
+          title: email,
+          subtitle: "Team invitation sent",
+          email,
+          role: "STAFF",
+        }),
+      );
+    }
     case "revoke_team_invitation": {
       const invitationId = stringValue(args, "invitationId");
       const invitation = await getPendingTeamInvitation({ invitationId });
@@ -3171,11 +3256,7 @@ async function executeTeam(
       const member = await getTeamAdminForAssistant(adminId);
       if (!member) throw new Error("Team member not found");
       const role = args.role as "OWNER" | "STAFF";
-      await updateTeamMemberRole(
-        context.admin.id,
-        adminId,
-        role,
-      );
+      await updateTeamMemberRole(context.admin.id, adminId, role);
       return mutationToolResult(
         { updated: true },
         "/team",
@@ -3261,10 +3342,7 @@ export async function executeAssistantTool(input: {
       return executeTeam(input.name, args, input.context);
     case "reporting": {
       const section = args.section as
-        | "SUMMARY"
-        | "UNPAID_STUDENTS"
-        | "UPCOMING_ENDINGS"
-        | "TUTOR_WORKLOAD";
+        "SUMMARY" | "UNPAID_STUDENTS" | "UPCOMING_ENDINGS" | "TUTOR_WORKLOAD";
       const page = Number(args.page);
       const limit = Number(args.limit);
       if (section === "UNPAID_STUDENTS" || section === "UPCOMING_ENDINGS") {
@@ -3290,17 +3368,12 @@ export async function executeAssistantTool(input: {
         }),
         getDashboardScheduleForAssistant(),
       ]);
-      const bounded = <T, R>(
-        items: T[],
-        summarize: (item: T) => R,
-      ) => ({
+      const bounded = <T, R>(items: T[], summarize: (item: T) => R) => ({
         total: items.length,
         page,
         limit,
         hasMore: page * limit < items.length,
-        results: items
-          .slice((page - 1) * limit, page * limit)
-          .map(summarize),
+        results: items.slice((page - 1) * limit, page * limit).map(summarize),
       });
       if (section === "TUTOR_WORKLOAD") {
         return toolResult(

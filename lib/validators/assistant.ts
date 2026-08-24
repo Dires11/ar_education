@@ -111,6 +111,23 @@ export const assistantDecisionSchema = z.object({
   decision: z.enum(["APPROVE", "REJECT"]),
 });
 
+const assistantHistoryCursorSchema = {
+  beforeAt: z.iso.datetime(),
+  beforeId: idSchema,
+};
+
+export const assistantHistoryQuerySchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("threads"),
+    ...assistantHistoryCursorSchema,
+  }),
+  z.object({
+    kind: z.literal("messages"),
+    threadId: idSchema,
+    ...assistantHistoryCursorSchema,
+  }),
+]);
+
 export const archiveAssistantThreadSchema = z.object({
   threadId: idSchema,
   archived: z.boolean(),

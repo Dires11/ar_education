@@ -22,6 +22,7 @@ import {
   getAssistantContext,
   getAssistantSummarySource,
   getAssistantThread,
+  getAssistantThreadMessages,
   getAssistantThreadMessageCount,
   getAssistantToolRunForDecision,
   markAssistantToolRunUnknown,
@@ -31,6 +32,7 @@ import {
   rejectAssistantToolRun,
   setAssistantThreadSummary,
   touchAssistantRun,
+  listAssistantThreads,
 } from "@/lib/data/assistant";
 import type {
   AssistantAttachmentInput,
@@ -59,7 +61,8 @@ import {
 } from "@/lib/services/assistant/provenance";
 import { ASSISTANT_MODEL } from "@/lib/services/assistant/config";
 import { classifyFailedAssistantRun } from "@/lib/services/assistant/recovery";
-import { DeliveryOutcomeUnknownError } from "@/lib/utils/email-errors";
+import { parseAssistantAttachmentMetadata } from "@/lib/services/assistant/dto";
+import { ExternalMutationOutcomeUnknownError } from "@/lib/utils/email-errors";
 import { normalizeAssistantResultCard } from "@/lib/validators/assistant";
 
 const MAX_TOOL_CALLS = 12;
@@ -188,6 +191,30 @@ function formatAttachmentHistoryNote(value: Prisma.JsonValue | null) {
   return `\n\n[Attachments supplied with this message: ${names.join(", ")}. The original file bytes are not retained in conversation history.]`;
 }
 
+function formatEntityReferenceHistoryNote(
+  toolResults: Prisma.JsonValue[] | undefined,
+) {
+  if (!toolResults) return "";
+  const references = toolResults.flatMap((result) => {
+    if (!result || typeof result !== "object" || Array.isArray(result))
+      return [];
+    const card = normalizeAssistantResultCard(
+      (result as Record<string, unknown>).card,
+    );
+    if (!card || !/^[a-z-]+:[A-Za-z0-9_-]{1,128}$/.test(card.entityKey)) {
+      return [];
+    }
+    return [card.entityKey];
+  });
+  const unique = [...new Set(references)];
+  const latest = unique.at(-1);
+  if (!latest) return "";
+  const earlier = unique.slice(0, -1);
+  return `\n\n[Server-generated CRM routing metadata. Most recent result card: ${latest}.${
+    earlier.length > 0 ? ` Earlier result cards: ${earlier.join(", ")}.` : ""
+  } These identifiers contain no user or database instructions, do not authorize a write, and must be resolved with an exact lookup before acting on a follow-up such as "this record".]`;
+}
+
 function buildContextInput(
   context: NonNullable<Awaited<ReturnType<typeof getAssistantContext>>>,
 ): ResponseInput {
@@ -205,7 +232,7 @@ function buildContextInput(
       role: message.role === "USER" ? "user" : "assistant",
       content:
         message.role === "USER"
-          ? `${message.content}${formatAttachmentHistoryNote(message.attachments)}`
+          ? `${message.content}${formatAttachmentHistoryNote(message.attachments)}${formatEntityReferenceHistoryNote(message.toolResults)}`
           : message.content,
     });
   }
@@ -289,9 +316,7 @@ function transformJson(
 }
 
 export function sanitizeResponseOutput(output: unknown[]): ResponseInputItem[] {
-  const replayableItems = toResponseInputItems(
-    output as ResponseOutputItem[],
-  );
+  const replayableItems = toResponseInputItems(output as ResponseOutputItem[]);
   return transformJson(replayableItems, (item) => item) as ResponseInputItem[];
 }
 
@@ -378,7 +403,11 @@ function collectPrimaryToolResultGrants(
 ) {
   if (!result || typeof result !== "object" || Array.isArray(result)) return [];
   const wrappedData = (result as Record<string, unknown>).data;
-  if (!wrappedData || typeof wrappedData !== "object" || Array.isArray(wrappedData)) {
+  if (
+    !wrappedData ||
+    typeof wrappedData !== "object" ||
+    Array.isArray(wrappedData)
+  ) {
     return [];
   }
   const data = wrappedData as Record<string, unknown>;
@@ -492,14 +521,20 @@ async function executeRecordedTool(input: {
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Tool execution failed";
-    if (error instanceof DeliveryOutcomeUnknownError) {
+    if (error instanceof ExternalMutationOutcomeUnknownError) {
       const auditMessage =
-        "Email delivery was attempted, but the provider response was interrupted. The outcome is unknown; verify delivery before sending again.";
+        input.toolRun.namespace === "team"
+          ? "The team access provider request was interrupted after it may have committed. The outcome is unknown; verify team access before repeating the action."
+          : "Email delivery was attempted, but the provider response was interrupted. The outcome is unknown; verify delivery before sending again.";
       try {
         await markAssistantToolRunUnknown(input.toolRun.id, auditMessage);
       } catch {
+        const subject =
+          input.toolRun.namespace === "team"
+            ? "team access change"
+            : "email delivery";
         throw new Error(
-          `The email delivery outcome is unknown and its audit record could not be finalized. Reload and verify delivery before retrying. ${message}`,
+          `The ${subject} outcome is unknown and its audit record could not be finalized. Reload and verify the provider state before retrying. ${message}`,
         );
       }
       input.emit({
@@ -575,10 +610,13 @@ async function runModelLoop(input: {
   let assistantContent = input.initialAssistantContent ?? "";
   let crmMutationRan = Boolean(input.initialMutationUsed);
   const hasUntrustedEvidence =
-    input.hasAttachments ||
-    Boolean(input.hasHistoricalUntrustedContext);
+    input.hasAttachments || Boolean(input.hasHistoricalUntrustedContext);
   const authorizedMutationGrants = new Set(input.initialAuthorizedGrants ?? []);
   const ambiguousCandidateGrants = new Set<string>();
+  // An exact inspection chosen by the model must not erase ambiguity that was
+  // introduced earlier in this same user turn. Only a later user turn can
+  // supply the disambiguating intent needed to authorize a selected record.
+  const turnAmbiguousCandidateGrants = new Set<string>();
 
   const candidateResultForTool = (
     namespace: string,
@@ -592,7 +630,10 @@ async function runModelLoop(input: {
     const data = (result as Record<string, unknown>).data;
     const key = `${namespace}.${name}`;
     const arrayValue = (() => {
-      if (key === "students.search_students" || key === "students.query_student_directory") {
+      if (
+        key === "students.search_students" ||
+        key === "students.query_student_directory"
+      ) {
         return data && typeof data === "object" && !Array.isArray(data)
           ? (data as Record<string, unknown>).students
           : undefined;
@@ -636,6 +677,11 @@ async function runModelLoop(input: {
               }))
             : []),
         ];
+      }
+      if (key === "schedule.get_schedule" && argumentsValue.from) {
+        return data && typeof data === "object" && !Array.isArray(data)
+          ? (data as Record<string, unknown>).sessions
+          : undefined;
       }
       if (key === "schedule.get_schedule" && argumentsValue.month) {
         if (!data || typeof data !== "object" || Array.isArray(data)) {
@@ -704,8 +750,10 @@ async function runModelLoop(input: {
       if (key === "team.get_team") {
         const adminTotal = record.adminTotal;
         const invitationTotal = record.invitationTotal;
-        return (typeof adminTotal === "number" ? adminTotal : 0) +
-          (typeof invitationTotal === "number" ? invitationTotal : 0);
+        return (
+          (typeof adminTotal === "number" ? adminTotal : 0) +
+          (typeof invitationTotal === "number" ? invitationTotal : 0)
+        );
       }
       return record.total;
     })();
@@ -720,7 +768,11 @@ async function runModelLoop(input: {
     name: string,
     candidate: unknown,
   ): AssistantIdentifierReference[] => {
-    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+    if (
+      !candidate ||
+      typeof candidate !== "object" ||
+      Array.isArray(candidate)
+    ) {
       return [];
     }
     const record = candidate as Record<string, unknown>;
@@ -794,7 +846,9 @@ async function runModelLoop(input: {
         if (typeof studentId !== "string" || typeof guardianId !== "string") {
           return [];
         }
-        return [relationshipGrant("studentGuardianLink", studentId, guardianId)];
+        return [
+          relationshipGrant("studentGuardianLink", studentId, guardianId),
+        ];
       }
       if (key === "attendance.get_session_participants") {
         const sessionId = argumentsValue.sessionId;
@@ -812,7 +866,8 @@ async function runModelLoop(input: {
             ) {
               return [];
             }
-            const studentId = (participant as Record<string, unknown>).studentId;
+            const studentId = (participant as Record<string, unknown>)
+              .studentId;
             return typeof studentId === "string"
               ? [relationshipGrant("sessionParticipant", sessionId, studentId)]
               : [];
@@ -821,11 +876,14 @@ async function runModelLoop(input: {
       }
       if (key === "schedule.get_schedule" && argumentsValue.sessionId) {
         const sessionId = String(argumentsValue.sessionId);
-        const attendance = Array.isArray(data?.attendance) ? data.attendance : [];
+        const attendance = Array.isArray(data?.attendance)
+          ? data.attendance
+          : [];
         return [
           grantKey("session", sessionId),
           ...attendance.flatMap((entry) => {
-            if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+            if (!entry || typeof entry !== "object" || Array.isArray(entry))
+              return [];
             const student = (entry as Record<string, unknown>).student;
             const studentId =
               student && typeof student === "object" && !Array.isArray(student)
@@ -839,7 +897,8 @@ async function runModelLoop(input: {
       }
       if (key === "enrollments.get_enrollment") {
         return collectAssistantIdentifierReferences(namespace, name, {
-          id: data?.id ??
+          id:
+            data?.id ??
             (data?.enrollment as Record<string, unknown> | undefined)?.id,
           discountId: argumentsValue.discountId,
         }).map(referenceGrant);
@@ -869,11 +928,13 @@ async function runModelLoop(input: {
           const record = due as Record<string, unknown>;
           return typeof record.enrollmentId === "string" &&
             typeof record.month === "string"
-            ? [relationshipGrant(
-                "billingReminder",
-                record.enrollmentId,
-                record.month,
-              )]
+            ? [
+                relationshipGrant(
+                  "billingReminder",
+                  record.enrollmentId,
+                  record.month,
+                ),
+              ]
             : [];
         });
       }
@@ -881,10 +942,9 @@ async function runModelLoop(input: {
       const references = collectAssistantIdentifierReferences(
         namespace,
         name,
-        Object.fromEntries(keys.map((argumentKey) => [
-          argumentKey,
-          argumentsValue[argumentKey],
-        ])),
+        Object.fromEntries(
+          keys.map((argumentKey) => [argumentKey, argumentsValue[argumentKey]]),
+        ),
       );
       return references.flatMap((reference) => [
         referenceGrant(reference),
@@ -897,7 +957,8 @@ async function runModelLoop(input: {
       ? collectPrimaryToolResultGrants(namespace, name, result)
       : [];
     if (
-      (key === "guardians.add_guardian" || key === "guardians.update_guardian") &&
+      (key === "guardians.add_guardian" ||
+        key === "guardians.update_guardian") &&
       typeof data?.studentId === "string" &&
       typeof data?.id === "string"
     ) {
@@ -911,7 +972,12 @@ async function runModelLoop(input: {
         ? [grantKey("communicationRecipient", grant.slice("student:".length))]
         : []),
     ]);
-    [...exactGrants, ...expandedMutationGrants].forEach((grant) => {
+    exactGrants.forEach((grant) => {
+      if (turnAmbiguousCandidateGrants.has(grant)) return;
+      authorizedMutationGrants.add(grant);
+      ambiguousCandidateGrants.delete(grant);
+    });
+    expandedMutationGrants.forEach((grant) => {
       authorizedMutationGrants.add(grant);
       ambiguousCandidateGrants.delete(grant);
     });
@@ -935,7 +1001,17 @@ async function runModelLoop(input: {
       authorizedMutationGrants.add(grant),
     );
     let ambiguousRecords: unknown[] = [];
-    if (
+    if (candidates.total > candidates.records.length) {
+      // A row on an incomplete page cannot establish uniqueness: an
+      // equivalent name or relationship may exist on a later page. Require
+      // an exact lookup (or a complete narrowed result) before mutation.
+      ambiguousRecords = candidates.records;
+    } else if (
+      key === "schedule.get_schedule" &&
+      Boolean(argumentsValue.from)
+    ) {
+      ambiguousRecords = candidates.records;
+    } else if (
       key === "students.search_students" ||
       key === "tutors.search_tutors"
     ) {
@@ -945,7 +1021,11 @@ async function runModelLoop(input: {
             ? argumentsValue.query.trim().toLocaleLowerCase()
             : "";
         const exactMatches = candidates.records.filter((candidate) => {
-          if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+          if (
+            !candidate ||
+            typeof candidate !== "object" ||
+            Array.isArray(candidate)
+          ) {
             return false;
           }
           const candidateName = (candidate as Record<string, unknown>).name;
@@ -956,8 +1036,11 @@ async function runModelLoop(input: {
           );
         });
         ambiguousRecords =
-          candidates.total === candidates.records.length && exactMatches.length === 1
-            ? candidates.records.filter((candidate) => candidate !== exactMatches[0])
+          candidates.total === candidates.records.length &&
+          exactMatches.length === 1
+            ? candidates.records.filter(
+                (candidate) => candidate !== exactMatches[0],
+              )
             : candidates.records;
       }
     } else if (
@@ -988,7 +1071,12 @@ async function runModelLoop(input: {
     } else {
       const recordsByName = new Map<string, unknown[]>();
       for (const candidate of candidates.records) {
-        if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) continue;
+        if (
+          !candidate ||
+          typeof candidate !== "object" ||
+          Array.isArray(candidate)
+        )
+          continue;
         const candidateName = (candidate as Record<string, unknown>).name;
         if (typeof candidateName !== "string") continue;
         const normalizedName = candidateName.trim().toLocaleLowerCase();
@@ -1015,6 +1103,7 @@ async function runModelLoop(input: {
         )
         .forEach((grant) => {
           ambiguousCandidateGrants.add(grant);
+          turnAmbiguousCandidateGrants.add(grant);
           if (!previouslyAuthorized.has(grant)) {
             authorizedMutationGrants.delete(grant);
           }
@@ -1057,7 +1146,11 @@ async function runModelLoop(input: {
       return [
         grantKey("session", sessionId),
         ...attendances.flatMap((attendance) => {
-          if (!attendance || typeof attendance !== "object" || Array.isArray(attendance)) {
+          if (
+            !attendance ||
+            typeof attendance !== "object" ||
+            Array.isArray(attendance)
+          ) {
             return [];
           }
           const studentId = (attendance as Record<string, unknown>).studentId;
@@ -1092,11 +1185,13 @@ async function runModelLoop(input: {
         const record = reminder as Record<string, unknown>;
         return typeof record.enrollmentId === "string" &&
           typeof record.month === "string"
-          ? [relationshipGrant(
-              "billingReminder",
-              record.enrollmentId,
-              record.month,
-            )]
+          ? [
+              relationshipGrant(
+                "billingReminder",
+                record.enrollmentId,
+                record.month,
+              ),
+            ]
           : [];
       });
     }
@@ -1114,7 +1209,7 @@ async function runModelLoop(input: {
       const stream = client.responses.stream(
         {
           model: ASSISTANT_MODEL,
-        instructions: getAssistantInstructions(input.admin.role),
+          instructions: getAssistantInstructions(input.admin.role),
           input: responseInput,
           tools,
           tool_choice: "auto",
@@ -1300,7 +1395,11 @@ async function runModelLoop(input: {
         if (card) {
           card = await enrichAssistantConfirmationCard(card, argumentsValue);
         }
-        if (!card && evidenceRequiresConfirmation && !policyRequiresConfirmation) {
+        if (
+          !card &&
+          evidenceRequiresConfirmation &&
+          !policyRequiresConfirmation
+        ) {
           card = await getAssistantMutationDraftCard(spec, argumentsValue);
         }
         if (card) {
@@ -1338,12 +1437,7 @@ async function runModelLoop(input: {
 
       if (toolRun.status === "COMPLETED" && toolRun.result) {
         responseInput.push(toolOutput(call.call_id, toolRun.result));
-        recordProvenance(
-          namespace,
-          call.name,
-          argumentsValue,
-          toolRun.result,
-        );
+        recordProvenance(namespace, call.name, argumentsValue, toolRun.result);
         continue;
       }
       if (toolRun.status === "UNKNOWN") {
@@ -1483,10 +1577,7 @@ export async function processAssistantTurn(
     if (!failedRun || failedRun.threadId !== turn.threadId) {
       throw new Error("The failed request is no longer available to retry");
     }
-    const recovery = classifyFailedAssistantRun(
-      failedRun.toolRuns,
-      admin.role,
-    );
+    const recovery = classifyFailedAssistantRun(failedRun.toolRuns, admin.role);
     if (!recovery.retryable) {
       throw new Error(
         "This request cannot be retried automatically because it attempted a CRM change",
@@ -1652,7 +1743,7 @@ export async function processAssistantDecision(
         result,
       ),
       initialToolHistory: [
-        ...((existing.run.toolRuns ?? [])
+        ...(existing.run.toolRuns ?? [])
           .filter((toolRun) => toolRun.status === "COMPLETED" && toolRun.result)
           .map((toolRun) => ({
             namespace: toolRun.namespace,
@@ -1664,7 +1755,7 @@ export async function processAssistantDecision(
                 ? (toolRun.arguments as Record<string, unknown>)
                 : {},
             result: toolRun.result,
-          }))),
+          })),
         {
           namespace: existing.namespace,
           toolName: existing.toolName,
@@ -1693,15 +1784,135 @@ export async function getAssistantPageData(
   adminId: string,
   selectedThreadId?: string,
 ) {
-  const { listAssistantThreads } = await import("@/lib/data/assistant");
   await expireAssistantRuns(adminId);
-  const threads = await listAssistantThreads(adminId);
-  const selectedId =
-    selectedThreadId && threads.some((thread) => thread.id === selectedThreadId)
-      ? selectedThreadId
-      : threads[0]?.id;
-  const selectedThread = selectedId
-    ? await getAssistantThread(adminId, selectedId)
+  const threadPage = await listAssistantThreads(adminId);
+  let selectedThread = selectedThreadId
+    ? await getAssistantThread(adminId, selectedThreadId)
     : null;
-  return { threads, selectedThread };
+  if (!selectedThread && threadPage.threads[0]) {
+    selectedThread = await getAssistantThread(
+      adminId,
+      threadPage.threads[0].id,
+    );
+  }
+  const threads =
+    selectedThread &&
+    !threadPage.threads.some((thread) => thread.id === selectedThread.id)
+      ? [
+          {
+            id: selectedThread.id,
+            title: selectedThread.title,
+            updatedAt: selectedThread.updatedAt,
+            _count: selectedThread._count,
+          },
+          ...threadPage.threads,
+        ]
+      : threadPage.threads;
+  return {
+    threads,
+    hasMoreThreads: threadPage.hasMore,
+    nextThreadCursor: threadPage.nextCursor,
+    selectedThread,
+  };
+}
+
+type AssistantHistoryMessage = NonNullable<
+  Awaited<ReturnType<typeof getAssistantThread>>
+>["messages"][number];
+
+export function assistantHistoryMessageDto(
+  message: AssistantHistoryMessage,
+  role: Admin["role"],
+) {
+  const recovery = message.run
+    ? classifyFailedAssistantRun(message.run.toolRuns, role)
+    : null;
+  return {
+    id: message.id,
+    role: message.role,
+    content: message.content,
+    createdAt: message.createdAt.toISOString(),
+    attachments: parseAssistantAttachmentMetadata(message.attachments),
+    failure:
+      message.role === "USER" && message.run?.status === "FAILED"
+        ? {
+            clientTurnId: message.run.clientTurnId,
+            error: message.run.error ?? "This request did not complete.",
+            hasAttachments: message.run.hasAttachments,
+            outcomeUnknown: recovery?.outcomeUnknown ?? true,
+            retryable: recovery?.retryable ?? false,
+            reuseClientTurnId: recovery?.reuseClientTurnId ?? false,
+          }
+        : null,
+    tools:
+      message.role === "USER"
+        ? (message.run?.toolRuns ?? []).map((tool) => ({
+            id: tool.id,
+            namespace: tool.namespace,
+            toolName: tool.toolName,
+            preview: tool.preview,
+            result: tool.result,
+            status: tool.status,
+            requiresConfirmation: tool.requiresConfirmation,
+            expiresAt: tool.expiresAt?.toISOString() ?? null,
+            error: tool.error,
+          }))
+        : [],
+  };
+}
+
+export async function getAssistantHistoryPage(
+  admin: Pick<Admin, "id" | "role">,
+  input:
+    | {
+        kind: "threads";
+        beforeAt: string;
+        beforeId: string;
+      }
+    | {
+        kind: "messages";
+        threadId: string;
+        beforeAt: string;
+        beforeId: string;
+      },
+) {
+  if (input.kind === "threads") {
+    const page = await listAssistantThreads(admin.id, {
+      limit: 50,
+      before: { updatedAt: new Date(input.beforeAt), id: input.beforeId },
+    });
+    return {
+      kind: input.kind,
+      threads: page.threads.map((thread) => ({
+        id: thread.id,
+        title: thread.title,
+        updatedAt: thread.updatedAt.toISOString(),
+        messageCount: thread._count.messages,
+      })),
+      hasMore: page.hasMore,
+      nextCursor: page.nextCursor
+        ? {
+            at: page.nextCursor.updatedAt.toISOString(),
+            id: page.nextCursor.id,
+          }
+        : null,
+    };
+  }
+  const page = await getAssistantThreadMessages(admin.id, input.threadId, {
+    limit: 40,
+    before: { createdAt: new Date(input.beforeAt), id: input.beforeId },
+  });
+  return {
+    kind: input.kind,
+    messages: page.messages.map((message) =>
+      assistantHistoryMessageDto(message, admin.role),
+    ),
+    hasMore: page.hasMore,
+    nextCursor: page.nextCursor
+      ? {
+          at: page.nextCursor.createdAt.toISOString(),
+          id: page.nextCursor.id,
+        }
+      : null,
+  };
 }

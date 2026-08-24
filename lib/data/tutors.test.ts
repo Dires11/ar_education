@@ -17,6 +17,7 @@ vi.mock("@/lib/prisma", () => ({ prisma: prismaMock }));
 
 import {
   getTutorForAssistant,
+  getTutorProfileForAssistantMutation,
   getTutorPayrollForAssistantData,
   listTutors,
 } from "@/lib/data/tutors";
@@ -60,17 +61,31 @@ describe("tutor search", () => {
   it("caps exact-detail enrollments and selects only student identity", async () => {
     prismaMock.tutor.findUnique.mockResolvedValue(null);
 
-    await getTutorForAssistant("tutor-1", 15);
+    await getTutorForAssistant("tutor-1", { page: 2, limit: 15 });
 
     const query = prismaMock.tutor.findUnique.mock.calls[0][0];
     expect(query.where).toEqual({ id: "tutor-1" });
+    expect(query.select.enrollments.skip).toBe(15);
     expect(query.select.enrollments.take).toBe(15);
+    expect(query.select.subjects).toMatchObject({ skip: 15, take: 15 });
     expect(query.select.enrollments.select.student).toEqual({
       select: { id: true, firstName: true, lastName: true },
     });
     expect(query.select.enrollments.select.student.select).not.toHaveProperty(
       "email",
     );
+  });
+
+  it("preloads tutor mutations without loading enrollment relations", async () => {
+    prismaMock.tutor.findUnique.mockResolvedValue(null);
+
+    await getTutorProfileForAssistantMutation("tutor-1");
+
+    const query = prismaMock.tutor.findUnique.mock.calls[0][0];
+    expect(query.where).toEqual({ id: "tutor-1" });
+    expect(query).not.toHaveProperty("include");
+    expect(query.select).not.toHaveProperty("enrollments");
+    expect(query.select).not.toHaveProperty("subjects");
   });
 
   it("aggregates payroll while returning only bounded compact sessions", async () => {

@@ -16,6 +16,7 @@ import {
   getSessionParticipantsForAssistant,
   getSessionsForAssistantMonth,
   getSessionsForAssistantRange,
+  querySessionsForAssistantData,
   listRecurrenceRulesForAssistant,
 } from "@/lib/data/sessions";
 
@@ -47,6 +48,11 @@ describe("assistant recurrence lookup", () => {
           OR: [{ endsOn: null }, { endsOn: { gte: calendarDate } }],
         },
         take: 20,
+        orderBy: [
+          { updatedAt: "desc" },
+          { dayOfWeek: "asc" },
+          { id: "asc" },
+        ],
       }),
     );
     expect(
@@ -135,7 +141,7 @@ describe("assistant recurrence lookup", () => {
     );
     expect(prismaMock.session.findMany.mock.calls[1][0]).toMatchObject({
       take: 5_001,
-      orderBy: { scheduledFor: "asc" },
+      orderBy: [{ scheduledFor: "asc" }, { id: "asc" }],
     });
   });
 
@@ -177,6 +183,67 @@ describe("assistant recurrence lookup", () => {
     expect(prismaMock.session.findUnique.mock.calls[0][0].select.attendance.take).toBe(
       100,
     );
+  });
+
+  it("pages filtered next and prior session history with stable DB ordering", async () => {
+    prismaMock.$transaction.mockResolvedValue([205, []]);
+    const from = new Date("2026-01-01T00:00:00.000Z");
+    const to = new Date("2027-01-01T00:00:00.000Z");
+
+    await expect(
+      querySessionsForAssistantData({
+        from,
+        to,
+        studentId: "student-1",
+        attendanceStatus: "COMPLETED",
+        direction: "ASC",
+        page: 2,
+        limit: 100,
+      }),
+    ).resolves.toMatchObject({
+      total: 205,
+      page: 2,
+      limit: 100,
+      hasMore: true,
+    });
+    let query = prismaMock.session.findMany.mock.calls.at(-1)?.[0];
+    expect(query).toMatchObject({
+      where: {
+        scheduledFor: { gte: from, lt: to },
+        AND: [
+          {
+            OR: [
+              { enrollment: { studentId: "student-1" } },
+              { attendance: { some: { studentId: "student-1" } } },
+            ],
+          },
+          {
+            attendance: {
+              some: { studentId: "student-1", status: "COMPLETED" },
+            },
+          },
+        ],
+      },
+      orderBy: [{ scheduledFor: "asc" }, { id: "asc" }],
+      skip: 100,
+      take: 100,
+    });
+    expect(query.select.attendance.take).toBe(20);
+
+    prismaMock.$transaction.mockResolvedValue([0, []]);
+    await querySessionsForAssistantData({
+      from,
+      to,
+      tutorId: "tutor-1",
+      direction: "DESC",
+      page: 1,
+      limit: 1,
+    });
+    query = prismaMock.session.findMany.mock.calls.at(-1)?.[0];
+    expect(query.orderBy).toEqual([
+      { scheduledFor: "desc" },
+      { id: "desc" },
+    ]);
   });
 
   it("pages and filters compact session participants for large attendance rosters", async () => {

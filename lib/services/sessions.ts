@@ -12,6 +12,7 @@ import {
   getSessionsForAssistantMonth,
   getAssistantSessionSlots,
   getSessionsForAssistantRange,
+  querySessionsForAssistantData,
   getRecurrenceRuleById,
   getRecurrenceRuleWithParticipants,
   getEnrollmentForSession,
@@ -1064,6 +1065,38 @@ export async function getMonthScheduleForAssistant(
         .map(summarizeVirtual),
     },
   };
+}
+
+export function querySessionsForAssistant(input: {
+  from: Date;
+  to: Date;
+  studentId?: string;
+  tutorId?: string;
+  enrollmentId?: string;
+  subjectId?: string;
+  status?:
+    | "SCHEDULED"
+    | "COMPLETED"
+    | "NO_SHOW"
+    | "CANCELLED_BY_TUTOR"
+    | "CANCELLED_BY_STUDENT";
+  attendanceStatus?:
+    | "SCHEDULED"
+    | "COMPLETED"
+    | "NO_SHOW"
+    | "CANCELLED_BY_TUTOR"
+    | "CANCELLED_BY_STUDENT";
+  direction: "ASC" | "DESC";
+  page: number;
+  limit: number;
+}) {
+  if (input.to <= input.from) {
+    throw new Error("Schedule range end must be after its start");
+  }
+  if (input.to.getTime() - input.from.getTime() > 366 * 24 * 60 * 60 * 1000) {
+    throw new Error("Schedule range cannot exceed 366 days");
+  }
+  return querySessionsForAssistantData(input);
 }
 
 export async function getDashboardScheduleForAssistant(limit = 50) {

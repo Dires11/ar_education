@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useTransition, useRef } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { format, isSameMonth } from "date-fns";
 import { MonthCalendar, type CalendarSession } from "./week-calendar";
 import { NewSessionDialog } from "./new-session-dialog";
@@ -38,6 +39,8 @@ function getLocalMonthStart(monthKey: string): Date {
 
 export function ScheduleView({
   monthKey,
+  initialSessionId,
+  initialRecurrenceId,
   centerTimeZone,
   sessions: initialSessions,
   virtualSessions: initialVirtual,
@@ -47,6 +50,8 @@ export function ScheduleView({
   groups,
 }: {
   monthKey: string;
+  initialSessionId: string | null;
+  initialRecurrenceId: string | null;
   centerTimeZone: string;
   sessions: CalendarSession[];
   virtualSessions: VirtualSession[];
@@ -55,6 +60,9 @@ export function ScheduleView({
   enrollments: SessionEnrollment[];
   groups: SessionGroup[];
 }) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const initialMonthStart = getLocalMonthStart(monthKey);
   const [isPending, startTransition] = useTransition();
   const [monthStart, setMonthStart] = useState(initialMonthStart);
@@ -62,14 +70,40 @@ export function ScheduleView({
     mergeAll(initialSessions, initialVirtual)
   );
   const [selectedDay, setSelectedDay] = useState<Date | null>(() => {
+    const initialTarget = mergeAll(initialSessions, initialVirtual).find(
+      (session) =>
+        session.id === initialSessionId ||
+        session.ruleId === initialRecurrenceId,
+    );
+    if (initialTarget) {
+      return getPickerDateInTimeZone(
+        new Date(initialTarget.scheduledFor),
+        centerTimeZone,
+      );
+    }
     const today = getPickerDateInTimeZone(new Date(), centerTimeZone);
     return isSameMonth(today, initialMonthStart) ? today : null;
   });
   const navVersion = useRef(0);
 
+  function updateScheduleUrl(input: {
+    month: string;
+    sessionId?: string;
+    recurrenceId?: string;
+  }) {
+    const next = new URLSearchParams(searchParams.toString());
+    next.set("month", input.month);
+    if (input.sessionId) next.set("session", input.sessionId);
+    else next.delete("session");
+    if (input.recurrenceId) next.set("recurrence", input.recurrenceId);
+    else next.delete("recurrence");
+    router.replace(`${pathname}?${next.toString()}`, { scroll: false });
+  }
+
   function navigate(newMonth: Date) {
     setSelectedDay(null);
     const param = format(newMonth, "yyyy-MM");
+    updateScheduleUrl({ month: param });
     const version = ++navVersion.current;
     startTransition(async () => {
       const data = await fetchScheduleForMonth(param);
@@ -130,9 +164,26 @@ export function ScheduleView({
         monthStart={monthStart}
         sessions={allSessions}
         selectedDay={selectedDay}
+        initialSessionId={initialSessionId}
+        initialRecurrenceId={initialRecurrenceId}
         onDaySelect={setSelectedDay}
         onNavigate={navigate}
         onRefresh={refresh}
+        onSessionOpen={(session) =>
+          updateScheduleUrl({
+            month: format(monthStart, "yyyy-MM"),
+            sessionId: session.id,
+          })
+        }
+        onRecurrenceOpen={(session) =>
+          updateScheduleUrl({
+            month: format(monthStart, "yyyy-MM"),
+            recurrenceId: session.ruleId ?? undefined,
+          })
+        }
+        onTargetClose={() =>
+          updateScheduleUrl({ month: format(monthStart, "yyyy-MM") })
+        }
         isPending={isPending}
       />
     </div>

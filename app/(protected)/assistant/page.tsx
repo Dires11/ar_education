@@ -1,10 +1,9 @@
 import { requireAdmin } from "@/lib/utils/auth";
 import {
+  assistantHistoryMessageDto,
   getAssistantPageData,
   isAssistantConfigured,
 } from "@/lib/services/assistant/orchestrator";
-import { parseAssistantAttachmentMetadata } from "@/lib/services/assistant/dto";
-import { classifyFailedAssistantRun } from "@/lib/services/assistant/recovery";
 import { AssistantShell } from "./assistant-shell";
 
 export default async function AssistantPage({
@@ -28,45 +27,16 @@ export default async function AssistantPage({
     ? {
         id: selectedThreadData.id,
         title: selectedThreadData.title,
-        messages: selectedThreadData.messages.map((message) => {
-          const recovery = message.run
-            ? classifyFailedAssistantRun(message.run.toolRuns, admin.role)
-            : null;
-          return {
-            id: message.id,
-            role: message.role,
-            content: message.content,
-            createdAt: message.createdAt.toISOString(),
-            attachments: parseAssistantAttachmentMetadata(message.attachments),
-            failure:
-              message.role === "USER" && message.run?.status === "FAILED"
-                ? {
-                    clientTurnId: message.run.clientTurnId,
-                    error:
-                      message.run.error ?? "This request did not complete.",
-                    hasAttachments: message.run.hasAttachments,
-                    outcomeUnknown: recovery?.outcomeUnknown ?? true,
-                    retryable: recovery?.retryable ?? false,
-                    reuseClientTurnId:
-                      recovery?.reuseClientTurnId ?? false,
-                  }
-                : null,
-            tools:
-              message.role === "USER"
-                ? (message.run?.toolRuns ?? []).map((tool) => ({
-                    id: tool.id,
-                    namespace: tool.namespace,
-                    toolName: tool.toolName,
-                    preview: tool.preview,
-                    result: tool.result,
-                    status: tool.status,
-                    requiresConfirmation: tool.requiresConfirmation,
-                    expiresAt: tool.expiresAt?.toISOString() ?? null,
-                    error: tool.error,
-                  }))
-                : [],
-          };
-        }),
+        messages: selectedThreadData.messages.map((message) =>
+          assistantHistoryMessageDto(message, admin.role),
+        ),
+        hasMoreMessages: selectedThreadData.hasMore,
+        messageCursor: selectedThreadData.nextCursor
+          ? {
+              at: selectedThreadData.nextCursor.createdAt.toISOString(),
+              id: selectedThreadData.nextCursor.id,
+            }
+          : null,
       }
     : null;
 
@@ -74,6 +44,15 @@ export default async function AssistantPage({
     <AssistantShell
       configured={isAssistantConfigured()}
       initialThreads={threads}
+      initialHasMoreThreads={data.hasMoreThreads}
+      initialThreadCursor={
+        data.nextThreadCursor
+          ? {
+              at: data.nextThreadCursor.updatedAt.toISOString(),
+              id: data.nextThreadCursor.id,
+            }
+          : null
+      }
       initialThread={selectedThread}
     />
   );

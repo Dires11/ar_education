@@ -6,6 +6,7 @@ import { EnrollmentStatus } from "../../generated/prisma";
 export async function listEnrollments(filters?: {
   studentId?: string;
   tutorId?: string;
+  groupId?: string;
   status?: EnrollmentStatus;
 }) {
   return prisma.enrollment.findMany({
@@ -29,6 +30,7 @@ export async function listEnrollments(filters?: {
 export async function searchEnrollmentsForAssistant(filters: {
   studentId?: string;
   tutorId?: string;
+  groupId?: string;
   status?: EnrollmentStatus;
   page: number;
   limit: number;
@@ -36,6 +38,7 @@ export async function searchEnrollmentsForAssistant(filters: {
   const where = {
     ...(filters.studentId && { studentId: filters.studentId }),
     ...(filters.tutorId && { tutorId: filters.tutorId }),
+    ...(filters.groupId && { groupId: filters.groupId }),
     ...(filters.status && { status: filters.status }),
   };
   const [enrollments, total] = await Promise.all([

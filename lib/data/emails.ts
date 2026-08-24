@@ -86,12 +86,13 @@ export async function getStudentsForEmail(studentIds: string[]) {
       guardians: {
         where: { isPrimary: true },
         include: { guardian: true },
+        orderBy: { guardianId: "asc" },
       },
       enrollments: {
         where: { status: "ACTIVE" },
         include: { tutor: true, subject: true, package: true },
         take: 1,
-        orderBy: { createdAt: "desc" },
+        orderBy: [{ createdAt: "desc" }, { id: "asc" }],
       },
     },
   });

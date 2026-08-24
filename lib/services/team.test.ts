@@ -7,8 +7,10 @@ const dataMocks = vi.hoisted(() => ({
   setAdminRoleSafely: vi.fn(),
 }));
 const clerkMocks = vi.hoisted(() => ({
+  createInvitation: vi.fn(),
   deleteUser: vi.fn(),
   getInvitationList: vi.fn(),
+  revokeInvitation: vi.fn(),
   clerkClient: vi.fn(),
 }));
 
@@ -22,20 +24,70 @@ import {
   getTeamAdminForAssistant,
   getTeamPageData,
   getTeamPageForAssistant,
+  inviteTeamMember,
   removeTeamMember,
+  revokeTeamInvitation,
 } from "@/lib/services/team";
+import { ExternalMutationOutcomeUnknownError } from "@/lib/utils/email-errors";
 
 describe("team removal", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    process.env.NEXT_PUBLIC_APP_URL = "https://crm.example.com";
     dataMocks.disableAdminSafely.mockResolvedValue({
       id: "admin-2",
       clerkUserId: "clerk-2",
     });
+    clerkMocks.getInvitationList.mockResolvedValue({
+      data: [],
+      totalCount: 0,
+    });
     clerkMocks.clerkClient.mockResolvedValue({
       users: { deleteUser: clerkMocks.deleteUser },
-      invitations: { getInvitationList: clerkMocks.getInvitationList },
+      invitations: {
+        createInvitation: clerkMocks.createInvitation,
+        getInvitationList: clerkMocks.getInvitationList,
+        revokeInvitation: clerkMocks.revokeInvitation,
+      },
     });
+  });
+
+  it("marks an interrupted invitation response as an unknown mutation outcome", async () => {
+    clerkMocks.createInvitation.mockRejectedValue(
+      Object.assign(new Error("socket connection reset after commit"), {
+        code: "ECONNRESET",
+      }),
+    );
+
+    await expect(inviteTeamMember("new@example.com")).rejects.toBeInstanceOf(
+      ExternalMutationOutcomeUnknownError,
+    );
+    expect(clerkMocks.createInvitation).toHaveBeenCalledWith({
+      emailAddress: "new@example.com",
+      publicMetadata: expect.any(Object),
+      redirectUrl: "https://crm.example.com/sign-up",
+    });
+  });
+
+  it("marks an interrupted invitation revocation as an unknown mutation outcome", async () => {
+    clerkMocks.revokeInvitation.mockRejectedValue(
+      Object.assign(new Error("Clerk timed out after commit"), { status: 503 }),
+    );
+
+    await expect(revokeTeamInvitation("invitation-1")).rejects.toBeInstanceOf(
+      ExternalMutationOutcomeUnknownError,
+    );
+  });
+
+  it("preserves deterministic Clerk invitation errors", async () => {
+    const validationError = Object.assign(new Error("invalid invitation"), {
+      status: 422,
+    });
+    clerkMocks.createInvitation.mockRejectedValue(validationError);
+
+    await expect(inviteTeamMember("new@example.com")).rejects.toBe(
+      validationError,
+    );
   });
 
   it("keeps local access disabled when Clerk deletion fails", async () => {
@@ -46,9 +98,9 @@ describe("team removal", () => {
       clerkAccountDeleted: false,
     });
     expect(dataMocks.disableAdminSafely).toHaveBeenCalledWith("admin-2");
-    expect(dataMocks.disableAdminSafely.mock.invocationCallOrder[0]).toBeLessThan(
-      clerkMocks.deleteUser.mock.invocationCallOrder[0],
-    );
+    expect(
+      dataMocks.disableAdminSafely.mock.invocationCallOrder[0],
+    ).toBeLessThan(clerkMocks.deleteUser.mock.invocationCallOrder[0]);
   });
 
   it("reports completed Clerk cleanup after local access is disabled", async () => {
@@ -95,11 +147,13 @@ describe("team removal", () => {
       admins: [],
     });
     clerkMocks.getInvitationList.mockResolvedValue({
-      data: [{
-        id: "invitation-11",
-        emailAddress: "eleven@example.com",
-        status: "pending",
-      }],
+      data: [
+        {
+          id: "invitation-11",
+          emailAddress: "eleven@example.com",
+          status: "pending",
+        },
+      ],
       totalCount: 11,
     });
 

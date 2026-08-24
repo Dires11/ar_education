@@ -18,7 +18,10 @@ import {
   markPaymentPaidSchema,
   type CreatePaymentInput,
 } from "@/lib/validators/payments";
-import { getStudentBalance } from "@/lib/services/pricing";
+import {
+  getStudentBalance,
+  getStudentBalanceForAssistant,
+} from "@/lib/services/pricing";
 import {
   addBillingMonths,
   applyDiscounts,
@@ -555,4 +558,4 @@ export async function sendPaymentReminderEmail(
   });
 }
 
-export { listPayments, getStudentBalance };
+export { listPayments, getStudentBalance, getStudentBalanceForAssistant };

@@ -42,8 +42,7 @@ export type AssistantToolSpec = {
   schema: z.ZodType;
   ownerOnly?: boolean;
   requiresConfirmation:
-    | boolean
-    | ((argumentsValue: Record<string, unknown>) => boolean);
+    boolean | ((argumentsValue: Record<string, unknown>) => boolean);
 };
 
 const assistantGuardianSchema = guardianSchema.omit({
@@ -80,6 +79,7 @@ const subjectPatchSchema = createSubjectSchema
 const searchSchema = z.object({
   query: z.string().trim().max(200).optional(),
   status: z.enum(["ACTIVE", "PAUSED", "INACTIVE"]).optional(),
+  page: z.number().int().min(1).max(10_000).default(1),
   limit: z.number().int().min(1).max(20).default(10),
 });
 
@@ -154,8 +154,12 @@ const toolSpecs: AssistantToolSpec[] = [
     namespace: "students",
     name: "get_student",
     description:
-      "Get and verify one exact student profile, guardians, and recent enrollments by student ID. Always use this when the administrator supplies a student ID.",
-    schema: z.object({ id: idSchema }),
+      "Get and verify one exact student profile plus a page of guardians and enrollments by student ID. Continue pages while either nested collection hasMore. Always use this when the administrator supplies a student ID.",
+    schema: z.object({
+      id: idSchema,
+      page: z.number().int().min(1).max(10_000).default(1),
+      limit: z.number().int().min(1).max(100).default(20),
+    }),
     requiresConfirmation: false,
   },
   {
@@ -241,8 +245,13 @@ const toolSpecs: AssistantToolSpec[] = [
   {
     namespace: "tutors",
     name: "get_tutor",
-    description: "Get a tutor profile, subjects, and active enrollments.",
-    schema: z.object({ id: idSchema }),
+    description:
+      "Get a tutor profile plus a page of subjects and active enrollments. Continue pages while either nested collection hasMore.",
+    schema: z.object({
+      id: idSchema,
+      page: z.number().int().min(1).max(10_000).default(1),
+      limit: z.number().int().min(1).max(100).default(20),
+    }),
     requiresConfirmation: false,
   },
   {
@@ -281,12 +290,12 @@ const toolSpecs: AssistantToolSpec[] = [
     namespace: "tutors",
     name: "get_tutor_payroll",
     description:
-      "Calculate completed-session hours and earnings for a tutor over a bounded ISO date range, with compact recent session rows.",
+      "Calculate completed-session hours and earnings for a tutor over a bounded half-open instant range [from, to), with compact recent session rows. Both bounds must be ISO date-times with Z or an explicit UTC offset; for a center-calendar period, use its local start and the next period's local start as the exclusive end.",
     schema: z
       .object({
         id: idSchema,
-        from: z.iso.datetime(),
-        to: z.iso.datetime(),
+        from: isoDateTimeSchema,
+        to: isoDateTimeSchema,
         limit: z.number().int().min(1).max(100).default(50),
       })
       .superRefine((value, context) => {
@@ -385,10 +394,12 @@ const toolSpecs: AssistantToolSpec[] = [
   {
     namespace: "enrollments",
     name: "search_enrollments",
-    description: "List enrollments filtered by student, tutor, or status.",
+    description:
+      "List enrollments filtered by student, tutor, group, or status. Use groupId with paging to enumerate complete group membership.",
     schema: z.object({
       studentId: idSchema.optional(),
       tutorId: idSchema.optional(),
+      groupId: idSchema.optional(),
       status: z.enum(["ACTIVE", "PAUSED", "COMPLETED", "CANCELLED"]).optional(),
       page: z.number().int().min(1).max(10_000).default(1),
       limit: z.number().int().min(1).max(30).default(20),
@@ -399,7 +410,7 @@ const toolSpecs: AssistantToolSpec[] = [
     namespace: "enrollments",
     name: "get_enrollment",
     description:
-      "Get an enrollment by enrollment ID, or resolve the owning enrollment by discount ID, including student, tutor, package, discounts, recent sessions, and payments.",
+      "Get an enrollment by enrollment ID, or resolve the owning enrollment by discount ID, including student, tutor, package, discounts, and bounded relation counts. Use schedule.get_schedule with an enrollment/date range for session history and billing.list_payments with enrollmentId for payments.",
     schema: z
       .object({
         id: idSchema.optional(),
@@ -446,7 +457,7 @@ const toolSpecs: AssistantToolSpec[] = [
     namespace: "enrollments",
     name: "list_groups",
     description:
-      "List bounded group summaries, inspect one exact group ID, or narrow by tutor and subject.",
+      "List bounded group summaries, inspect one exact group ID, or narrow by tutor and subject. Students are a 20-row preview; use search_enrollments with groupId and paging for complete membership.",
     schema: z.object({
       groupId: idSchema.optional(),
       tutorId: idSchema.optional(),
@@ -467,16 +478,93 @@ const toolSpecs: AssistantToolSpec[] = [
     namespace: "schedule",
     name: "get_schedule",
     description:
-      "Get one exact session by session ID, or real and virtual schedule entries for one yyyy-MM calendar month.",
+      "Get one exact session by session ID; page real and virtual entries for one yyyy-MM month; or page materialized/historical sessions over a bounded half-open instant range [from, to) filtered by student, tutor, enrollment, subject, session status, or attendance status. Range bounds must include Z or an explicit UTC offset; for a center-calendar period, use its local start and the next period's local start as the exclusive end. Use ASC for next/upcoming and DESC for most recent/history.",
     schema: z
       .object({
         month: monthSchema.optional(),
         sessionId: idSchema.optional(),
+        from: isoDateTimeSchema.optional(),
+        to: isoDateTimeSchema.optional(),
+        studentId: idSchema.optional(),
+        tutorId: idSchema.optional(),
+        enrollmentId: idSchema.optional(),
+        subjectId: idSchema.optional(),
+        status: z
+          .enum([
+            "SCHEDULED",
+            "COMPLETED",
+            "NO_SHOW",
+            "CANCELLED_BY_TUTOR",
+            "CANCELLED_BY_STUDENT",
+          ])
+          .optional(),
+        attendanceStatus: z
+          .enum([
+            "SCHEDULED",
+            "COMPLETED",
+            "NO_SHOW",
+            "CANCELLED_BY_TUTOR",
+            "CANCELLED_BY_STUDENT",
+          ])
+          .optional(),
+        direction: z.enum(["ASC", "DESC"]).default("ASC"),
         page: z.number().int().min(1).max(10_000).default(1),
         limit: z.number().int().min(1).max(100).default(100),
       })
-      .refine((value) => Boolean(value.month || value.sessionId), {
-        message: "Provide month or sessionId",
+      .superRefine((value, context) => {
+        const rangeMode = Boolean(value.from || value.to);
+        const modeCount =
+          Number(Boolean(value.month)) +
+          Number(Boolean(value.sessionId)) +
+          Number(rangeMode);
+        if (modeCount !== 1) {
+          context.addIssue({
+            code: "custom",
+            message:
+              "Provide exactly one of month, sessionId, or a from/to range",
+          });
+        }
+        if (rangeMode && (!value.from || !value.to)) {
+          context.addIssue({
+            code: "custom",
+            path: [value.from ? "to" : "from"],
+            message: "Both from and to are required for a schedule range",
+          });
+        }
+        const hasRangeFilter = Boolean(
+          value.studentId ||
+          value.tutorId ||
+          value.enrollmentId ||
+          value.subjectId ||
+          value.status ||
+          value.attendanceStatus,
+        );
+        if (!rangeMode && hasRangeFilter) {
+          context.addIssue({
+            code: "custom",
+            message: "Schedule filters require a from/to range",
+          });
+        }
+        if (value.from && value.to) {
+          const from = new Date(value.from);
+          const to = new Date(value.to);
+          if (to <= from) {
+            context.addIssue({
+              code: "custom",
+              path: ["to"],
+              message: "Range end must be after range start",
+            });
+          } else if (
+            to.getTime() - from.getTime() >
+            366 * 24 * 60 * 60 * 1000
+          ) {
+            context.addIssue({
+              code: "custom",
+              path: ["to"],
+              message: "Schedule ranges cannot exceed 366 days",
+            });
+          }
+        }
       }),
     requiresConfirmation: false,
   },
@@ -658,17 +746,31 @@ const toolSpecs: AssistantToolSpec[] = [
     namespace: "billing",
     name: "list_payments",
     description:
-      "List payment history when the administrator asks to view, search, or audit existing payments.",
-    schema: z.object({
-      paymentId: idSchema.optional(),
-      studentId: idSchema.optional(),
-      enrollmentId: idSchema.optional(),
-      method: z.enum(["CASH", "BANK_TRANSFER", "CARD", "OTHER"]).optional(),
-      from: z.iso.datetime().optional(),
-      to: z.iso.datetime().optional(),
-      page: z.number().int().min(1).max(10_000).default(1),
-      limit: z.number().int().min(1).max(30).default(20),
-    }),
+      "List payment history when the administrator asks to view, search, or audit existing payments. Optional time bounds form a half-open instant range [from, to): from is inclusive and to is exclusive. Bounds must include Z or an explicit UTC offset; for a center-calendar period, use its local start and the next period's local start as the exclusive end.",
+    schema: z
+      .object({
+        paymentId: idSchema.optional(),
+        studentId: idSchema.optional(),
+        enrollmentId: idSchema.optional(),
+        method: z.enum(["CASH", "BANK_TRANSFER", "CARD", "OTHER"]).optional(),
+        from: isoDateTimeSchema.optional(),
+        to: isoDateTimeSchema.optional(),
+        page: z.number().int().min(1).max(10_000).default(1),
+        limit: z.number().int().min(1).max(30).default(20),
+      })
+      .superRefine((value, context) => {
+        if (
+          value.from &&
+          value.to &&
+          new Date(value.to) <= new Date(value.from)
+        ) {
+          context.addIssue({
+            code: "custom",
+            path: ["to"],
+            message: "Payment range end must be after range start",
+          });
+        }
+      }),
     requiresConfirmation: false,
   },
   {
@@ -753,9 +855,7 @@ const toolSpecs: AssistantToolSpec[] = [
     schema: z
       .object({
         reminders: z
-          .array(
-            z.object({ enrollmentId: idSchema, month: monthSchema }),
-          )
+          .array(z.object({ enrollmentId: idSchema, month: monthSchema }))
           .min(1)
           .max(100),
       })
@@ -789,10 +889,10 @@ const toolSpecs: AssistantToolSpec[] = [
         (value) =>
           Boolean(
             value.studentIds ||
-              value.query ||
-              value.status ||
-              value.school ||
-              value.gradeLevel,
+            value.query ||
+            value.status ||
+            value.school ||
+            value.gradeLevel,
           ),
         { message: "Provide studentIds or at least one cohort filter" },
       ),
@@ -901,7 +1001,12 @@ const toolSpecs: AssistantToolSpec[] = [
       "Get current dashboard totals or page through unpaid students, upcoming package endings, and tutor workload. Use section plus page to continue any truncated result set. For UNPAID_STUDENTS, candidateTotal is the number of active students being scanned, not an unpaid-student count; only results with calculationComplete true and a balance are confirmed unpaid.",
     schema: z.object({
       section: z
-        .enum(["SUMMARY", "UNPAID_STUDENTS", "UPCOMING_ENDINGS", "TUTOR_WORKLOAD"])
+        .enum([
+          "SUMMARY",
+          "UNPAID_STUDENTS",
+          "UPCOMING_ENDINGS",
+          "TUTOR_WORKLOAD",
+        ])
         .default("SUMMARY"),
       page: z.number().int().min(1).max(10_000).default(1),
       limit: z.number().int().min(1).max(50).default(50),

@@ -4,6 +4,7 @@ const prismaMock = vi.hoisted(() => ({
   assistantThread: {
     updateMany: vi.fn(),
     findFirst: vi.fn(),
+    findMany: vi.fn(),
   },
   assistantToolRun: {
     upsert: vi.fn(),
@@ -23,9 +24,12 @@ import {
   failAssistantRun,
   getAssistantContext,
   getAssistantSummarySource,
+  getAssistantThreadMessages,
   getAssistantThreadMessageCount,
+  listAssistantThreads,
   recordAssistantModelStep,
   rejectAssistantToolRun,
+  setAssistantThreadSummary,
 } from "@/lib/data/assistant";
 
 describe("assistant persistence guarantees", () => {
@@ -79,6 +83,71 @@ describe("assistant persistence guarantees", () => {
     });
   });
 
+  it("bounds the initial thread rail and returns a stable continuation cursor", async () => {
+    prismaMock.assistantThread.findMany.mockResolvedValue(
+      Array.from({ length: 51 }, (_, index) => ({
+        id: `thread-${String(index).padStart(2, "0")}`,
+        title: `Thread ${index}`,
+        updatedAt: new Date(
+          Date.UTC(2026, 7, 23, 12, 0, 0) - index * 1_000,
+        ),
+        _count: { messages: index },
+      })),
+    );
+
+    const page = await listAssistantThreads("admin-1", { limit: 50 });
+
+    expect(page).toMatchObject({ hasMore: true });
+    expect(page.threads).toHaveLength(50);
+    expect(page.nextCursor?.id).toBe("thread-49");
+    expect(prismaMock.assistantThread.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { adminId: "admin-1", archivedAt: null },
+        orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+        take: 51,
+      }),
+    );
+  });
+
+  it("loads only a recent message window and scopes older pages to the admin", async () => {
+    prismaMock.assistantMessage.findMany.mockResolvedValue(
+      Array.from({ length: 41 }, (_, index) => ({
+        id: `message-${String(index).padStart(2, "0")}`,
+        role: index % 2 === 0 ? "USER" : "ASSISTANT",
+        content: `Message ${index}`,
+        attachments: null,
+        createdAt: new Date(
+          Date.UTC(2026, 7, 23, 12, 0, 0) - index * 1_000,
+        ),
+        run: null,
+      })),
+    );
+
+    const before = {
+      createdAt: new Date("2026-08-23T13:00:00.000Z"),
+      id: "message-cursor",
+    };
+    const page = await getAssistantThreadMessages("admin-1", "thread-1", {
+      limit: 40,
+      before,
+    });
+
+    expect(page.hasMore).toBe(true);
+    expect(page.messages).toHaveLength(40);
+    expect(page.messages[0].id).toBe("message-39");
+    expect(page.nextCursor?.id).toBe("message-39");
+    expect(prismaMock.assistantMessage.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          threadId: "thread-1",
+          thread: { adminId: "admin-1" },
+        }),
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        take: 41,
+      }),
+    );
+  });
+
   it("summarizes a large backlog in bounded message batches", async () => {
     prismaMock.assistantThread.findFirst.mockResolvedValue({
       contextSummary: "Earlier summary",
@@ -111,14 +180,17 @@ describe("assistant persistence guarantees", () => {
           content: "I found the requested record.",
           attachments: null,
           createdAt: new Date(),
-          run: { _count: { toolRuns: 1 } },
+          run: { _count: { toolRuns: 1 }, toolRuns: [] },
         },
         {
           role: "USER",
           content: "Use this calendar.",
           attachments: [{ name: "calendar.jpg" }],
           createdAt: new Date(),
-          run: { _count: { toolRuns: 0 } },
+          run: {
+            _count: { toolRuns: 1 },
+            toolRuns: [{ result: { card: { entityKey: "student:student-1" } } }],
+          },
         },
       ],
     });
@@ -131,6 +203,9 @@ describe("assistant persistence guarantees", () => {
         expect.not.objectContaining({ run: expect.anything() }),
       ]),
     );
+    expect(context?.messages[0].toolResults).toEqual([
+      { card: { entityKey: "student:student-1" } },
+    ]);
     expect(prismaMock.assistantThread.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { id: "thread-1", adminId: "admin-1" },
@@ -298,11 +373,13 @@ describe("assistant persistence guarantees", () => {
     });
   });
 
-  it("atomically records retry lineage and hides the superseded run", async () => {
+  it("preserves a 70-message rolling summary across a safe retry", async () => {
     const thread = {
       id: "thread-1",
       adminId: "admin-1",
       archivedAt: null,
+      contextSummary: "Durable context through message 70",
+      summarizedMessageCount: 70,
     };
     const run = {
       id: "run-new",
@@ -361,8 +438,6 @@ describe("assistant persistence guarantees", () => {
       where: { id: "thread-1" },
       data: {
         updatedAt: expect.any(Date),
-        contextSummary: null,
-        summarizedMessageCount: 0,
       },
     });
     expect(tx.assistantMessage.count).toHaveBeenCalledWith(
@@ -372,6 +447,48 @@ describe("assistant persistence guarantees", () => {
         }),
       }),
     );
+  });
+
+  it("only advances summaries monotonically when refreshes resolve out of order", async () => {
+    prismaMock.assistantThread.updateMany
+      .mockResolvedValueOnce({ count: 1 })
+      .mockResolvedValueOnce({ count: 0 });
+
+    await setAssistantThreadSummary(
+      "admin-1",
+      "thread-1",
+      "Newer summary",
+      80,
+    );
+    await setAssistantThreadSummary(
+      "admin-1",
+      "thread-1",
+      "Older slow summary",
+      40,
+    );
+
+    expect(prismaMock.assistantThread.updateMany).toHaveBeenNthCalledWith(1, {
+      where: {
+        id: "thread-1",
+        adminId: "admin-1",
+        summarizedMessageCount: { lt: 80 },
+      },
+      data: {
+        contextSummary: "Newer summary",
+        summarizedMessageCount: 80,
+      },
+    });
+    expect(prismaMock.assistantThread.updateMany).toHaveBeenNthCalledWith(2, {
+      where: {
+        id: "thread-1",
+        adminId: "admin-1",
+        summarizedMessageCount: { lt: 40 },
+      },
+      data: {
+        contextSummary: "Older slow summary",
+        summarizedMessageCount: 40,
+      },
+    });
   });
 
   it("atomically claims a pending, unexpired confirmation", async () => {
@@ -590,18 +707,33 @@ describe("assistant persistence guarantees", () => {
   });
 
   it("refuses to archive a thread with an active run or pending approval", async () => {
-    prismaMock.assistantThread.updateMany.mockResolvedValue({ count: 0 });
-    prismaMock.assistantThread.findFirst.mockResolvedValue({
-      id: "thread-1",
-      archivedAt: null,
-      runs: [{ id: "run-1" }],
-    });
+    const tx = {
+      assistantThread: {
+        updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+        findFirst: vi.fn().mockResolvedValue({
+          id: "thread-1",
+          archivedAt: null,
+          runs: [{ id: "run-1" }],
+        }),
+      },
+      assistantToolRun: {
+        findMany: vi.fn().mockResolvedValue([]),
+        updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+      },
+      assistantRun: {
+        findMany: vi.fn().mockResolvedValue([]),
+        updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+      },
+    };
+    prismaMock.$transaction.mockImplementation(
+      (callback: (client: typeof tx) => unknown) => callback(tx),
+    );
 
     await expect(
       archiveAssistantThread("admin-1", "thread-1", true),
     ).rejects.toThrow("active request or pending approval");
 
-    expect(prismaMock.assistantThread.updateMany).toHaveBeenCalledWith(
+    expect(tx.assistantThread.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
           id: "thread-1",
@@ -612,6 +744,72 @@ describe("assistant persistence guarantees", () => {
         }),
       }),
     );
+  });
+
+  it("expires a due approval and archives immediately without a reload", async () => {
+    const tx = {
+      assistantThread: {
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        findFirst: vi.fn(),
+      },
+      assistantToolRun: {
+        findMany: vi.fn().mockResolvedValue([
+          { id: "tool-expired", runId: "run-expired" },
+        ]),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+      assistantRun: {
+        findMany: vi.fn().mockResolvedValue([]),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    prismaMock.$transaction.mockImplementation(
+      (callback: (client: typeof tx) => unknown) => callback(tx),
+    );
+
+    await archiveAssistantThread("admin-1", "thread-1", true);
+
+    expect(tx.assistantToolRun.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          status: "PENDING_CONFIRMATION",
+          expiresAt: { lte: expect.any(Date) },
+          run: expect.objectContaining({
+            thread: { adminId: "admin-1", id: "thread-1" },
+          }),
+        }),
+      }),
+    );
+    expect(tx.assistantRun.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ id: { in: ["run-expired"] } }),
+        data: expect.objectContaining({ status: "FAILED" }),
+      }),
+    );
+    expect(tx.assistantThread.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: "thread-1",
+          adminId: "admin-1",
+          runs: {
+            none: { status: { in: ["RUNNING", "WAITING_CONFIRMATION"] } },
+          },
+        }),
+      }),
+    );
+  });
+
+  it("restores an archived thread only within the requesting admin scope", async () => {
+    prismaMock.assistantThread.updateMany.mockResolvedValue({ count: 1 });
+
+    await expect(
+      archiveAssistantThread("admin-1", "thread-1", false),
+    ).resolves.toBeUndefined();
+
+    expect(prismaMock.assistantThread.updateMany).toHaveBeenCalledWith({
+      where: { id: "thread-1", adminId: "admin-1" },
+      data: { archivedAt: null },
+    });
   });
 
   it("persists run-wide usage and refuses a thirteenth tool call", async () => {

@@ -15,7 +15,9 @@ vi.mock("@/lib/prisma", () => ({ prisma: prismaMock }));
 
 import {
   getLinkedGuardianForAssistant,
+  getStudentIdentityForAssistant,
   getStudentForAssistant,
+  getStudentProfileForAssistantMutation,
   queryStudentDirectoryData,
   resolveStudentCommunicationRecipientsData,
   updateLinkedGuardian,
@@ -29,19 +31,33 @@ describe("student directory data queries", () => {
   it("bounds nested guardians and enrollments in exact assistant detail", async () => {
     prismaMock.student.findUnique.mockResolvedValue(null);
 
-    await getStudentForAssistant("student-1", 12);
+    await getStudentForAssistant("student-1", { page: 2, limit: 12 });
 
     expect(prismaMock.student.findUnique).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { id: "student-1" },
         select: expect.objectContaining({
-          guardians: expect.objectContaining({ take: 12 }),
-          enrollments: expect.objectContaining({ take: 12 }),
+          guardians: expect.objectContaining({ skip: 12, take: 12 }),
+          enrollments: expect.objectContaining({ skip: 12, take: 12 }),
         }),
       }),
     );
     const select = prismaMock.student.findUnique.mock.calls[0][0].select;
     expect(select.enrollments.select.student).toBeUndefined();
+  });
+
+  it("uses relation-free selectors for assistant identity and mutation preloads", async () => {
+    prismaMock.student.findUnique.mockResolvedValue(null);
+
+    await getStudentIdentityForAssistant("student-1");
+    await getStudentProfileForAssistantMutation("student-1");
+
+    for (const [call] of prismaMock.student.findUnique.mock.calls) {
+      expect(call.where).toEqual({ id: "student-1" });
+      expect(call).not.toHaveProperty("include");
+      expect(call.select).not.toHaveProperty("guardians");
+      expect(call.select).not.toHaveProperty("enrollments");
+    }
   });
 
   it("returns a dedicated active-enrollment count for assistant cards", async () => {
@@ -108,6 +124,7 @@ describe("student directory data queries", () => {
           { dob: "desc" },
           { lastName: "asc" },
           { firstName: "asc" },
+          { id: "asc" },
         ],
         skip: 0,
         take: 1,
@@ -242,6 +259,11 @@ describe("student directory data queries", () => {
         },
         skip: 100,
         take: 100,
+        orderBy: [
+          { lastName: "asc" },
+          { firstName: "asc" },
+          { id: "asc" },
+        ],
         select: expect.objectContaining({
           guardians: expect.objectContaining({
             where: { isPrimary: true },

@@ -47,15 +47,24 @@ describe("bounded assistant dashboard data", () => {
     ).resolves.toMatchObject({
       total: 2_000,
       page: 3,
-      limit: 25,
+      limit: 10,
       hasMore: true,
     });
     const query = prismaMock.student.findMany.mock.calls[0][0];
-    expect(query.skip).toBe(50);
-    expect(query.take).toBe(25);
-    expect(query.select.payments.take).toBe(501);
-    expect(query.select.enrollments.take).toBe(51);
-    expect(query.select.enrollments.select.sessionAttendance.take).toBe(501);
-    expect(query.select.enrollments.select.discounts.take).toBe(101);
+    expect(query.skip).toBe(20);
+    expect(query.take).toBe(10);
+    expect(query.select.payments.take).toBe(101);
+    expect(query.select.enrollments.take).toBe(11);
+    expect(query.select.enrollments.select.sessionAttendance.take).toBe(101);
+    expect(query.select.enrollments.select.discounts.take).toBe(21);
+
+    const maximumRowsMaterialized =
+      query.take *
+      (query.select.payments.take +
+        query.select.enrollments.take *
+          (1 +
+            query.select.enrollments.select.sessionAttendance.take +
+            query.select.enrollments.select.discounts.take));
+    expect(maximumRowsMaterialized).toBeLessThan(15_000);
   });
 });

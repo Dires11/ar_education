@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   Table,
   TableBody,
@@ -53,6 +54,9 @@ export function EnrollmentsTable({
   centerTimeZone: string;
   initialEnrollmentId: string | null;
 }) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [selectedEnrollmentId, setSelectedEnrollmentId] = useState<string | null>(
     initialEnrollmentId,
   );
@@ -63,9 +67,20 @@ export function EnrollmentsTable({
     setOpen(Boolean(initialEnrollmentId));
   }, [initialEnrollmentId]);
 
+  function updateEnrollmentUrl(id: string | null) {
+    const nextSearchParams = new URLSearchParams(searchParams.toString());
+    if (id) nextSearchParams.set("enrollment", id);
+    else nextSearchParams.delete("enrollment");
+    const query = nextSearchParams.toString();
+    router.replace(query ? `${pathname}?${query}` : pathname, {
+      scroll: false,
+    });
+  }
+
   function openEnrollment(id: string) {
     setSelectedEnrollmentId(id);
     setOpen(true);
+    updateEnrollmentUrl(id);
   }
 
   return (
@@ -168,7 +183,12 @@ export function EnrollmentsTable({
         centerTimeZone={centerTimeZone}
         enrollmentId={selectedEnrollmentId}
         open={open}
-        onOpenChange={setOpen}
+        onOpenChange={(nextOpen) => {
+          setOpen(nextOpen);
+          if (nextOpen) return;
+          setSelectedEnrollmentId(null);
+          updateEnrollmentUrl(null);
+        }}
       />
     </>
   );

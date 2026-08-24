@@ -49,7 +49,7 @@ export async function listPayments({
         recordedBy: true,
         enrollment: { include: { subject: true, package: true } },
       },
-      orderBy: { paidAt: "desc" },
+      orderBy: [{ paidAt: "desc" }, { id: "asc" }],
       skip: (page - 1) * pageSize,
       take: pageSize,
     }),
@@ -88,7 +88,7 @@ export async function listPaymentsForAssistant(filters: PaymentFilters = {}) {
       ? {
           paidAt: {
             ...(from && { gte: from }),
-            ...(to && { lte: to }),
+            ...(to && { lt: to }),
           },
         }
       : {}),
@@ -113,7 +113,7 @@ export async function listPaymentsForAssistant(filters: PaymentFilters = {}) {
           },
         },
       },
-      orderBy: { paidAt: "desc" },
+      orderBy: [{ paidAt: "desc" }, { id: "asc" }],
       skip: (page - 1) * pageSize,
       take: pageSize,
     }),
@@ -132,14 +132,18 @@ export async function listPaymentsForAssistant(filters: PaymentFilters = {}) {
 export async function getPaymentForAssistantConfirmation(id: string) {
   return prisma.payment.findUnique({
     where: { id },
-    include: {
+    select: {
+      id: true,
+      amount: true,
+      method: true,
+      paidAt: true,
+      coversMonth: true,
       student: {
-        include: {
-          guardians: {
-            include: { guardian: true },
-            orderBy: { isPrimary: "desc" },
-          },
-          enrollments: true,
+        select: {
+          id: true,
+          firstName: true,
+          lastName: true,
+          avatarUrl: true,
         },
       },
     },

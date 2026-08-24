@@ -57,10 +57,10 @@ export async function listStudents({
       include: {
         guardians: {
           include: { guardian: true },
-          orderBy: { isPrimary: "desc" },
+          orderBy: [{ isPrimary: "desc" }, { guardianId: "asc" }],
         },
       },
-      orderBy: [{ lastName: "asc" }, { firstName: "asc" }],
+      orderBy: [{ lastName: "asc" }, { firstName: "asc" }, { id: "asc" }],
       skip: (page - 1) * pageSize,
       take: pageSize,
     }),
@@ -113,14 +113,29 @@ export async function queryStudentDirectoryData({
   const direction = sortOrder === "ASC" ? "asc" : "desc";
   const orderBy: Prisma.StudentOrderByWithRelationInput[] =
     sortBy === "DATE_OF_BIRTH"
-      ? [{ dob: direction }, { lastName: "asc" }, { firstName: "asc" }]
+      ? [
+          { dob: direction },
+          { lastName: "asc" },
+          { firstName: "asc" },
+          { id: "asc" },
+        ]
       : sortBy === "CREATED_AT"
-        ? [{ createdAt: direction }, { lastName: "asc" }, { firstName: "asc" }]
+        ? [
+            { createdAt: direction },
+            { lastName: "asc" },
+            { firstName: "asc" },
+            { id: "asc" },
+          ]
         : sortBy === "UPDATED_AT"
-          ? [{ updatedAt: direction }, { lastName: "asc" }, { firstName: "asc" }]
+          ? [
+              { updatedAt: direction },
+              { lastName: "asc" },
+              { firstName: "asc" },
+              { id: "asc" },
+            ]
           : sortBy === "FIRST_NAME"
-            ? [{ firstName: direction }, { lastName: "asc" }]
-            : [{ lastName: direction }, { firstName: "asc" }];
+            ? [{ firstName: direction }, { lastName: "asc" }, { id: "asc" }]
+            : [{ lastName: direction }, { firstName: "asc" }, { id: "asc" }];
 
   const select = {
     id: true,
@@ -164,7 +179,11 @@ export async function queryStudentDirectoryData({
       prisma.student.findMany({
         where: tieWhere,
         select,
-        orderBy: [{ lastName: "asc" }, { firstName: "asc" }],
+        orderBy: [
+          { lastName: "asc" },
+          { firstName: "asc" },
+          { id: "asc" },
+        ],
         take: tieLimit,
       }),
     ]);
@@ -233,11 +252,11 @@ export async function resolveStudentCommunicationRecipientsData(input: {
               },
             },
           },
-          orderBy: { isPrimary: "desc" },
+          orderBy: { guardianId: "asc" },
           take: 1,
         },
       },
-      orderBy: [{ lastName: "asc" }, { firstName: "asc" }],
+      orderBy: [{ lastName: "asc" }, { firstName: "asc" }, { id: "asc" }],
       skip: (input.page - 1) * input.limit,
       take: input.limit,
     }),
@@ -269,17 +288,56 @@ export async function getStudent(id: string) {
     include: {
       guardians: {
         include: { guardian: true },
-        orderBy: { isPrimary: "desc" },
+        orderBy: [{ isPrimary: "desc" }, { guardianId: "asc" }],
       },
       enrollments: {
         include: { package: true, tutor: true, subject: true },
-        orderBy: { createdAt: "desc" },
+        orderBy: [{ createdAt: "desc" }, { id: "asc" }],
       },
     },
   });
 }
 
-export async function getStudentForAssistant(id: string, limit = 20) {
+export function getStudentIdentityForAssistant(id: string) {
+  return prisma.student.findUnique({
+    where: { id },
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      avatarUrl: true,
+      status: true,
+      dob: true,
+      school: true,
+      gradeLevel: true,
+      createdAt: true,
+    },
+  });
+}
+
+export function getStudentProfileForAssistantMutation(id: string) {
+  return prisma.student.findUnique({
+    where: { id },
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      avatarUrl: true,
+      avatarPublicId: true,
+      dob: true,
+      email: true,
+      phone: true,
+      school: true,
+      gradeLevel: true,
+      notes: true,
+    },
+  });
+}
+
+export async function getStudentForAssistant(
+  id: string,
+  input: { page: number; limit: number } = { page: 1, limit: 20 },
+) {
   const student = await prisma.student.findUnique({
     where: { id },
     select: {
@@ -312,8 +370,9 @@ export async function getStudentForAssistant(id: string, limit = 20) {
             },
           },
         },
-        orderBy: { isPrimary: "desc" },
-        take: limit,
+        orderBy: [{ isPrimary: "desc" }, { guardianId: "asc" }],
+        skip: (input.page - 1) * input.limit,
+        take: input.limit,
       },
       enrollments: {
         select: {
@@ -327,8 +386,9 @@ export async function getStudentForAssistant(id: string, limit = 20) {
           },
           subject: { select: { id: true, name: true } },
         },
-        orderBy: { createdAt: "desc" },
-        take: limit,
+        orderBy: [{ createdAt: "desc" }, { id: "asc" }],
+        skip: (input.page - 1) * input.limit,
+        take: input.limit,
       },
     },
   });

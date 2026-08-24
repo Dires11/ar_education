@@ -10,6 +10,7 @@ const prismaMock = vi.hoisted(() => ({
     count: vi.fn(),
     create: vi.fn(),
     findMany: vi.fn(),
+    findUnique: vi.fn(),
     upsert: vi.fn(),
   },
   $transaction: vi.fn(),
@@ -22,6 +23,7 @@ import {
   createOutstandingPaymentForPeriod,
   createPayment,
   getActiveSubscriptionEnrollments,
+  getPaymentForAssistantConfirmation,
   listPaymentsForAssistant,
 } from "@/lib/data/payments";
 
@@ -67,7 +69,9 @@ describe("payment persistence", () => {
 
   it("pages subscription enrollments and only loads payment coverage in the requested window", async () => {
     prismaMock.enrollment.count.mockResolvedValue(250);
-    prismaMock.enrollment.findMany.mockResolvedValue([{ id: "enrollment-101" }]);
+    prismaMock.enrollment.findMany.mockResolvedValue([
+      { id: "enrollment-101" },
+    ]);
     prismaMock.enrollment.aggregate.mockResolvedValue({
       _min: { startDate: new Date("2024-04-15T00:00:00.000Z") },
     });
@@ -91,6 +95,7 @@ describe("payment persistence", () => {
     });
     expect(prismaMock.enrollment.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
+        orderBy: { id: "asc" },
         skip: 100,
         take: 100,
         include: expect.objectContaining({
@@ -125,8 +130,45 @@ describe("payment persistence", () => {
       hasMore: true,
     });
     expect(prismaMock.payment.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ skip: 30, take: 30 }),
+      expect.objectContaining({
+        orderBy: [{ paidAt: "desc" }, { id: "asc" }],
+        skip: 30,
+        take: 30,
+      }),
     );
+  });
+
+  it("uses an exclusive end instant for assistant payment-history ranges", async () => {
+    prismaMock.payment.count.mockResolvedValue(0);
+    prismaMock.payment.findMany.mockResolvedValue([]);
+    const from = new Date("2026-08-01T07:00:00.000Z");
+    const to = new Date("2026-09-01T07:00:00.000Z");
+
+    await listPaymentsForAssistant({ from, to });
+
+    expect(prismaMock.payment.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          paidAt: { gte: from, lt: to },
+        }),
+      }),
+    );
+  });
+
+  it("loads a payment confirmation with compact student identity only", async () => {
+    prismaMock.payment.findUnique.mockResolvedValue(null);
+
+    await getPaymentForAssistantConfirmation("payment-1");
+
+    const query = prismaMock.payment.findUnique.mock.calls[0][0];
+    expect(query).not.toHaveProperty("include");
+    expect(query.select.student.select).toEqual({
+      id: true,
+      firstName: true,
+      lastName: true,
+      avatarUrl: true,
+    });
+    expect(query.select.student.select).not.toHaveProperty("enrollments");
   });
 
   it("deduplicates a due payment without excluding other payments from coverage", async () => {

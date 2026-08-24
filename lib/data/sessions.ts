@@ -85,7 +85,7 @@ export async function getSessionsForAssistantMonth(
           take: 20,
         },
       },
-      orderBy: { scheduledFor: "asc" },
+      orderBy: [{ scheduledFor: "asc" }, { id: "asc" }],
       skip: (page - 1) * limit,
       take: limit,
     }),
@@ -98,7 +98,7 @@ export async function getSessionsForAssistantMonth(
         recurrenceRuleId: true,
         recurrenceOccurrenceFor: true,
       },
-      orderBy: { scheduledFor: "asc" },
+      orderBy: [{ scheduledFor: "asc" }, { id: "asc" }],
       take: 5_001,
     }),
   ]);
@@ -129,7 +129,7 @@ export function getAssistantSessionSlots(
       recurrenceOccurrenceFor: true,
       tutor: { select: { id: true, firstName: true, lastName: true } },
     },
-    orderBy: { scheduledFor: "asc" },
+    orderBy: [{ scheduledFor: "asc" }, { id: "asc" }],
     take: limit + 1,
   });
 }
@@ -165,11 +165,113 @@ export async function getSessionsForAssistantRange(
           take: 10,
         },
       },
-      orderBy: { scheduledFor: "asc" },
+      orderBy: [{ scheduledFor: "asc" }, { id: "asc" }],
       take: limit,
     }),
   ]);
   return { total, hasMore: total > sessions.length, sessions };
+}
+
+export async function querySessionsForAssistantData(input: {
+  from: Date;
+  to: Date;
+  studentId?: string;
+  tutorId?: string;
+  enrollmentId?: string;
+  subjectId?: string;
+  status?:
+    | "SCHEDULED"
+    | "COMPLETED"
+    | "NO_SHOW"
+    | "CANCELLED_BY_TUTOR"
+    | "CANCELLED_BY_STUDENT";
+  attendanceStatus?:
+    | "SCHEDULED"
+    | "COMPLETED"
+    | "NO_SHOW"
+    | "CANCELLED_BY_TUTOR"
+    | "CANCELLED_BY_STUDENT";
+  direction: "ASC" | "DESC";
+  page: number;
+  limit: number;
+}) {
+  const attendanceFilter: Prisma.SessionAttendanceWhereInput = {
+    ...(input.studentId ? { studentId: input.studentId } : {}),
+    ...(input.attendanceStatus ? { status: input.attendanceStatus } : {}),
+  };
+  const where: Prisma.SessionWhereInput = {
+    scheduledFor: { gte: input.from, lt: input.to },
+    ...(input.tutorId ? { tutorId: input.tutorId } : {}),
+    ...(input.enrollmentId ? { enrollmentId: input.enrollmentId } : {}),
+    ...(input.subjectId ? { subjectId: input.subjectId } : {}),
+    ...(input.status ? { status: input.status } : {}),
+    AND: [
+      ...(input.studentId
+        ? [
+            {
+              OR: [
+                { enrollment: { studentId: input.studentId } },
+                { attendance: { some: { studentId: input.studentId } } },
+              ],
+            } satisfies Prisma.SessionWhereInput,
+          ]
+        : []),
+      ...(input.attendanceStatus
+        ? [{ attendance: { some: attendanceFilter } }]
+        : []),
+    ],
+  };
+  const order = input.direction === "ASC" ? "asc" : "desc";
+  const [total, sessions] = await prisma.$transaction([
+    prisma.session.count({ where }),
+    prisma.session.findMany({
+      where,
+      select: {
+        id: true,
+        enrollmentId: true,
+        tutorId: true,
+        subjectId: true,
+        recurrenceRuleId: true,
+        scheduledFor: true,
+        durationMinutes: true,
+        status: true,
+        room: true,
+        tutor: { select: { id: true, firstName: true, lastName: true } },
+        subject: { select: { id: true, name: true } },
+        enrollment: {
+          select: {
+            student: { select: { id: true, firstName: true, lastName: true } },
+          },
+        },
+        _count: { select: { attendance: true } },
+        attendance: {
+          where:
+            input.studentId || input.attendanceStatus
+              ? attendanceFilter
+              : undefined,
+          select: {
+            status: true,
+            billable: true,
+            student: {
+              select: { id: true, firstName: true, lastName: true },
+            },
+          },
+          orderBy: { studentId: "asc" },
+          take: 20,
+        },
+      },
+      orderBy: [{ scheduledFor: order }, { id: order }],
+      skip: (input.page - 1) * input.limit,
+      take: input.limit,
+    }),
+  ]);
+  return {
+    total,
+    page: input.page,
+    limit: input.limit,
+    hasMore: input.page * input.limit < total,
+    sessions,
+  };
 }
 
 export async function getSessionForAssistant(id: string) {
@@ -462,7 +564,11 @@ export async function listRecurrenceRulesForAssistant(input: {
         },
       },
       },
-      orderBy: [{ updatedAt: "desc" }, { dayOfWeek: "asc" }],
+      orderBy: [
+        { updatedAt: "desc" },
+        { dayOfWeek: "asc" },
+        { id: "asc" },
+      ],
       skip: (input.page - 1) * input.limit,
       take: input.limit,
     }),
@@ -558,7 +664,7 @@ export async function getRecurrenceRulesForMonth(
         include: { package: true, student: true, tutor: true, subject: true },
       },
     },
-    orderBy: { startsOn: "asc" },
+    orderBy: [{ startsOn: "asc" }, { id: "asc" }],
     take: limit === undefined ? undefined : limit + 1,
   });
   if (limit !== undefined && rules.length > limit) return rules;
@@ -592,7 +698,7 @@ export async function getGroupRecurrenceRulesForMonth(
         },
       },
     },
-    orderBy: { startsOn: "asc" },
+    orderBy: [{ startsOn: "asc" }, { id: "asc" }],
     take: limits === undefined ? undefined : limits.rules + 1,
   });
   if (limits !== undefined && rules.length > limits.rules) return rules;

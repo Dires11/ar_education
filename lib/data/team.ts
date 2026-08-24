@@ -5,7 +5,7 @@ import { prisma } from "@/lib/prisma";
 export async function listAdmins() {
   return prisma.admin.findMany({
     where: { disabledAt: null },
-    orderBy: { createdAt: "asc" },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
   });
 }
 
@@ -27,7 +27,7 @@ export async function listAdminsForAssistant(input: {
     prisma.admin.findMany({
       where,
       select: { id: true, name: true, email: true, role: true },
-      orderBy: { createdAt: "asc" },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
       skip: (input.page - 1) * input.limit,
       take: input.limit,
     }),

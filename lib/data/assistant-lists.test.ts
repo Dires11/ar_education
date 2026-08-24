@@ -4,6 +4,7 @@ const prismaMock = vi.hoisted(() => ({
   $transaction: vi.fn(),
   emailTemplate: { count: vi.fn(), findMany: vi.fn() },
   enrollment: { count: vi.fn(), findMany: vi.fn() },
+  admin: { count: vi.fn(), findMany: vi.fn() },
   group: { count: vi.fn(), findMany: vi.fn() },
   package: { count: vi.fn(), findMany: vi.fn() },
   subject: { count: vi.fn(), findMany: vi.fn() },
@@ -16,6 +17,7 @@ import { searchEnrollmentsForAssistant } from "@/lib/data/enrollments";
 import { listGroupsForAssistant } from "@/lib/data/groups";
 import { listPackagesForAssistant } from "@/lib/data/packages";
 import { listSubjectsForAssistant } from "@/lib/data/subjects";
+import { listAdminsForAssistant } from "@/lib/data/team";
 
 describe("bounded assistant list queries", () => {
   beforeEach(() => {
@@ -142,6 +144,7 @@ describe("bounded assistant list queries", () => {
     await expect(
       searchEnrollmentsForAssistant({
         status: "ACTIVE",
+        groupId: "group-1",
         page: 3,
         limit: 20,
       }),
@@ -153,10 +156,24 @@ describe("bounded assistant list queries", () => {
     });
     expect(prismaMock.enrollment.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { status: "ACTIVE" },
+        where: { status: "ACTIVE", groupId: "group-1" },
         orderBy: [{ createdAt: "desc" }, { id: "asc" }],
         skip: 40,
         take: 20,
+      }),
+    );
+  });
+
+  it("stably pages assistant team members with an ID tie-breaker", async () => {
+    prismaMock.$transaction.mockResolvedValue([2, []]);
+
+    await listAdminsForAssistant({ page: 2, limit: 1 });
+
+    expect(prismaMock.admin.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        skip: 1,
+        take: 1,
       }),
     );
   });

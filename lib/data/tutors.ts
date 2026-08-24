@@ -42,7 +42,7 @@ export async function listTutors({
     prisma.tutor.findMany({
       where,
       include: { subjects: { include: { subject: true } } },
-      orderBy: [{ lastName: "asc" }, { firstName: "asc" }],
+      orderBy: [{ lastName: "asc" }, { firstName: "asc" }, { id: "asc" }],
       skip: (page - 1) * pageSize,
       take: pageSize,
     }),
@@ -66,7 +66,27 @@ export async function getTutor(id: string) {
   });
 }
 
-export async function getTutorForAssistant(id: string, limit = 20) {
+export function getTutorProfileForAssistantMutation(id: string) {
+  return prisma.tutor.findUnique({
+    where: { id },
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      avatarUrl: true,
+      avatarPublicId: true,
+      email: true,
+      phone: true,
+      hourlyRate: true,
+      notes: true,
+    },
+  });
+}
+
+export async function getTutorForAssistant(
+  id: string,
+  input: { page: number; limit: number } = { page: 1, limit: 20 },
+) {
   return prisma.tutor.findUnique({
     where: { id },
     select: {
@@ -83,8 +103,12 @@ export async function getTutorForAssistant(id: string, limit = 20) {
       updatedAt: true,
       subjects: {
         select: { subject: { select: { id: true, name: true } } },
-        orderBy: { subject: { name: "asc" } },
-        take: limit,
+        orderBy: [
+          { subject: { name: "asc" } },
+          { subjectId: "asc" },
+        ],
+        skip: (input.page - 1) * input.limit,
+        take: input.limit,
       },
       _count: {
         select: {
@@ -105,8 +129,9 @@ export async function getTutorForAssistant(id: string, limit = 20) {
           subject: { select: { id: true, name: true } },
           package: { select: { id: true, name: true } },
         },
-        orderBy: { createdAt: "desc" },
-        take: limit,
+        orderBy: [{ createdAt: "desc" }, { id: "asc" }],
+        skip: (input.page - 1) * input.limit,
+        take: input.limit,
       },
     },
   });

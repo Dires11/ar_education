@@ -50,8 +50,8 @@ describe("assistant tool registry", () => {
     expect(
       payroll.schema.safeParse({
         id: "tutor-1",
-        from: "2026-01-01T00:00:00.000Z",
-        to: "2026-12-31T00:00:00.000Z",
+        from: "2026-01-01T00:00:00.000-08:00",
+        to: "2026-12-31T00:00:00.000-08:00",
         limit: 100,
       }).success,
     ).toBe(true);
@@ -119,9 +119,11 @@ describe("assistant tool registry", () => {
       "STAFF",
     )!;
     expect(assistantToolMutatesData(lookup)).toBe(false);
-    expect(
-      lookup.schema.parse({ sessionId: "session-1" }),
-    ).toEqual({ sessionId: "session-1", page: 1, limit: 100 });
+    expect(lookup.schema.parse({ sessionId: "session-1" })).toEqual({
+      sessionId: "session-1",
+      page: 1,
+      limit: 100,
+    });
     expect(
       lookup.schema.safeParse({
         sessionId: "session-1",
@@ -132,6 +134,36 @@ describe("assistant tool registry", () => {
     ).toBe(true);
     expect(
       lookup.schema.safeParse({ sessionId: "session-1", limit: 101 }).success,
+    ).toBe(false);
+  });
+
+  it("supports bounded filtered session history beyond the current month", () => {
+    const lookup = getAssistantToolSpec("schedule", "get_schedule", "STAFF")!;
+    expect(
+      lookup.schema.parse({
+        from: "2026-08-01T00:00:00.000Z",
+        to: "2027-08-01T00:00:00.000Z",
+        studentId: "student-1",
+        attendanceStatus: "COMPLETED",
+        direction: "DESC",
+        limit: 1,
+      }),
+    ).toMatchObject({
+      page: 1,
+      limit: 1,
+      direction: "DESC",
+    });
+    expect(
+      lookup.schema.safeParse({
+        from: "2025-08-01T00:00:00.000Z",
+        to: "2027-08-02T00:00:00.000Z",
+      }).success,
+    ).toBe(false);
+    expect(
+      lookup.schema.safeParse({
+        month: "2026-08",
+        studentId: "student-1",
+      }).success,
     ).toBe(false);
   });
 
@@ -299,6 +331,45 @@ describe("assistant tool registry", () => {
     )!;
     expect(enrollmentSearch.schema.parse({})).toEqual({ page: 1, limit: 20 });
     expect(() => enrollmentSearch.schema.parse({ limit: 31 })).toThrow();
+
+    const studentSearch = getAssistantToolSpec(
+      "students",
+      "search_students",
+      "STAFF",
+    )!;
+    const tutorSearch = getAssistantToolSpec(
+      "tutors",
+      "search_tutors",
+      "STAFF",
+    )!;
+    expect(studentSearch.schema.parse({})).toEqual({ page: 1, limit: 10 });
+    expect(
+      tutorSearch.schema.parse({ subjectId: "subject-1", page: 4 }),
+    ).toEqual({
+      subjectId: "subject-1",
+      page: 4,
+      limit: 10,
+    });
+
+    const studentDetail = getAssistantToolSpec(
+      "students",
+      "get_student",
+      "STAFF",
+    )!;
+    const tutorDetail = getAssistantToolSpec("tutors", "get_tutor", "STAFF")!;
+    expect(studentDetail.schema.parse({ id: "student-1" })).toEqual({
+      id: "student-1",
+      page: 1,
+      limit: 20,
+    });
+    expect(tutorDetail.schema.parse({ id: "tutor-1", page: 2 })).toEqual({
+      id: "tutor-1",
+      page: 2,
+      limit: 20,
+    });
+    expect(
+      enrollmentSearch.schema.parse({ groupId: "group-1", page: 2 }),
+    ).toEqual({ groupId: "group-1", page: 2, limit: 20 });
   });
 
   it("supports exact session and payment verification lookups", () => {
@@ -311,6 +382,7 @@ describe("assistant tool registry", () => {
       sessionId: "session-1",
       page: 1,
       limit: 100,
+      direction: "ASC",
     });
     expect(() => scheduleLookup.schema.parse({})).toThrow();
 
@@ -323,14 +395,39 @@ describe("assistant tool registry", () => {
       paymentLookup.schema.parse({ paymentId: "payment-1" }),
     ).toMatchObject({ paymentId: "payment-1" });
 
+    expect(
+      scheduleLookup.schema.safeParse({
+        from: "2026-08-01T00:00:00-07:00",
+        to: "2026-09-01T00:00:00-07:00",
+      }).success,
+    ).toBe(true);
+    expect(
+      paymentLookup.schema.safeParse({
+        from: "2026-08-01T00:00:00-07:00",
+        to: "2026-09-01T00:00:00-07:00",
+      }).success,
+    ).toBe(true);
+    expect(
+      paymentLookup.schema.safeParse({
+        from: "2026-09-01T00:00:00-07:00",
+        to: "2026-08-01T00:00:00-07:00",
+      }).success,
+    ).toBe(false);
+    expect(
+      paymentLookup.schema.safeParse({
+        from: "2026-08-01T00:00:00",
+        to: "2026-09-01T00:00:00",
+      }).success,
+    ).toBe(false);
+
     const enrollmentLookup = getAssistantToolSpec(
       "enrollments",
       "get_enrollment",
       "STAFF",
     )!;
-    expect(
-      enrollmentLookup.schema.parse({ discountId: "discount-1" }),
-    ).toEqual({ discountId: "discount-1" });
+    expect(enrollmentLookup.schema.parse({ discountId: "discount-1" })).toEqual(
+      { discountId: "discount-1" },
+    );
   });
 
   it("provides one bounded student-directory tool for rankings", () => {
@@ -407,16 +504,15 @@ describe("assistant tool registry", () => {
     expect(recipients.schema.safeParse({}).success).toBe(false);
     expect(
       recipients.schema.safeParse({
-        studentIds: Array.from({ length: 301 }, (_, index) => `student-${index}`),
+        studentIds: Array.from(
+          { length: 301 },
+          (_, index) => `student-${index}`,
+        ),
       }).success,
     ).toBe(false);
     expect(assistantToolMutatesData(recipients)).toBe(false);
 
-    const dues = getAssistantToolSpec(
-      "billing",
-      "get_upcoming_dues",
-      "STAFF",
-    )!;
+    const dues = getAssistantToolSpec("billing", "get_upcoming_dues", "STAFF")!;
     expect(
       dues.schema.parse({
         status: "OVERDUE",

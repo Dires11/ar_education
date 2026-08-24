@@ -1,6 +1,7 @@
 import "server-only";
 
 import {
+  ASSISTANT_BALANCE_QUERY_LIMITS,
   getSessionsForDay,
   getActiveStudentCount,
   getUpcomingPackageEndings,
@@ -202,12 +203,16 @@ export async function getDashboardReportPageForAssistant(input: {
   }> = [];
   for (const student of page.students) {
     const calculationComplete =
-      student.payments.length <= 500 &&
-      student.enrollments.length <= 50 &&
+      student.payments.length <=
+        ASSISTANT_BALANCE_QUERY_LIMITS.paymentsPerStudent &&
+      student.enrollments.length <=
+        ASSISTANT_BALANCE_QUERY_LIMITS.enrollmentsPerStudent &&
       student.enrollments.every(
         (enrollment) =>
-          enrollment.sessionAttendance.length <= 500 &&
-          enrollment.discounts.length <= 100,
+          enrollment.sessionAttendance.length <=
+            ASSISTANT_BALANCE_QUERY_LIMITS.attendancePerEnrollment &&
+          enrollment.discounts.length <=
+            ASSISTANT_BALANCE_QUERY_LIMITS.discountsPerEnrollment,
       );
     if (!calculationComplete) {
       results.push({

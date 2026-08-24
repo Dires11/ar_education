@@ -150,10 +150,21 @@ export async function getStudentsWithBalance() {
   });
 }
 
+export const ASSISTANT_BALANCE_QUERY_LIMITS = {
+  students: 10,
+  paymentsPerStudent: 100,
+  enrollmentsPerStudent: 10,
+  attendancePerEnrollment: 100,
+  discountsPerEnrollment: 20,
+} as const;
+
 export async function getStudentsWithBalanceForAssistant(input: {
   page: number;
   limit: number;
 }) {
+  // Include one sentinel child row at every level. That lets the service mark
+  // a balance incomplete without ever materializing an unbounded relation.
+  const limit = Math.min(input.limit, ASSISTANT_BALANCE_QUERY_LIMITS.students);
   const where = { status: "ACTIVE" as const };
   const [total, students] = await prisma.$transaction([
     prisma.student.count({ where }),
@@ -166,7 +177,7 @@ export async function getStudentsWithBalanceForAssistant(input: {
         payments: {
           select: { amount: true },
           orderBy: { id: "asc" },
-          take: 501,
+          take: ASSISTANT_BALANCE_QUERY_LIMITS.paymentsPerStudent + 1,
         },
         enrollments: {
           select: {
@@ -182,7 +193,7 @@ export async function getStudentsWithBalanceForAssistant(input: {
               where: { billable: true },
               select: { session: { select: { scheduledFor: true } } },
               orderBy: { id: "asc" },
-              take: 501,
+              take: ASSISTANT_BALANCE_QUERY_LIMITS.attendancePerEnrollment + 1,
             },
             discounts: {
               select: {
@@ -194,23 +205,23 @@ export async function getStudentsWithBalanceForAssistant(input: {
                 usesRemaining: true,
               },
               orderBy: { id: "asc" },
-              take: 101,
+              take: ASSISTANT_BALANCE_QUERY_LIMITS.discountsPerEnrollment + 1,
             },
           },
           orderBy: { id: "asc" },
-          take: 51,
+          take: ASSISTANT_BALANCE_QUERY_LIMITS.enrollmentsPerStudent + 1,
         },
       },
       orderBy: [{ firstName: "asc" }, { lastName: "asc" }, { id: "asc" }],
-      skip: (input.page - 1) * input.limit,
-      take: input.limit,
+      skip: (input.page - 1) * limit,
+      take: limit,
     }),
   ]);
   return {
     total,
     page: input.page,
-    limit: input.limit,
-    hasMore: input.page * input.limit < total,
+    limit,
+    hasMore: input.page * limit < total,
     students,
   };
 }

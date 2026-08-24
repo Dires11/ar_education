@@ -122,4 +122,32 @@ describe("assistant DTO minimization", () => {
       warnings: ["Upcoming sessions will be retried by maintenance."],
     });
   });
+
+  it("preserves the deterministic historical-payment boundary", () => {
+    expect(
+      minimizeAssistantDto({
+        from: "2025-09",
+        to: "2026-08",
+        oldestApplicableMonth: "2024-04",
+        earlierHistoryAvailable: true,
+      }),
+    ).toEqual({
+      from: "2025-09",
+      to: "2026-08",
+      oldestApplicableMonth: "2024-04",
+      earlierHistoryAvailable: true,
+    });
+  });
+
+  it("preserves schedule period context and team cleanup outcomes", () => {
+    expect(
+      minimizeAssistantDto({
+        periodLabel: "Aug 10–Aug 16, 2026",
+        clerkAccountDeleted: false,
+      }),
+    ).toEqual({
+      periodLabel: "Aug 10–Aug 16, 2026",
+      clerkAccountDeleted: false,
+    });
+  });
 });
