@@ -16,7 +16,11 @@ export async function listSubjectsForAssistant(input: {
     prisma.subject.count({ where }),
     prisma.subject.findMany({
       where,
-      select: { id: true, name: true },
+      select: {
+        id: true,
+        name: true,
+        ...(input.id ? { description: true } : {}),
+      },
       orderBy: [{ name: "asc" }, { id: "asc" }],
       skip: (input.page - 1) * input.limit,
       take: input.limit,
@@ -44,7 +48,7 @@ export async function createSubject(data: {
 
 export async function updateSubject(
   id: string,
-  data: { name?: string; description?: string }
+  data: { name?: string; description?: string },
 ) {
   return prisma.subject.update({ where: { id }, data });
 }

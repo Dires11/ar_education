@@ -102,6 +102,12 @@ export async function listPaymentsForAssistant(filters: PaymentFilters = {}) {
         method: true,
         paidAt: true,
         coversMonth: true,
+        ...(paymentId
+          ? {
+              notes: true,
+              recordedBy: { select: { id: true, name: true } },
+            }
+          : {}),
         student: {
           select: { id: true, firstName: true, lastName: true },
         },

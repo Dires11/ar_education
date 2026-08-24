@@ -697,6 +697,7 @@ export async function getEnrollmentSessionSummaries(
 export async function markSessionAttendance(
   sessionId: string,
   input: MarkAttendanceInput,
+  expectedUpdatedAt?: Date,
 ) {
   const parsed = markAttendanceSchema.parse(input);
 
@@ -727,6 +728,7 @@ export async function markSessionAttendance(
     sessionId,
     parsed.attendances,
     sessionStatus,
+    expectedUpdatedAt,
   );
 }
 
@@ -738,6 +740,7 @@ export async function updateScheduledSession(
     room?: string | null;
     notes?: string | null;
   },
+  expectedUpdatedAt?: Date,
 ) {
   const session = await getSession(sessionId);
   if (!session) throw new Error("Session not found");
@@ -792,18 +795,19 @@ export async function updateScheduledSession(
     });
   }
 
-  return updateSessionData(sessionId, data);
+  return updateSessionData(sessionId, data, expectedUpdatedAt);
 }
 
 export async function cancelSessionById(
   id: string,
   cancelledBy: "TUTOR" | "STUDENT",
+  expectedUpdatedAt?: Date,
 ) {
-  return cancelSession(id, cancelledBy);
+  return cancelSession(id, cancelledBy, expectedUpdatedAt);
 }
 
-export async function deleteSessionById(id: string) {
-  return deleteSession(id);
+export async function deleteSessionById(id: string, expectedUpdatedAt?: Date) {
+  return deleteSession(id, expectedUpdatedAt);
 }
 
 // ─── Recurrence rule management ───────────────────────────────────────────────

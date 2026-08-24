@@ -11,6 +11,7 @@ vi.mock("@/lib/prisma", () => ({ prisma: prismaMock }));
 
 import {
   deleteRecurringScheduleData,
+  deleteSession,
   getGroupRecurrenceRulesForMonth,
   getRecurrenceRuleForAssistant,
   getRecurrenceRulesForMonth,
@@ -69,6 +70,39 @@ describe("assistant recurrence lookup", () => {
         select: expect.objectContaining({ updatedAt: true }),
       }),
     );
+  });
+
+  it("loads session notes and the version used by approval cards", async () => {
+    prismaMock.session.findUnique.mockResolvedValue(null);
+
+    await getSessionForAssistant("session-1");
+
+    expect(prismaMock.session.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "session-1" },
+        select: expect.objectContaining({ notes: true, updatedAt: true }),
+      }),
+    );
+  });
+
+  it("locks and rejects a stale session approval before deleting it", async () => {
+    const tx = {
+      $queryRaw: vi
+        .fn()
+        .mockResolvedValue([
+          { updatedAt: new Date("2026-08-23T13:00:00.000Z") },
+        ]),
+      session: { delete: vi.fn() },
+    };
+    prismaMock.$transaction.mockImplementationOnce(
+      (callback: (client: typeof tx) => unknown) => callback(tx),
+    );
+
+    await expect(
+      deleteSession("session-1", new Date("2026-08-23T12:00:00.000Z")),
+    ).rejects.toThrow("changed after approval");
+    expect(tx.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(tx.session.delete).not.toHaveBeenCalled();
   });
 
   it("locks and rejects a stale recurring-schedule approval before deleting sessions", async () => {

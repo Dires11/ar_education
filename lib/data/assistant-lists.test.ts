@@ -112,10 +112,7 @@ describe("bounded assistant list queries", () => {
 
   it("uses exact filters and hard query limits for catalog summaries", async () => {
     prismaMock.$transaction
-      .mockResolvedValueOnce([
-        1,
-        [{ id: "subject-1", name: "Algebra" }],
-      ])
+      .mockResolvedValueOnce([1, [{ id: "subject-1", name: "Algebra" }]])
       .mockResolvedValueOnce([0, []]);
 
     await listSubjectsForAssistant({ id: "subject-1", page: 2, limit: 5 });
@@ -126,6 +123,7 @@ describe("bounded assistant list queries", () => {
         where: { id: "subject-1" },
         skip: 5,
         take: 5,
+        select: expect.objectContaining({ description: true }),
       }),
     );
     expect(prismaMock.package.findMany).toHaveBeenCalledWith(
@@ -133,6 +131,18 @@ describe("bounded assistant list queries", () => {
         where: { isActive: true },
         skip: 20,
         take: 10,
+      }),
+    );
+  });
+
+  it("keeps subject descriptions on exact inspection but out of broad lists", async () => {
+    prismaMock.$transaction.mockResolvedValue([0, []]);
+
+    await listSubjectsForAssistant({ page: 1, limit: 50 });
+
+    expect(prismaMock.subject.findMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        select: expect.not.objectContaining({ description: true }),
       }),
     );
   });

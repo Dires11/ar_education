@@ -34,7 +34,8 @@ describe("assistant DTO minimization", () => {
         futureSensitiveField: "do-not-send",
         recordedBy: {
           id: "admin-1",
-          email: "owner@example.com",
+          name: "Owner Admin",
+          privateFutureField: "do-not-send",
         },
         student: {
           id: "student-1",
@@ -45,6 +46,10 @@ describe("assistant DTO minimization", () => {
     ).toEqual({
       id: "payment-1",
       amount: "120",
+      recordedBy: {
+        id: "admin-1",
+        name: "Owner Admin",
+      },
       student: {
         id: "student-1",
         firstName: "Maya",

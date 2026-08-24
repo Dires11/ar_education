@@ -132,6 +132,7 @@ import {
 } from "@/lib/services/dashboard";
 import {
   assistantToolMutatesData,
+  assistantToolRequiresConfirmation,
   getAssistantToolSpec,
   type AssistantToolSpec,
 } from "@/lib/services/assistant/tools";
@@ -174,17 +175,29 @@ const assistantRecurrenceVersionSchema = z.object({
   ruleId: z.string().min(1).max(128),
   updatedAt: isoDateTimeSchema,
 });
+const assistantSessionVersionSchema = z.object({
+  sessionId: z.string().min(1).max(128),
+  updatedAt: isoDateTimeSchema,
+});
 const VERSIONED_RECURRENCE_CONFIRMATION_TOOLS = new Set([
   "split_recurring_schedule",
   "end_recurring_schedule",
   "cancel_occurrence",
   "delete_recurring_schedule",
 ]);
+const VERSIONED_SESSION_CONFIRMATION_TOOLS = new Set([
+  "update_session",
+  "mark_attendance",
+  "set_session_status",
+  "cancel_session",
+  "delete_session",
+]);
 
 export type AssistantToolExecutionContext = {
   admin: Pick<Admin, "id" | "role">;
   idempotencyKey?: string;
   provenanceValidated?: boolean;
+  confirmationApproved?: boolean;
 };
 
 const ASSISTANT_BUSINESS_REFERENCE_KEYS = new Set([
@@ -240,6 +253,24 @@ export async function resolveAssistantConfirmationArguments(input: {
   name: string;
   argumentsValue: Record<string, unknown>;
 }) {
+  if (
+    input.namespace === "schedule" &&
+    VERSIONED_SESSION_CONFIRMATION_TOOLS.has(input.name)
+  ) {
+    const sessionId = z.string().parse(input.argumentsValue.sessionId);
+    const session = await getSessionForAssistant(sessionId);
+    if (!session) throw new Error("Session not found");
+    input = {
+      ...input,
+      argumentsValue: {
+        ...input.argumentsValue,
+        __assistantSessionVersion: {
+          sessionId,
+          updatedAt: session.updatedAt.toISOString(),
+        },
+      },
+    };
+  }
   if (
     input.namespace === "recurrence" &&
     VERSIONED_RECURRENCE_CONFIRMATION_TOOLS.has(input.name)
@@ -469,6 +500,11 @@ function parsedArguments(spec: AssistantToolSpec, value: unknown) {
         original.__assistantRecurrenceVersion,
       );
   }
+  if (original.__assistantSessionVersion) {
+    parsed.__assistantSessionVersion = assistantSessionVersionSchema.parse(
+      original.__assistantSessionVersion,
+    );
+  }
   return parsed;
 }
 
@@ -485,6 +521,23 @@ function confirmedRecurrenceUpdatedAt(args: ToolArguments, ruleId: string) {
   if (!version.success || version.data.ruleId !== ruleId) {
     throw new Error(
       "This recurring schedule approval is missing its version. Review it and approve again.",
+    );
+  }
+  return new Date(version.data.updatedAt);
+}
+
+function confirmedSessionUpdatedAt(
+  args: ToolArguments,
+  sessionId: string,
+  confirmationApproved?: boolean,
+) {
+  if (!confirmationApproved) return undefined;
+  const version = assistantSessionVersionSchema.safeParse(
+    args.__assistantSessionVersion,
+  );
+  if (!version.success || version.data.sessionId !== sessionId) {
+    throw new Error(
+      "This session approval is missing its version. Review it and approve again.",
     );
   }
   return new Date(version.data.updatedAt);
@@ -921,17 +974,43 @@ function sessionResultCard(
     scheduledFor: Date;
     durationMinutes: number;
     room?: string | null;
+    status?: string;
+    tutor?: { firstName: string; lastName: string } | null;
+    subject?: { name: string } | null;
+    attendance?: Array<{
+      student: { firstName: string; lastName: string };
+    }>;
+    _count?: { attendance: number };
   },
   subtitle: string,
 ): AssistantResultCard {
   const timeZone = getConfiguredCenterTimeZone();
   const monthKey = getCalendarMonthKey(session.scheduledFor, timeZone);
+  const participantNames = [
+    ...new Set(
+      (session.attendance ?? []).map(
+        (attendance) =>
+          `${attendance.student.firstName} ${attendance.student.lastName}`,
+      ),
+    ),
+  ];
+  const participantSummary =
+    (session._count?.attendance ?? participantNames.length) <= 3
+      ? participantNames.join(", ")
+      : `${participantNames.slice(0, 3).join(", ")} and ${(session._count?.attendance ?? participantNames.length) - 3} more`;
   return {
     kind: "SESSION",
     entityKey: `session:${session.id}`,
-    title: "Scheduled session",
+    title: session.subject ? `${session.subject.name} session` : "Session",
     subtitle,
-    badges: [{ label: "Scheduled", tone: "SUCCESS" }],
+    badges: [
+      {
+        label: titleCase(session.status ?? "SCHEDULED"),
+        tone: (session.status ?? "SCHEDULED").startsWith("CANCELLED")
+          ? "WARNING"
+          : "SUCCESS",
+      },
+    ],
     fields: [
       {
         label: "Date & time",
@@ -943,6 +1022,36 @@ function sessionResultCard(
         value: `${session.durationMinutes} minutes`,
         icon: "CLOCK",
       },
+      ...(session.subject
+        ? [
+            {
+              label: "Subject",
+              value: session.subject.name,
+              icon: "BOOK" as const,
+            },
+          ]
+        : []),
+      ...(session.tutor
+        ? [
+            {
+              label: "Tutor",
+              value: `${session.tutor.firstName} ${session.tutor.lastName}`,
+              icon: "USER" as const,
+            },
+          ]
+        : []),
+      ...(session.attendance
+        ? [
+            {
+              label: "Students",
+              value:
+                participantNames.length > 0
+                  ? participantSummary.slice(0, 240)
+                  : "No participants recorded",
+              icon: "USER" as const,
+            },
+          ]
+        : []),
       ...(session.room
         ? [{ label: "Room", value: session.room, icon: "LOCATION" as const }]
         : []),
@@ -2580,7 +2689,11 @@ async function executeEnrollments(name: string, args: ToolArguments) {
   }
 }
 
-async function executeSchedule(name: string, args: ToolArguments) {
+async function executeSchedule(
+  name: string,
+  args: ToolArguments,
+  context: AssistantToolExecutionContext,
+) {
   switch (name) {
     case "get_schedule": {
       const sessionId = args.sessionId as string | undefined;
@@ -2595,7 +2708,7 @@ async function executeSchedule(name: string, args: ToolArguments) {
             hasMoreAttendance: _count.attendance > session.attendance.length,
           },
           "/schedule",
-          sessionResultCard(session, "Session details"),
+          sessionResultCard(result, "Session details"),
         );
       }
       if (args.from && args.to) {
@@ -2650,12 +2763,23 @@ async function executeSchedule(name: string, args: ToolArguments) {
       const sessionId = stringValue(args, "sessionId");
       const rest = { ...args };
       delete rest.sessionId;
+      delete rest.__assistantSessionVersion;
       const scheduledFor = rest.scheduledFor;
       delete rest.scheduledFor;
-      const updated = await updateScheduledSession(sessionId, {
-        ...rest,
-        scheduledFor: scheduledFor ? new Date(String(scheduledFor)) : undefined,
-      } as never);
+      const updated = await updateScheduledSession(
+        sessionId,
+        {
+          ...rest,
+          scheduledFor: scheduledFor
+            ? new Date(String(scheduledFor))
+            : undefined,
+        } as never,
+        confirmedSessionUpdatedAt(
+          args,
+          sessionId,
+          context.confirmationApproved,
+        ),
+      );
       return toolResult(
         updated,
         "/schedule",
@@ -2664,9 +2788,17 @@ async function executeSchedule(name: string, args: ToolArguments) {
     }
     case "mark_attendance": {
       const sessionId = stringValue(args, "sessionId");
-      await markSessionAttendance(sessionId, {
-        attendances: args.attendances as never,
-      });
+      await markSessionAttendance(
+        sessionId,
+        {
+          attendances: args.attendances as never,
+        },
+        confirmedSessionUpdatedAt(
+          args,
+          sessionId,
+          context.confirmationApproved,
+        ),
+      );
       return resultAfterMutation(
         { sessionId, updated: true },
         "/schedule",
@@ -2683,7 +2815,15 @@ async function executeSchedule(name: string, args: ToolArguments) {
     }
     case "set_session_status": {
       const sessionId = stringValue(args, "sessionId");
-      const result = await updateSessionStatus(sessionId, args.status as never);
+      const result = await updateSessionStatus(
+        sessionId,
+        args.status as never,
+        confirmedSessionUpdatedAt(
+          args,
+          sessionId,
+          context.confirmationApproved,
+        ),
+      );
       return resultAfterMutation(result, "/schedule", async () => {
         const session = await getSessionForAssistant(sessionId);
         if (!session) throw new Error("Updated session could not be loaded");
@@ -2699,6 +2839,11 @@ async function executeSchedule(name: string, args: ToolArguments) {
       const result = await cancelSessionById(
         sessionId,
         args.cancelledBy as "TUTOR" | "STUDENT",
+        confirmedSessionUpdatedAt(
+          args,
+          sessionId,
+          context.confirmationApproved,
+        ),
       );
       return resultAfterMutation(result, "/schedule", async () => {
         const session = await getSessionForAssistant(sessionId);
@@ -2714,7 +2859,14 @@ async function executeSchedule(name: string, args: ToolArguments) {
       const sessionId = stringValue(args, "sessionId");
       const session = await getSessionForAssistant(sessionId);
       if (!session) throw new Error("Session not found");
-      await deleteSessionById(sessionId);
+      await deleteSessionById(
+        sessionId,
+        confirmedSessionUpdatedAt(
+          args,
+          sessionId,
+          context.confirmationApproved,
+        ),
+      );
       return mutationToolResult(
         { sessionId, deleted: true },
         "/schedule",
@@ -3377,6 +3529,9 @@ export async function executeAssistantTool(input: {
   );
   if (!spec) throw new Error("Tool is not available for this administrator");
   const args = parsedArguments(spec, input.argumentsValue);
+  currentContext.confirmationApproved =
+    Boolean(input.context.confirmationApproved) ||
+    assistantToolRequiresConfirmation(spec, args);
   if (
     assistantToolMutatesData(spec) &&
     collectAssistantIdentifierReferences(input.namespace, input.name, args)
@@ -3400,7 +3555,7 @@ export async function executeAssistantTool(input: {
     case "enrollments":
       return executeEnrollments(input.name, args);
     case "schedule":
-      return executeSchedule(input.name, args);
+      return executeSchedule(input.name, args, currentContext);
     case "attendance":
       return executeAttendance(input.name, args);
     case "recurrence":

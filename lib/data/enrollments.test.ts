@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const prismaMock = vi.hoisted(() => ({
+  discount: {
+    findUnique: vi.fn(),
+  },
   enrollment: {
     findUnique: vi.fn(),
   },
@@ -8,7 +11,10 @@ const prismaMock = vi.hoisted(() => ({
 
 vi.mock("@/lib/prisma", () => ({ prisma: prismaMock }));
 
-import { getEnrollmentForAssistant } from "@/lib/data/enrollments";
+import {
+  getDiscountForAssistant,
+  getEnrollmentForAssistant,
+} from "@/lib/data/enrollments";
 
 describe("assistant enrollment persistence", () => {
   beforeEach(() => {
@@ -27,8 +33,22 @@ describe("assistant enrollment persistence", () => {
             orderBy: [{ createdAt: "desc" }, { id: "asc" }],
             skip: 50,
             take: 25,
+            select: expect.objectContaining({ notes: true }),
           }),
         }),
+      }),
+    );
+  });
+
+  it("includes notes when inspecting one exact discount", async () => {
+    prismaMock.discount.findUnique.mockResolvedValue(null);
+
+    await getDiscountForAssistant("discount-1");
+
+    expect(prismaMock.discount.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "discount-1" },
+        select: expect.objectContaining({ notes: true }),
       }),
     );
   });

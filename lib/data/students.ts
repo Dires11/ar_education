@@ -76,11 +76,7 @@ export type StudentDirectoryDataQuery = {
   school?: string;
   gradeLevel?: string;
   sortBy:
-    | "DATE_OF_BIRTH"
-    | "CREATED_AT"
-    | "UPDATED_AT"
-    | "LAST_NAME"
-    | "FIRST_NAME";
+    "DATE_OF_BIRTH" | "CREATED_AT" | "UPDATED_AT" | "LAST_NAME" | "FIRST_NAME";
   sortOrder: "ASC" | "DESC";
   page: number;
   limit: number;
@@ -179,11 +175,7 @@ export async function queryStudentDirectoryData({
       prisma.student.findMany({
         where: tieWhere,
         select,
-        orderBy: [
-          { lastName: "asc" },
-          { firstName: "asc" },
-          { id: "asc" },
-        ],
+        orderBy: [{ lastName: "asc" }, { firstName: "asc" }, { id: "asc" }],
         take: tieLimit,
       }),
     ]);
@@ -458,7 +450,7 @@ export async function updateStudent(
     school?: string;
     gradeLevel?: string;
     notes?: string;
-  }
+  },
 ) {
   return prisma.student.update({ where: { id }, data });
 }
@@ -499,7 +491,7 @@ export async function createGuardian(data: {
 export async function linkGuardian(
   studentId: string,
   guardianId: string,
-  isPrimary: boolean
+  isPrimary: boolean,
 ) {
   return prisma.studentGuardian.create({
     data: { studentId, guardianId, isPrimary },
@@ -537,7 +529,7 @@ export async function updateGuardian(
     phone?: string;
     relationship?: "PARENT" | "GUARDIAN" | "OTHER";
     notes?: string;
-  }
+  },
 ) {
   return prisma.guardian.update({ where: { id }, data });
 }
@@ -564,6 +556,7 @@ export function getLinkedGuardianForAssistant(
           email: true,
           phone: true,
           relationship: true,
+          notes: true,
         },
       },
       student: {
@@ -642,7 +635,7 @@ export async function unlinkGuardian(studentId: string, guardianId: string) {
 export async function setGuardianPrimary(
   studentId: string,
   guardianId: string,
-  isPrimary: boolean
+  isPrimary: boolean,
 ) {
   return prisma.$transaction(async (tx) => {
     if (isPrimary) {

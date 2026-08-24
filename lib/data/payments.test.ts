@@ -155,6 +155,32 @@ describe("payment persistence", () => {
     );
   });
 
+  it("loads notes and recorder identity only for an exact payment inspection", async () => {
+    prismaMock.payment.count.mockResolvedValue(0);
+    prismaMock.payment.findMany.mockResolvedValue([]);
+
+    await listPaymentsForAssistant({ paymentId: "payment-1" });
+    expect(prismaMock.payment.findMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ id: "payment-1" }),
+        select: expect.objectContaining({
+          notes: true,
+          recordedBy: { select: { id: true, name: true } },
+        }),
+      }),
+    );
+
+    await listPaymentsForAssistant();
+    expect(prismaMock.payment.findMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        select: expect.not.objectContaining({
+          notes: true,
+          recordedBy: expect.anything(),
+        }),
+      }),
+    );
+  });
+
   it("loads a payment confirmation with compact student identity only", async () => {
     prismaMock.payment.findUnique.mockResolvedValue(null);
 

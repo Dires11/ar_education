@@ -520,6 +520,7 @@ async function executeRecordedTool(input: {
         admin: input.admin,
         idempotencyKey: input.toolRun.id,
         provenanceValidated: true,
+        confirmationApproved: input.toolRun.requiresConfirmation,
       },
     });
   } catch (error) {

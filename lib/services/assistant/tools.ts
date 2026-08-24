@@ -206,7 +206,7 @@ const toolSpecs: AssistantToolSpec[] = [
     namespace: "guardians",
     name: "get_guardian",
     description:
-      "Verify and inspect one exact guardian relationship using both the student ID and guardian ID before updating or removing it.",
+      "Verify and inspect one exact guardian relationship, including its notes, using both the student ID and guardian ID before updating or removing it.",
     schema: z.object({ studentId: idSchema, guardianId: idSchema }),
     requiresConfirmation: false,
   },
@@ -321,7 +321,7 @@ const toolSpecs: AssistantToolSpec[] = [
     namespace: "catalog",
     name: "list_subjects",
     description:
-      "List a bounded summary of available subjects, optionally inspecting one exact subject ID.",
+      "List a bounded summary of available subjects, or inspect one exact subject ID including its description.",
     schema: z.object({
       id: idSchema.optional(),
       page: z.number().int().min(1).max(10_000).default(1),
@@ -410,7 +410,7 @@ const toolSpecs: AssistantToolSpec[] = [
     namespace: "enrollments",
     name: "get_enrollment",
     description:
-      "Get an enrollment by enrollment ID, or resolve the owning enrollment by discount ID, including student, tutor, package, a page of discounts, and bounded relation counts. Continue discountPage while hasMoreDiscounts is true to discover every discount. Use schedule.get_schedule with an enrollment/date range for session history and billing.list_payments with enrollmentId for payments.",
+      "Get an enrollment by enrollment ID, or resolve the owning enrollment by discount ID, including student, tutor, package, a page of discounts with their notes, and bounded relation counts. Continue discountPage while hasMoreDiscounts is true to discover every discount. Use schedule.get_schedule with an enrollment/date range for session history and billing.list_payments with enrollmentId for payments.",
     schema: z
       .object({
         id: idSchema.optional(),
@@ -480,7 +480,7 @@ const toolSpecs: AssistantToolSpec[] = [
     namespace: "schedule",
     name: "get_schedule",
     description:
-      "Get one exact session by session ID; page real and virtual entries for one yyyy-MM month; or page materialized/historical sessions over a bounded half-open instant range [from, to) filtered by student, tutor, enrollment, subject, session status, or attendance status. Range bounds must include Z or an explicit UTC offset; for a center-calendar period, use its local start and the next period's local start as the exclusive end. Use ASC for next/upcoming and DESC for most recent/history.",
+      "Get one exact session by session ID including its note, tutor, subject, and bounded participants; page real and virtual entries for one yyyy-MM month; or page materialized/historical sessions over a bounded half-open instant range [from, to) filtered by student, tutor, enrollment, subject, session status, or attendance status. Range bounds must include Z or an explicit UTC offset; for a center-calendar period, use its local start and the next period's local start as the exclusive end. Use ASC for next/upcoming and DESC for most recent/history.",
     schema: z
       .object({
         month: monthSchema.optional(),
@@ -748,7 +748,7 @@ const toolSpecs: AssistantToolSpec[] = [
     namespace: "billing",
     name: "list_payments",
     description:
-      "List payment history when the administrator asks to view, search, or audit existing payments. Optional time bounds form a half-open instant range [from, to): from is inclusive and to is exclusive. Bounds must include Z or an explicit UTC offset; for a center-calendar period, use its local start and the next period's local start as the exclusive end.",
+      "List payment history when the administrator asks to view, search, or audit existing payments. An exact paymentId lookup also returns its note and recording administrator. Optional time bounds form a half-open instant range [from, to): from is inclusive and to is exclusive. Bounds must include Z or an explicit UTC offset; for a center-calendar period, use its local start and the next period's local start as the exclusive end.",
     schema: z
       .object({
         paymentId: idSchema.optional(),

@@ -151,6 +151,7 @@ export async function getEnrollmentForAssistant(
           validFrom: true,
           validUntil: true,
           usesRemaining: true,
+          notes: true,
         },
         orderBy: [{ createdAt: "desc" }, { id: "asc" }],
         skip: (discountPage - 1) * discountLimit,
@@ -318,6 +319,7 @@ export function getDiscountForAssistant(id: string) {
       validFrom: true,
       validUntil: true,
       usesRemaining: true,
+      notes: true,
     },
   });
 }

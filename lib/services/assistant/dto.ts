@@ -142,6 +142,7 @@ const ALLOWED_ASSISTANT_FIELDS = new Set([
   "discountTotal",
   "sessionTotal",
   "paymentTotal",
+  "recordedBy",
   "hasMoreAttendance",
   "hasMoreGuardians",
   "hasMoreEnrollments",

@@ -288,6 +288,8 @@ export async function getSessionForAssistant(id: string) {
       durationMinutes: true,
       status: true,
       room: true,
+      notes: true,
+      updatedAt: true,
       tutor: { select: { id: true, firstName: true, lastName: true } },
       subject: { select: { id: true, name: true } },
       _count: { select: { attendance: true } },
@@ -742,7 +744,22 @@ export async function updateSessionStatus(
     | "NO_SHOW"
     | "CANCELLED_BY_TUTOR"
     | "CANCELLED_BY_STUDENT",
+  expectedUpdatedAt?: Date,
 ) {
+  if (expectedUpdatedAt) {
+    return prisma.$transaction(async (tx) => {
+      await assertSessionVersion(tx, sessionId, expectedUpdatedAt);
+      const session = await tx.session.update({
+        where: { id: sessionId },
+        data: { status },
+      });
+      await tx.sessionAttendance.updateMany({
+        where: { sessionId },
+        data: { status, billable: status === "COMPLETED" },
+      });
+      return session;
+    });
+  }
   return prisma.$transaction([
     prisma.session.update({ where: { id: sessionId }, data: { status } }),
     prisma.sessionAttendance.updateMany({
@@ -802,7 +819,26 @@ export function updateAttendanceAndSessionStatus(
     | "NO_SHOW"
     | "CANCELLED_BY_TUTOR"
     | "CANCELLED_BY_STUDENT",
+  expectedUpdatedAt?: Date,
 ) {
+  if (expectedUpdatedAt) {
+    return prisma.$transaction(async (tx) => {
+      await assertSessionVersion(tx, sessionId, expectedUpdatedAt);
+      for (const attendance of attendances) {
+        await tx.sessionAttendance.updateMany({
+          where: { sessionId, studentId: attendance.studentId },
+          data: {
+            status: attendance.status,
+            billable: attendance.billable,
+          },
+        });
+      }
+      return tx.session.update({
+        where: { id: sessionId },
+        data: { status: sessionStatus },
+      });
+    });
+  }
   return prisma.$transaction([
     ...attendances.map((attendance) =>
       prisma.sessionAttendance.updateMany({
@@ -823,14 +859,22 @@ export function updateAttendanceAndSessionStatus(
 export async function cancelSession(
   id: string,
   cancelledBy: "TUTOR" | "STUDENT",
+  expectedUpdatedAt?: Date,
 ) {
   return updateSessionStatus(
     id,
     cancelledBy === "TUTOR" ? "CANCELLED_BY_TUTOR" : "CANCELLED_BY_STUDENT",
+    expectedUpdatedAt,
   );
 }
 
-export async function deleteSession(id: string) {
+export async function deleteSession(id: string, expectedUpdatedAt?: Date) {
+  if (expectedUpdatedAt) {
+    return prisma.$transaction(async (tx) => {
+      await assertSessionVersion(tx, id, expectedUpdatedAt);
+      return tx.session.delete({ where: { id } });
+    });
+  }
   return prisma.session.delete({ where: { id } });
 }
 
@@ -885,8 +929,31 @@ export async function updateSession(
     room?: string | null;
     notes?: string | null;
   },
+  expectedUpdatedAt?: Date,
 ) {
+  if (expectedUpdatedAt) {
+    return prisma.$transaction(async (tx) => {
+      await assertSessionVersion(tx, id, expectedUpdatedAt);
+      return tx.session.update({ where: { id }, data });
+    });
+  }
   return prisma.session.update({ where: { id }, data });
+}
+
+async function assertSessionVersion(
+  tx: Prisma.TransactionClient,
+  sessionId: string,
+  expectedUpdatedAt: Date,
+) {
+  const rows = await tx.$queryRaw<Array<{ updatedAt: Date }>>(
+    Prisma.sql`SELECT "updatedAt" FROM "Session" WHERE "id" = ${sessionId} FOR UPDATE`,
+  );
+  if (rows.length === 0) throw new Error("Session not found");
+  if (rows[0].updatedAt.getTime() !== expectedUpdatedAt.getTime()) {
+    throw new Error(
+      "The session changed after approval was requested. Review it and approve again.",
+    );
+  }
 }
 
 export async function closeRecurrenceRule(ruleId: string, endsOn: Date) {

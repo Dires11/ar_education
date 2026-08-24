@@ -26,7 +26,9 @@ const enrollmentServiceMocks = vi.hoisted(() => ({
   removeDiscount: vi.fn(),
 }));
 const sessionServiceMocks = vi.hoisted(() => ({
+  cancelSessionById: vi.fn(),
   cancelVirtualOccurrence: vi.fn(),
+  deleteSessionById: vi.fn(),
   deleteRecurringSchedule: vi.fn(),
   endRecurrenceFromDate: vi.fn(),
   getEnrollmentMonthSummary: vi.fn(),
@@ -35,7 +37,10 @@ const sessionServiceMocks = vi.hoisted(() => ({
   querySessionsForAssistant: vi.fn(),
   getRecurringSchedulePreview: vi.fn(),
   listRecurrenceRulesForAssistant: vi.fn(),
+  markSessionAttendance: vi.fn(),
   splitRecurrenceRule: vi.fn(),
+  updateScheduledSession: vi.fn(),
+  updateSessionStatus: vi.fn(),
 }));
 const paymentServiceMocks = vi.hoisted(() => ({
   getPaymentDueQuote: vi.fn(),
@@ -130,12 +135,12 @@ vi.mock("@/lib/services/students", () => ({
 vi.mock("@/lib/services/enrollments", () => enrollmentServiceMocks);
 
 vi.mock("@/lib/services/sessions", () => ({
-  cancelSessionById: vi.fn(),
+  cancelSessionById: sessionServiceMocks.cancelSessionById,
   cancelVirtualOccurrence: sessionServiceMocks.cancelVirtualOccurrence,
   createAdHocSession: vi.fn(),
   createRecurringSchedule: vi.fn(),
   deleteRecurringSchedule: sessionServiceMocks.deleteRecurringSchedule,
-  deleteSessionById: vi.fn(),
+  deleteSessionById: sessionServiceMocks.deleteSessionById,
   endRecurrenceFromDate: sessionServiceMocks.endRecurrenceFromDate,
   getEnrollmentMonthSummary: sessionServiceMocks.getEnrollmentMonthSummary,
   getDashboardScheduleForAssistant:
@@ -146,12 +151,12 @@ vi.mock("@/lib/services/sessions", () => ({
   getRecurringSchedulePreview: sessionServiceMocks.getRecurringSchedulePreview,
   listRecurrenceRulesForAssistant:
     sessionServiceMocks.listRecurrenceRulesForAssistant,
-  markSessionAttendance: vi.fn(),
+  markSessionAttendance: sessionServiceMocks.markSessionAttendance,
   rescheduleVirtualOccurrence: vi.fn(),
   splitRecurrenceRule: sessionServiceMocks.splitRecurrenceRule,
   updateEnrollmentRecurrenceColor: vi.fn(),
-  updateScheduledSession: vi.fn(),
-  updateSessionStatus: vi.fn(),
+  updateScheduledSession: sessionServiceMocks.updateScheduledSession,
+  updateSessionStatus: sessionServiceMocks.updateSessionStatus,
 }));
 
 vi.mock("@/lib/services/payments", () => ({
@@ -350,6 +355,78 @@ describe("assistant tool result cards", () => {
 
     expect(sessionServiceMocks.deleteRecurringSchedule).toHaveBeenCalledWith(
       "rule-1",
+      updatedAt,
+    );
+  });
+
+  it("pins session approvals to the reviewed version and identifies the class", async () => {
+    const updatedAt = new Date("2026-08-23T12:00:00.000Z");
+    const session = {
+      id: "session-1",
+      updatedAt,
+      scheduledFor: new Date("2026-08-24T18:00:00.000Z"),
+      durationMinutes: 60,
+      status: "SCHEDULED",
+      room: "A",
+      tutor: { id: "tutor-1", firstName: "Theo", lastName: "Grant" },
+      subject: { id: "subject-1", name: "Mathematics" },
+      attendance: [
+        {
+          student: {
+            id: "student-1",
+            firstName: "Maya",
+            lastName: "Chen",
+          },
+        },
+      ],
+      _count: { attendance: 1 },
+    };
+    sessionDataMocks.getSessionForAssistant.mockResolvedValue(session);
+    sessionServiceMocks.cancelSessionById.mockResolvedValue({
+      ...session,
+      status: "CANCELLED_BY_TUTOR",
+    });
+
+    const confirmed = await resolveAssistantConfirmationArguments({
+      namespace: "schedule",
+      name: "cancel_session",
+      argumentsValue: { sessionId: "session-1", cancelledBy: "TUTOR" },
+    });
+
+    expect(confirmed).toMatchObject({
+      __assistantSessionVersion: {
+        sessionId: "session-1",
+        updatedAt: updatedAt.toISOString(),
+      },
+    });
+    await expect(
+      getAssistantConfirmationCard({
+        namespace: "schedule",
+        name: "cancel_session",
+        argumentsValue: confirmed,
+      }),
+    ).resolves.toMatchObject({
+      title: "Mathematics session",
+      fields: expect.arrayContaining([
+        expect.objectContaining({ label: "Subject", value: "Mathematics" }),
+        expect.objectContaining({ label: "Tutor", value: "Theo Grant" }),
+        expect.objectContaining({ label: "Students", value: "Maya Chen" }),
+      ]),
+    });
+
+    await executeAssistantTool({
+      namespace: "schedule",
+      name: "cancel_session",
+      argumentsValue: confirmed,
+      context: {
+        admin: { id: "admin-1", role: "STAFF" },
+        provenanceValidated: true,
+      },
+    });
+
+    expect(sessionServiceMocks.cancelSessionById).toHaveBeenCalledWith(
+      "session-1",
+      "TUTOR",
       updatedAt,
     );
   });
@@ -1005,6 +1082,11 @@ describe("assistant tool result cards", () => {
   });
 
   it("pairs every attendance decision with the resolved student name", async () => {
+    const updatedAt = new Date("2026-08-23T12:00:00.000Z");
+    sessionDataMocks.getSessionForAssistant.mockResolvedValue({
+      id: "session-1",
+      updatedAt,
+    });
     studentMocks.getStudent
       .mockResolvedValueOnce({ firstName: "Maya", lastName: "Chen" })
       .mockResolvedValueOnce({ firstName: "Noah", lastName: "Patel" });
@@ -1022,6 +1104,10 @@ describe("assistant tool result cards", () => {
     });
 
     expect(resolved).toMatchObject({
+      __assistantSessionVersion: {
+        sessionId: "session-1",
+        updatedAt: updatedAt.toISOString(),
+      },
       attendancePreview: [
         { student: "Maya Chen", status: "Completed", billable: true },
         { student: "Noah Patel", status: "No Show", billable: false },
@@ -1208,11 +1294,24 @@ describe("assistant tool result cards", () => {
   it("supports exact session and payment lookups needed before mutations", async () => {
     sessionDataMocks.getSessionForAssistant.mockResolvedValue({
       id: "session-1",
+      updatedAt: new Date("2026-08-23T12:00:00.000Z"),
       scheduledFor: new Date("2026-08-24T18:00:00.000Z"),
       durationMinutes: 60,
+      status: "SCHEDULED",
       room: "A",
-      attendance: [],
-      _count: { attendance: 0 },
+      notes: "Prepare chapter 4",
+      tutor: { id: "tutor-1", firstName: "Theo", lastName: "Grant" },
+      subject: { id: "subject-1", name: "Mathematics" },
+      attendance: [
+        {
+          student: {
+            id: "student-1",
+            firstName: "Maya",
+            lastName: "Chen",
+          },
+        },
+      ],
+      _count: { attendance: 1 },
     });
     paymentDataMocks.listPaymentsForAssistant.mockResolvedValue({
       payments: [{ id: "payment-1", amount: "120" }],
@@ -1233,12 +1332,14 @@ describe("assistant tool result cards", () => {
       card: {
         entityKey: "session:session-1",
         href: "/schedule?month=2026-08&session=session-1",
-        title: "Scheduled session",
+        title: "Mathematics session",
         fields: expect.arrayContaining([
           expect.objectContaining({
             label: "Date & time",
             value: "Aug 24, 2026, 11:00 AM",
           }),
+          expect.objectContaining({ label: "Tutor", value: "Theo Grant" }),
+          expect.objectContaining({ label: "Students", value: "Maya Chen" }),
         ]),
         suggestedActions: expect.arrayContaining([
           {
@@ -1248,6 +1349,7 @@ describe("assistant tool result cards", () => {
           },
         ]),
       },
+      data: expect.objectContaining({ notes: "Prepare chapter 4" }),
     });
     await executeAssistantTool({
       namespace: "billing",

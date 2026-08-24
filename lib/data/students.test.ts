@@ -88,6 +88,11 @@ describe("student directory data queries", () => {
             guardianId: "guardian-1",
           },
         },
+        select: expect.objectContaining({
+          guardian: expect.objectContaining({
+            select: expect.objectContaining({ notes: true }),
+          }),
+        }),
       }),
     );
   });
@@ -180,9 +185,7 @@ describe("student directory data queries", () => {
 
   it("matches a full student name token by token", async () => {
     prismaMock.student.findMany.mockResolvedValue([]);
-    prismaMock.student.count
-      .mockResolvedValueOnce(0)
-      .mockResolvedValueOnce(0);
+    prismaMock.student.count.mockResolvedValueOnce(0).mockResolvedValueOnce(0);
 
     await queryStudentDirectoryData({
       query: "Test Student",
@@ -221,13 +224,15 @@ describe("student directory data queries", () => {
         lastName: "Chen",
         status: "ACTIVE",
         email: null,
-        guardians: [{
-          guardian: {
-            firstName: "Ana",
-            lastName: "Chen",
-            email: "ana@example.com",
+        guardians: [
+          {
+            guardian: {
+              firstName: "Ana",
+              lastName: "Chen",
+              email: "ana@example.com",
+            },
           },
-        }],
+        ],
       },
     ]);
     prismaMock.$transaction.mockImplementation((queries: Promise<unknown>[]) =>
@@ -245,11 +250,13 @@ describe("student directory data queries", () => {
       total: 120,
       page: 2,
       hasMore: false,
-      recipients: [{
-        studentId: "student-101",
-        recipientEmail: "ana@example.com",
-        deliverable: true,
-      }],
+      recipients: [
+        {
+          studentId: "student-101",
+          recipientEmail: "ana@example.com",
+          deliverable: true,
+        },
+      ],
     });
     expect(prismaMock.student.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -259,11 +266,7 @@ describe("student directory data queries", () => {
         },
         skip: 100,
         take: 100,
-        orderBy: [
-          { lastName: "asc" },
-          { firstName: "asc" },
-          { id: "asc" },
-        ],
+        orderBy: [{ lastName: "asc" }, { firstName: "asc" }, { id: "asc" }],
         select: expect.objectContaining({
           guardians: expect.objectContaining({
             where: { isPrimary: true },
