@@ -11,8 +11,8 @@ export const createAdHocSessionSchema = z
   .object({
     enrollmentId: optionalIdSchema,
     groupId: optionalIdSchema,
-    tutorId: idSchema,
-    subjectId: idSchema,
+    tutorId: optionalIdSchema,
+    subjectId: optionalIdSchema,
     scheduledFor: isoDateTimeSchema,
     durationMinutes: positiveIntegerStringSchema.refine(
       (value) => Number(value) <= 480,
@@ -25,6 +25,31 @@ export const createAdHocSessionSchema = z
   .refine((data) => !(data.enrollmentId && data.groupId), {
     message: "Choose either an enrollment or a group",
     path: ["groupId"],
+  })
+  .superRefine((data, context) => {
+    if (data.enrollmentId || data.groupId) return;
+
+    if (!data.tutorId) {
+      context.addIssue({
+        code: "custom",
+        message: "Tutor is required without an enrollment or group",
+        path: ["tutorId"],
+      });
+    }
+    if (!data.subjectId) {
+      context.addIssue({
+        code: "custom",
+        message: "Subject is required without an enrollment or group",
+        path: ["subjectId"],
+      });
+    }
+    if (data.studentIds.length === 0) {
+      context.addIssue({
+        code: "custom",
+        message: "At least one student is required without an enrollment or group",
+        path: ["studentIds"],
+      });
+    }
   });
 
 export const createRecurrenceSchema = z
@@ -77,7 +102,9 @@ export const markAttendanceSchema = z.object({
       ]),
       billable: z.boolean(),
     })
-  ).min(1, "At least one attendance record is required"),
+  )
+    .min(1, "At least one attendance record is required")
+    .max(100, "Attendance updates are limited to 100 students at a time"),
 });
 
 export const updateSessionSchema = z

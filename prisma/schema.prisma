@@ -91,6 +91,28 @@ enum EmailTemplateType {
   CUSTOM
 }
 
+enum AssistantMessageRole {
+  USER
+  ASSISTANT
+}
+
+enum AssistantRunStatus {
+  RUNNING
+  WAITING_CONFIRMATION
+  COMPLETED
+  FAILED
+}
+
+enum AssistantToolRunStatus {
+  PENDING_CONFIRMATION
+  RUNNING
+  COMPLETED
+  FAILED
+  UNKNOWN
+  REJECTED
+  EXPIRED
+}
+
 // ─── Core Identity ────────────────────────────────────────────────────────────
 
 model Admin {
@@ -99,10 +121,15 @@ model Admin {
   email       String
   name        String
   role        AdminRole @default(STAFF)
+  disabledAt  DateTime?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
-  payments Payment[]
+  payments               Payment[]
+  assistantThreads       AssistantThread[]
+  assistantConfirmations AssistantToolRun[] @relation("AssistantToolRunConfirmedBy")
+
+  @@index([disabledAt])
 }
 
 model Guardian {
@@ -356,17 +383,18 @@ model SessionAttendance {
 // ─── Billing ──────────────────────────────────────────────────────────────────
 
 model Payment {
-  id           String        @id @default(cuid())
-  studentId    String
-  amount       Decimal       @db.Decimal(10, 2)
-  method       PaymentMethod
-  paidAt       DateTime
-  recordedById String
-  notes        String?
-  coversMonth  String?
-  enrollmentId String?
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
+  id             String        @id @default(cuid())
+  studentId      String
+  amount         Decimal       @db.Decimal(10, 2)
+  method         PaymentMethod
+  paidAt         DateTime
+  recordedById   String
+  notes          String?
+  coversMonth    String?
+  enrollmentId   String?
+  idempotencyKey String?       @unique
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
 
   student    Student     @relation(fields: [studentId], references: [id])
   recordedBy Admin       @relation(fields: [recordedById], references: [id])
@@ -404,4 +432,96 @@ model Reminder {
 
   @@unique([sessionId, recipientEmail, type])
   @@index([scheduledFor, status])
+}
+
+// ─── AI Assistant ─────────────────────────────────────────────────────────────
+
+model AssistantThread {
+  id                     String    @id @default(cuid())
+  adminId                String
+  title                  String
+  contextSummary         String?
+  summarizedMessageCount Int       @default(0)
+  archivedAt             DateTime?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  admin    Admin              @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  messages AssistantMessage[]
+  runs     AssistantRun[]
+
+  @@index([adminId, archivedAt, updatedAt])
+}
+
+model AssistantMessage {
+  id          String               @id @default(cuid())
+  threadId    String
+  runId       String?
+  role        AssistantMessageRole
+  content     String
+  attachments Json?
+  createdAt   DateTime             @default(now())
+
+  thread AssistantThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  run    AssistantRun?   @relation(fields: [runId], references: [id], onDelete: SetNull)
+
+  @@index([threadId, createdAt])
+  @@index([runId])
+}
+
+model AssistantRun {
+  id                String             @id @default(cuid())
+  threadId          String
+  clientTurnId      String             @unique
+  status            AssistantRunStatus @default(RUNNING)
+  model             String
+  hasAttachments    Boolean            @default(false)
+  resumeInput       Json?
+  toolCallCount     Int                @default(0)
+  inputTokens       Int?
+  outputTokens      Int?
+  reasoningTokens   Int?
+  cachedInputTokens Int?
+  cacheWriteTokens  Int?
+  error             String?
+  supersededAt      DateTime?
+  supersedesRunId   String?            @unique
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  completedAt       DateTime?
+
+  thread   AssistantThread    @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  messages AssistantMessage[]
+  toolRuns AssistantToolRun[]
+  supersedesRun AssistantRun? @relation("AssistantRunSupersession", fields: [supersedesRunId], references: [id], onDelete: SetNull)
+  supersededBy  AssistantRun? @relation("AssistantRunSupersession")
+
+  @@index([threadId, status])
+}
+
+model AssistantToolRun {
+  id                   String                 @id @default(cuid())
+  runId                String
+  callId               String
+  namespace            String
+  toolName             String
+  arguments            Json
+  preview              Json?
+  result               Json?
+  status               AssistantToolRunStatus
+  requiresConfirmation Boolean                @default(false)
+  expiresAt            DateTime?
+  confirmedById        String?
+  confirmedAt          DateTime?
+  error                String?
+  createdAt            DateTime               @default(now())
+  updatedAt            DateTime               @updatedAt
+  completedAt          DateTime?
+
+  run         AssistantRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  confirmedBy Admin?       @relation("AssistantToolRunConfirmedBy", fields: [confirmedById], references: [id], onDelete: SetNull)
+
+  @@unique([runId, callId])
+  @@index([runId, status])
+  @@index([expiresAt, status])
 }

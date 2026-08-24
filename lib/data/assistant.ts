@@ -1,0 +1,1392 @@
+import "server-only";
+
+import { prisma } from "@/lib/prisma";
+import {
+  AssistantMessageRole,
+  AssistantRunStatus,
+  AssistantToolRunStatus,
+  Prisma,
+} from "@/generated/prisma";
+import { isAssistantEntityReference } from "@/lib/validators/assistant";
+
+const ACTIVE_RUN_STATUSES: AssistantRunStatus[] = [
+  "RUNNING",
+  "WAITING_CONFIRMATION",
+];
+// Keep this above the route's five-minute execution window so a legitimate
+// long-running response cannot be reclaimed by a second browser tab.
+export const ASSISTANT_RUN_STALE_AFTER_MS = 6 * 60 * 1000;
+export const ASSISTANT_SUMMARY_RETAIN_RECENT = 30;
+// A turn's user message is persisted before context is loaded. Keeping one
+// extra message bridges that in-flight turn until the completion summary has
+// advanced through the previous window.
+export const ASSISTANT_CONTEXT_MESSAGE_LIMIT =
+  ASSISTANT_SUMMARY_RETAIN_RECENT + 1;
+
+async function expireAssistantRunsInTransaction(
+  tx: Prisma.TransactionClient,
+  input: {
+    adminId: string;
+    threadId?: string;
+    now: Date;
+  },
+) {
+  const threadWhere = {
+    adminId: input.adminId,
+    ...(input.threadId ? { id: input.threadId } : {}),
+  };
+  const expiredConfirmations = await tx.assistantToolRun.findMany({
+    where: {
+      status: "PENDING_CONFIRMATION",
+      expiresAt: { lte: input.now },
+      run: {
+        status: "WAITING_CONFIRMATION",
+        thread: threadWhere,
+      },
+    },
+    select: { id: true, runId: true },
+  });
+  if (expiredConfirmations.length > 0) {
+    const toolRunIds = expiredConfirmations.map((toolRun) => toolRun.id);
+    const runIds = [
+      ...new Set(expiredConfirmations.map((toolRun) => toolRun.runId)),
+    ];
+    await tx.assistantToolRun.updateMany({
+      where: { id: { in: toolRunIds }, status: "PENDING_CONFIRMATION" },
+      data: {
+        status: "EXPIRED",
+        error: "Confirmation expired",
+        completedAt: input.now,
+      },
+    });
+    await tx.assistantRun.updateMany({
+      where: { id: { in: runIds }, status: "WAITING_CONFIRMATION" },
+      data: {
+        status: "FAILED",
+        error: "Confirmation expired",
+        resumeInput: Prisma.JsonNull,
+        completedAt: input.now,
+      },
+    });
+  }
+
+  // A run can be marked failed after its CRM mutation succeeds but before the
+  // tool audit result is finalized. Recover those child rows immediately on
+  // the next page load instead of leaving them RUNNING forever.
+  await tx.assistantToolRun.updateMany({
+    where: {
+      status: "RUNNING",
+      run: {
+        status: "FAILED",
+        thread: threadWhere,
+      },
+    },
+    data: {
+      status: "UNKNOWN",
+      error:
+        "Execution finished without a durable audit result. Verify the CRM state before repeating this action.",
+      completedAt: input.now,
+    },
+  });
+
+  const staleBefore = new Date(
+    input.now.getTime() - ASSISTANT_RUN_STALE_AFTER_MS,
+  );
+  const staleRuns = await tx.assistantRun.findMany({
+    where: {
+      status: "RUNNING",
+      updatedAt: { lte: staleBefore },
+      thread: threadWhere,
+    },
+    select: {
+      id: true,
+      toolRuns: { select: { id: true, status: true } },
+    },
+  });
+  if (staleRuns.length > 0) {
+    const runIds = staleRuns.map((run) => run.id);
+    const unknownToolRunIds = staleRuns.flatMap((run) =>
+      run.toolRuns
+        .filter((toolRun) => toolRun.status === "RUNNING")
+        .map((toolRun) => toolRun.id),
+    );
+    if (unknownToolRunIds.length > 0) {
+      await tx.assistantToolRun.updateMany({
+        where: { id: { in: unknownToolRunIds }, status: "RUNNING" },
+        data: {
+          status: "UNKNOWN",
+          error:
+            "Execution was interrupted before the result was recorded. Verify the CRM state before repeating this action.",
+          completedAt: input.now,
+        },
+      });
+    }
+
+    const uncertainRunIds = staleRuns
+      .filter((run) =>
+        run.toolRuns.some((toolRun) => toolRun.status === "RUNNING"),
+      )
+      .map((run) => run.id);
+    const completedRunIds = staleRuns
+      .filter(
+        (run) =>
+          !uncertainRunIds.includes(run.id) &&
+          run.toolRuns.some((toolRun) => toolRun.status === "COMPLETED"),
+      )
+      .map((run) => run.id);
+    const interruptedBeforeWriteIds = runIds.filter(
+      (id) => !uncertainRunIds.includes(id) && !completedRunIds.includes(id),
+    );
+
+    const finishRuns = (ids: string[], error: string) =>
+      ids.length === 0
+        ? Promise.resolve()
+        : tx.assistantRun.updateMany({
+            where: { id: { in: ids }, status: "RUNNING" },
+            data: {
+              status: "FAILED",
+              error,
+              resumeInput: Prisma.JsonNull,
+              completedAt: input.now,
+            },
+          });
+    await finishRuns(
+      uncertainRunIds,
+      "A CRM operation may have completed before the assistant was interrupted. Verify the affected records before repeating it.",
+    );
+    await finishRuns(
+      completedRunIds,
+      "CRM operations completed, but the assistant response was interrupted. Review the recorded results before continuing.",
+    );
+    await finishRuns(
+      interruptedBeforeWriteIds,
+      "Assistant response was interrupted before any CRM operation completed. It is safe to retry.",
+    );
+  }
+
+  // Run this after stale parents are finalized as well as for parents that
+  // failed earlier, so the first reload always removes dead approval controls.
+  await tx.assistantToolRun.updateMany({
+    where: {
+      status: "PENDING_CONFIRMATION",
+      run: {
+        status: "FAILED",
+        thread: threadWhere,
+      },
+    },
+    data: {
+      status: "FAILED",
+      error: "Confirmation could not be activated. Start the request again.",
+      completedAt: input.now,
+    },
+  });
+}
+
+export function expireAssistantRuns(adminId: string, threadId?: string) {
+  return prisma.$transaction((tx) =>
+    expireAssistantRunsInTransaction(tx, {
+      adminId,
+      threadId,
+      now: new Date(),
+    }),
+  );
+}
+
+export type AssistantThreadHistoryCursor = {
+  updatedAt: Date;
+  id: string;
+};
+
+export type AssistantMessageHistoryCursor = {
+  createdAt: Date;
+  id: string;
+};
+
+const visibleAssistantMessageWhere = {
+  OR: [{ runId: null }, { run: { supersededAt: null } }],
+} satisfies Prisma.AssistantMessageWhereInput;
+
+const assistantHistoryMessageInclude = {
+  run: {
+    select: {
+      id: true,
+      clientTurnId: true,
+      status: true,
+      hasAttachments: true,
+      error: true,
+      toolRuns: {
+        orderBy: [{ createdAt: "asc" as const }, { id: "asc" as const }],
+        select: {
+          id: true,
+          namespace: true,
+          toolName: true,
+          preview: true,
+          result: true,
+          status: true,
+          requiresConfirmation: true,
+          expiresAt: true,
+          error: true,
+        },
+      },
+    },
+  },
+} satisfies Prisma.AssistantMessageInclude;
+
+export async function listAssistantThreads(
+  adminId: string,
+  input: { limit: number; before?: AssistantThreadHistoryCursor } = {
+    limit: 50,
+  },
+) {
+  const rows = await prisma.assistantThread.findMany({
+    where: {
+      adminId,
+      archivedAt: null,
+      ...(input.before
+        ? {
+            OR: [
+              { updatedAt: { lt: input.before.updatedAt } },
+              {
+                updatedAt: input.before.updatedAt,
+                id: { lt: input.before.id },
+              },
+            ],
+          }
+        : {}),
+    },
+    orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
+    take: input.limit + 1,
+    select: {
+      id: true,
+      title: true,
+      updatedAt: true,
+      _count: {
+        select: {
+          messages: {
+            where: {
+              OR: [{ runId: null }, { run: { supersededAt: null } }],
+            },
+          },
+        },
+      },
+    },
+  });
+  const hasMore = rows.length > input.limit;
+  const threads = rows.slice(0, input.limit);
+  const oldest = threads.at(-1);
+  return {
+    threads,
+    hasMore,
+    nextCursor:
+      hasMore && oldest ? { updatedAt: oldest.updatedAt, id: oldest.id } : null,
+  };
+}
+
+export async function getAssistantThreadMessages(
+  adminId: string,
+  threadId: string,
+  input: { limit: number; before?: AssistantMessageHistoryCursor } = {
+    limit: 40,
+  },
+) {
+  const rows = await prisma.assistantMessage.findMany({
+    where: {
+      threadId,
+      thread: { adminId },
+      AND: [
+        visibleAssistantMessageWhere,
+        ...(input.before
+          ? [
+              {
+                OR: [
+                  { createdAt: { lt: input.before.createdAt } },
+                  {
+                    createdAt: input.before.createdAt,
+                    id: { lt: input.before.id },
+                  },
+                ],
+              } satisfies Prisma.AssistantMessageWhereInput,
+            ]
+          : []),
+      ],
+    },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    take: input.limit + 1,
+    include: assistantHistoryMessageInclude,
+  });
+  const hasMore = rows.length > input.limit;
+  const descending = rows.slice(0, input.limit);
+  const oldest = descending.at(-1);
+  return {
+    messages: descending.reverse(),
+    hasMore,
+    nextCursor:
+      hasMore && oldest ? { createdAt: oldest.createdAt, id: oldest.id } : null,
+  };
+}
+
+export async function getAssistantThread(
+  adminId: string,
+  threadId: string,
+  messageLimit = 40,
+) {
+  const thread = await prisma.assistantThread.findFirst({
+    where: { id: threadId, adminId },
+    select: {
+      id: true,
+      title: true,
+      updatedAt: true,
+      _count: {
+        select: {
+          messages: { where: visibleAssistantMessageWhere },
+        },
+      },
+    },
+  });
+  if (!thread) return null;
+  const page = await getAssistantThreadMessages(adminId, threadId, {
+    limit: messageLimit,
+  });
+  return { ...thread, ...page };
+}
+
+export async function getAssistantContext(
+  adminId: string,
+  threadId: string,
+  take = ASSISTANT_CONTEXT_MESSAGE_LIMIT,
+) {
+  const thread = await prisma.assistantThread.findFirst({
+    where: { id: threadId, adminId },
+    select: {
+      contextSummary: true,
+      _count: {
+        select: { runs: { where: { hasAttachments: true } } },
+      },
+      messages: {
+        where: {
+          OR: [{ runId: null }, { run: { supersededAt: null } }],
+        },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        take,
+        select: {
+          role: true,
+          content: true,
+          attachments: true,
+          createdAt: true,
+          run: {
+            select: {
+              status: true,
+              hasAttachments: true,
+              toolRuns: {
+                orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+                take: 12,
+                select: {
+                  namespace: true,
+                  toolName: true,
+                  status: true,
+                  result: true,
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  });
+  if (!thread) return null;
+  const safetyToolAuditRows = await prisma.assistantToolRun.findMany({
+    where: {
+      run: {
+        threadId,
+        thread: { adminId },
+      },
+      OR: [
+        { status: { in: ["RUNNING", "UNKNOWN"] } },
+        { status: "COMPLETED", run: { status: "FAILED" } },
+      ],
+    },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    take: 21,
+    select: {
+      namespace: true,
+      toolName: true,
+      status: true,
+      run: { select: { status: true } },
+    },
+  });
+  const orderedMessages = thread.messages.reverse();
+  return {
+    summary: thread.contextSummary,
+    safetyToolAudits: safetyToolAuditRows.slice(0, 20).map((toolRun) => ({
+      namespace: toolRun.namespace,
+      toolName: toolRun.toolName,
+      status: toolRun.status,
+      runStatus: toolRun.run.status,
+    })),
+    safetyToolAuditsTruncated: safetyToolAuditRows.length > 20,
+    hasUntrustedHistory:
+      thread._count.runs > 0 ||
+      orderedMessages.some(
+        (message) =>
+          (Array.isArray(message.attachments) &&
+            message.attachments.length > 0) ||
+          Boolean(message.run?.hasAttachments),
+      ),
+    messages: orderedMessages.map((message) => ({
+      role: message.role,
+      content: message.content,
+      attachments: message.attachments,
+      createdAt: message.createdAt,
+      toolResults:
+        message.role === "USER"
+          ? (message.run?.toolRuns ?? [])
+              .filter((toolRun) => toolRun.status === "COMPLETED")
+              .map((toolRun) => toolRun.result)
+          : [],
+      operationAudit:
+        message.role === "USER" && message.run
+          ? {
+              runStatus: message.run.status,
+              tools: message.run.toolRuns.map((toolRun) => ({
+                namespace: toolRun.namespace,
+                toolName: toolRun.toolName,
+                status: toolRun.status,
+              })),
+            }
+          : null,
+    })),
+  };
+}
+
+export async function getAssistantThreadMessageCount(
+  adminId: string,
+  threadId: string,
+) {
+  const thread = await prisma.assistantThread.findFirst({
+    where: { id: threadId, adminId },
+    select: {
+      _count: {
+        select: {
+          messages: {
+            where: {
+              OR: [{ runId: null }, { run: { supersededAt: null } }],
+            },
+          },
+        },
+      },
+    },
+  });
+  if (!thread) throw new Error("Assistant thread not found");
+  return thread._count.messages;
+}
+
+export async function setAssistantThreadSummary(
+  adminId: string,
+  threadId: string,
+  input: {
+    contextSummary: string;
+    summarizedMessageCount: number;
+    expectedSummarizedMessageCount: number;
+    expectedMessageCount: number;
+    expectedUpdatedAt: Date;
+  },
+) {
+  return prisma.$transaction(
+    async (tx) => {
+      const unchangedThread = await tx.assistantThread.findFirst({
+        where: {
+          id: threadId,
+          adminId,
+          updatedAt: input.expectedUpdatedAt,
+          summarizedMessageCount: input.expectedSummarizedMessageCount,
+        },
+        select: { id: true },
+      });
+      if (!unchangedThread) return { count: 0 };
+
+      const visibleMessageCount = await tx.assistantMessage.count({
+        where: { threadId, ...visibleAssistantMessageWhere },
+      });
+      if (visibleMessageCount !== input.expectedMessageCount) {
+        return { count: 0 };
+      }
+
+      return tx.assistantThread.updateMany({
+        where: {
+          id: threadId,
+          adminId,
+          updatedAt: input.expectedUpdatedAt,
+          summarizedMessageCount: input.expectedSummarizedMessageCount,
+        },
+        data: {
+          contextSummary: input.contextSummary,
+          summarizedMessageCount: input.summarizedMessageCount,
+        },
+      });
+    },
+    { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+  );
+}
+
+function assistantResultEntityKey(result: Prisma.JsonValue | null) {
+  if (!result || typeof result !== "object" || Array.isArray(result)) {
+    return null;
+  }
+  const card = result.card;
+  if (!card || typeof card !== "object" || Array.isArray(card)) return null;
+  const entityKey = card.entityKey;
+  return isAssistantEntityReference(entityKey)
+    ? entityKey
+    : null;
+}
+
+export async function getAssistantSummarySource(
+  adminId: string,
+  threadId: string,
+  retainRecent = ASSISTANT_SUMMARY_RETAIN_RECENT,
+) {
+  const maxSummaryBatch = 40;
+  const thread = await prisma.assistantThread.findFirst({
+    where: { id: threadId, adminId },
+    select: {
+      contextSummary: true,
+      summarizedMessageCount: true,
+      updatedAt: true,
+      _count: {
+        select: { messages: { where: visibleAssistantMessageWhere } },
+      },
+    },
+  });
+  if (!thread || thread._count.messages <= retainRecent) return null;
+
+  const summarizeThrough = Math.min(
+    thread._count.messages - retainRecent,
+    thread.summarizedMessageCount + maxSummaryBatch,
+  );
+  if (summarizeThrough <= thread.summarizedMessageCount) return null;
+
+  const messages = await prisma.assistantMessage.findMany({
+    where: { threadId, ...visibleAssistantMessageWhere },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    skip: thread.summarizedMessageCount,
+    take: summarizeThrough - thread.summarizedMessageCount,
+    select: {
+      role: true,
+      content: true,
+      run: {
+        select: {
+          status: true,
+          toolRuns: {
+            orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+            take: 12,
+            select: {
+              namespace: true,
+              toolName: true,
+              status: true,
+              result: true,
+            },
+          },
+        },
+      },
+    },
+  });
+  return {
+    previousSummary: thread.contextSummary,
+    expectedSummarizedMessageCount: thread.summarizedMessageCount,
+    expectedMessageCount: thread._count.messages,
+    expectedUpdatedAt: thread.updatedAt,
+    messages: messages.map((message) => ({
+      role: message.role,
+      content: message.content,
+      entityKeys:
+        message.role === "USER"
+          ? [
+              ...new Set(
+                (message.run?.toolRuns ?? [])
+                  .filter((toolRun) => toolRun.status === "COMPLETED")
+                  .map((toolRun) => assistantResultEntityKey(toolRun.result))
+                  .filter((value): value is string => Boolean(value)),
+              ),
+            ]
+          : [],
+      operationAudit:
+        message.role === "USER" && message.run
+          ? {
+              runStatus: message.run.status,
+              tools: message.run.toolRuns.map((toolRun) => ({
+                namespace: toolRun.namespace,
+                toolName: toolRun.toolName,
+                status: toolRun.status,
+              })),
+            }
+          : null,
+    })),
+    summarizeThrough,
+  };
+}
+
+function threadTitle(message: string) {
+  const compact = message.replace(/\s+/g, " ").trim();
+  return compact.length > 64 ? `${compact.slice(0, 61)}…` : compact;
+}
+
+async function replayAssistantTurnAfterUniqueRace(
+  adminId: string,
+  clientTurnId: string,
+) {
+  const run = await prisma.assistantRun.findUnique({
+    where: { clientTurnId },
+    include: {
+      thread: true,
+      messages: true,
+      toolRuns: true,
+    },
+  });
+  if (!run || run.thread.adminId !== adminId || run.thread.archivedAt) {
+    throw new Error("Assistant request identifier is unavailable");
+  }
+  return {
+    thread: run.thread,
+    run,
+    duplicate: true,
+    messageCount: await prisma.assistantMessage.count({
+      where: {
+        threadId: run.threadId,
+        OR: [{ runId: null }, { run: { supersededAt: null } }],
+      },
+    }),
+  };
+}
+
+export async function createAssistantTurn(input: {
+  adminId: string;
+  threadId?: string;
+  clientTurnId: string;
+  message: string;
+  attachments?: Prisma.InputJsonValue;
+  hasAttachments?: boolean;
+  supersedesRunId?: string;
+  model: string;
+}) {
+  try {
+    return await prisma.$transaction(
+      async (tx) => {
+        const duplicate = await tx.assistantRun.findUnique({
+          where: { clientTurnId: input.clientTurnId },
+          include: {
+            thread: true,
+            messages: true,
+            toolRuns: true,
+          },
+        });
+        if (duplicate) {
+          if (
+            duplicate.thread.adminId !== input.adminId ||
+            duplicate.thread.archivedAt
+          ) {
+            throw new Error("Assistant request identifier is unavailable");
+          }
+          await expireAssistantRunsInTransaction(tx, {
+            adminId: input.adminId,
+            threadId: duplicate.threadId,
+            now: new Date(),
+          });
+          const refreshed = await tx.assistantRun.findUniqueOrThrow({
+            where: { id: duplicate.id },
+            include: {
+              thread: true,
+              messages: true,
+              toolRuns: true,
+            },
+          });
+          if (
+            refreshed.status === "FAILED" &&
+            refreshed.toolRuns.length === 0
+          ) {
+            await tx.assistantMessage.updateMany({
+              where: { runId: refreshed.id, role: "USER" },
+              data: {
+                content: input.message,
+                attachments: input.attachments ?? Prisma.JsonNull,
+              },
+            });
+            const restarted = await tx.assistantRun.update({
+              where: { id: refreshed.id },
+              data: {
+                status: "RUNNING",
+                error: null,
+                hasAttachments: Boolean(input.hasAttachments),
+                toolCallCount: 0,
+                completedAt: null,
+              },
+              include: {
+                thread: true,
+                messages: true,
+                toolRuns: true,
+              },
+            });
+            return {
+              thread: restarted.thread,
+              run: restarted,
+              duplicate: false,
+              messageCount: await tx.assistantMessage.count({
+                where: {
+                  threadId: restarted.threadId,
+                  OR: [{ runId: null }, { run: { supersededAt: null } }],
+                },
+              }),
+            };
+          }
+          return {
+            thread: refreshed.thread,
+            run: refreshed,
+            duplicate: true,
+            messageCount: await tx.assistantMessage.count({
+              where: {
+                threadId: refreshed.threadId,
+                OR: [{ runId: null }, { run: { supersededAt: null } }],
+              },
+            }),
+          };
+        }
+
+        let thread = input.threadId
+          ? await tx.assistantThread.findFirst({
+              where: {
+                id: input.threadId,
+                adminId: input.adminId,
+                archivedAt: null,
+              },
+            })
+          : null;
+
+        if (input.threadId && !thread) {
+          throw new Error("Assistant thread not found");
+        }
+
+        if (!thread) {
+          thread = await tx.assistantThread.create({
+            data: {
+              adminId: input.adminId,
+              title: threadTitle(
+                input.message ||
+                  (input.hasAttachments ? "Attachment review" : ""),
+              ),
+            },
+          });
+        }
+
+        await expireAssistantRunsInTransaction(tx, {
+          adminId: input.adminId,
+          threadId: thread.id,
+          now: new Date(),
+        });
+
+        const activeRun = await tx.assistantRun.findFirst({
+          where: {
+            threadId: thread.id,
+            status: { in: ACTIVE_RUN_STATUSES },
+          },
+          select: { id: true },
+        });
+        if (activeRun) {
+          throw new Error("This conversation already has an active request");
+        }
+
+        if (input.supersedesRunId) {
+          const supersededMessage = await tx.assistantMessage.findFirst({
+            where: {
+              threadId: thread.id,
+              runId: input.supersedesRunId,
+              role: "USER",
+            },
+            select: { id: true, createdAt: true },
+          });
+          if (!supersededMessage) {
+            throw new Error("The failed request is no longer retryable");
+          }
+          if (thread.summarizedMessageCount > 0) {
+            const messageOrdinal = await tx.assistantMessage.count({
+              where: {
+                threadId: thread.id,
+                AND: [
+                  visibleAssistantMessageWhere,
+                  {
+                    OR: [
+                      { createdAt: { lt: supersededMessage.createdAt } },
+                      {
+                        createdAt: supersededMessage.createdAt,
+                        id: { lte: supersededMessage.id },
+                      },
+                    ],
+                  },
+                ],
+              },
+            });
+            if (messageOrdinal <= thread.summarizedMessageCount) {
+              throw new Error(
+                "This older failed request can no longer be retried automatically. Start a new request after reviewing the conversation.",
+              );
+            }
+          }
+          const superseded = await tx.assistantRun.updateMany({
+            where: {
+              id: input.supersedesRunId,
+              threadId: thread.id,
+              status: "FAILED",
+              supersededAt: null,
+              thread: { adminId: input.adminId, archivedAt: null },
+            },
+            data: { supersededAt: new Date() },
+          });
+          if (superseded.count !== 1) {
+            throw new Error("The failed request is no longer retryable");
+          }
+        }
+
+        const run = await tx.assistantRun.create({
+          data: {
+            threadId: thread.id,
+            clientTurnId: input.clientTurnId,
+            model: input.model,
+            hasAttachments: Boolean(input.hasAttachments),
+            supersedesRunId: input.supersedesRunId,
+            messages: {
+              create: {
+                threadId: thread.id,
+                role: "USER",
+                content: input.message,
+                attachments: input.attachments,
+              },
+            },
+          },
+          include: { messages: true, toolRuns: true },
+        });
+
+        await tx.assistantThread.update({
+          where: { id: thread.id },
+          data: {
+            updatedAt: new Date(),
+          },
+        });
+
+        return {
+          thread,
+          run,
+          duplicate: false,
+          messageCount: await tx.assistantMessage.count({
+            where: {
+              threadId: thread.id,
+              OR: [{ runId: null }, { run: { supersededAt: null } }],
+            },
+          }),
+        };
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+    );
+  } catch (error) {
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2034"
+    ) {
+      throw new Error("This conversation already has an active request");
+    }
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2002"
+    ) {
+      return replayAssistantTurnAfterUniqueRace(
+        input.adminId,
+        input.clientTurnId,
+      );
+    }
+    throw error;
+  }
+}
+
+export function getAssistantRunForRetry(adminId: string, clientTurnId: string) {
+  return prisma.assistantRun.findFirst({
+    where: {
+      clientTurnId,
+      status: "FAILED",
+      supersededAt: null,
+      thread: { adminId, archivedAt: null },
+    },
+    select: {
+      id: true,
+      threadId: true,
+      hasAttachments: true,
+      toolRuns: {
+        select: { namespace: true, toolName: true, status: true },
+      },
+    },
+  });
+}
+
+export async function createOrGetAssistantToolRun(input: {
+  runId: string;
+  callId: string;
+  namespace: string;
+  toolName: string;
+  arguments: Prisma.InputJsonValue;
+  requiresConfirmation: boolean;
+  preview?: Prisma.InputJsonValue;
+  expiresAt?: Date;
+}) {
+  return prisma.assistantToolRun.upsert({
+    where: { runId_callId: { runId: input.runId, callId: input.callId } },
+    update: input.preview ? { preview: input.preview } : {},
+    create: {
+      runId: input.runId,
+      callId: input.callId,
+      namespace: input.namespace,
+      toolName: input.toolName,
+      arguments: input.arguments,
+      status: input.requiresConfirmation ? "PENDING_CONFIRMATION" : "RUNNING",
+      requiresConfirmation: input.requiresConfirmation,
+      preview: input.preview,
+      expiresAt: input.expiresAt,
+    },
+  });
+}
+
+export async function completeAssistantToolRun(
+  id: string,
+  result: Prisma.InputJsonValue,
+) {
+  return prisma.assistantToolRun.update({
+    where: { id },
+    data: {
+      status: "COMPLETED",
+      result,
+      error: null,
+      completedAt: new Date(),
+    },
+  });
+}
+
+export function touchAssistantRun(runId: string) {
+  return prisma.assistantRun.update({
+    where: { id: runId },
+    data: { updatedAt: new Date() },
+  });
+}
+
+export function recordAssistantModelStep(input: {
+  runId: string;
+  hasToolCall: boolean;
+  maxToolCalls: number;
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+    reasoningTokens: number;
+    cachedInputTokens: number;
+    cacheWriteTokens: number;
+  };
+}) {
+  return prisma.$transaction(async (tx) => {
+    const run = await tx.assistantRun.findUniqueOrThrow({
+      where: { id: input.runId },
+      select: {
+        toolCallCount: true,
+        inputTokens: true,
+        outputTokens: true,
+        reasoningTokens: true,
+        cachedInputTokens: true,
+        cacheWriteTokens: true,
+      },
+    });
+    const usage = input.usage;
+    const toolCallAllowed =
+      !input.hasToolCall || run.toolCallCount < input.maxToolCalls;
+    await tx.assistantRun.update({
+      where: { id: input.runId },
+      data: {
+        inputTokens: (run.inputTokens ?? 0) + (usage?.inputTokens ?? 0),
+        outputTokens: (run.outputTokens ?? 0) + (usage?.outputTokens ?? 0),
+        reasoningTokens:
+          (run.reasoningTokens ?? 0) + (usage?.reasoningTokens ?? 0),
+        cachedInputTokens:
+          (run.cachedInputTokens ?? 0) + (usage?.cachedInputTokens ?? 0),
+        cacheWriteTokens:
+          (run.cacheWriteTokens ?? 0) + (usage?.cacheWriteTokens ?? 0),
+        ...(input.hasToolCall && toolCallAllowed
+          ? { toolCallCount: { increment: 1 } }
+          : {}),
+      },
+    });
+    return {
+      toolCallAllowed,
+      toolCallCount:
+        run.toolCallCount + (input.hasToolCall && toolCallAllowed ? 1 : 0),
+    };
+  });
+}
+
+export async function failAssistantToolRun(id: string, error: string) {
+  return prisma.assistantToolRun.update({
+    where: { id },
+    data: {
+      status: "FAILED",
+      error,
+      completedAt: new Date(),
+    },
+  });
+}
+
+export async function markAssistantToolRunUnknown(id: string, error: string) {
+  return prisma.assistantToolRun.update({
+    where: { id },
+    data: {
+      status: "UNKNOWN",
+      error,
+      completedAt: new Date(),
+    },
+  });
+}
+
+export async function pauseAssistantRun(
+  runId: string,
+  resumeInput: Prisma.InputJsonValue,
+) {
+  return prisma.assistantRun.update({
+    where: { id: runId },
+    data: { status: "WAITING_CONFIRMATION", resumeInput },
+  });
+}
+
+export async function getAssistantToolRunForDecision(
+  adminId: string,
+  toolRunId: string,
+) {
+  return prisma.assistantToolRun.findFirst({
+    where: {
+      id: toolRunId,
+      run: { thread: { adminId } },
+    },
+    include: {
+      run: {
+        include: {
+          thread: true,
+          messages: true,
+          toolRuns: {
+            orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+          },
+        },
+      },
+    },
+  });
+}
+
+export async function claimAssistantToolRun(input: {
+  adminId: string;
+  toolRunId: string;
+}) {
+  const outcome = await prisma.$transaction(async (tx) => {
+    const now = new Date();
+    const claimed = await tx.assistantToolRun.updateMany({
+      where: {
+        id: input.toolRunId,
+        status: "PENDING_CONFIRMATION",
+        expiresAt: { gt: now },
+        run: {
+          status: "WAITING_CONFIRMATION",
+          thread: { adminId: input.adminId },
+        },
+      },
+      data: {
+        status: "RUNNING",
+        confirmedById: input.adminId,
+        confirmedAt: now,
+      },
+    });
+    if (claimed.count !== 1) {
+      const expired = await tx.assistantToolRun.findFirst({
+        where: {
+          id: input.toolRunId,
+          status: "PENDING_CONFIRMATION",
+          expiresAt: { lte: now },
+          run: {
+            status: "WAITING_CONFIRMATION",
+            thread: { adminId: input.adminId },
+          },
+        },
+        select: { id: true, runId: true },
+      });
+      if (expired) {
+        await tx.assistantToolRun.updateMany({
+          where: { id: expired.id, status: "PENDING_CONFIRMATION" },
+          data: { status: "EXPIRED", completedAt: now },
+        });
+        await tx.assistantRun.updateMany({
+          where: { id: expired.runId, status: "WAITING_CONFIRMATION" },
+          data: {
+            status: "FAILED",
+            error: "Confirmation expired",
+            resumeInput: Prisma.JsonNull,
+            completedAt: now,
+          },
+        });
+        return { status: "expired" as const };
+      }
+      throw new Error("Confirmation is no longer available");
+    }
+
+    const toolRun = await tx.assistantToolRun.findUniqueOrThrow({
+      where: { id: input.toolRunId },
+      include: { run: true },
+    });
+    await tx.assistantRun.update({
+      where: { id: toolRun.runId },
+      data: { status: "RUNNING" },
+    });
+    return { status: "claimed" as const, toolRun };
+  });
+  if (outcome.status === "expired") throw new Error("Confirmation expired");
+  return outcome.toolRun;
+}
+
+export async function rejectAssistantToolRun(input: {
+  adminId: string;
+  toolRunId: string;
+}) {
+  const outcome = await prisma.$transaction(async (tx) => {
+    const now = new Date();
+    const rejected = await tx.assistantToolRun.updateMany({
+      where: {
+        id: input.toolRunId,
+        status: "PENDING_CONFIRMATION",
+        expiresAt: { gt: now },
+        run: {
+          status: "WAITING_CONFIRMATION",
+          thread: { adminId: input.adminId },
+        },
+      },
+      data: {
+        status: "REJECTED",
+        confirmedById: input.adminId,
+        confirmedAt: now,
+        completedAt: now,
+        result: { status: "rejected_by_user" },
+      },
+    });
+    if (rejected.count !== 1) {
+      const expired = await tx.assistantToolRun.findFirst({
+        where: {
+          id: input.toolRunId,
+          status: "PENDING_CONFIRMATION",
+          expiresAt: { lte: now },
+          run: {
+            status: "WAITING_CONFIRMATION",
+            thread: { adminId: input.adminId },
+          },
+        },
+        select: { id: true, runId: true },
+      });
+      if (expired) {
+        await tx.assistantToolRun.updateMany({
+          where: { id: expired.id, status: "PENDING_CONFIRMATION" },
+          data: { status: "EXPIRED", completedAt: now },
+        });
+        await tx.assistantRun.updateMany({
+          where: { id: expired.runId, status: "WAITING_CONFIRMATION" },
+          data: {
+            status: "FAILED",
+            error: "Confirmation expired",
+            resumeInput: Prisma.JsonNull,
+            completedAt: now,
+          },
+        });
+        return { status: "expired" as const };
+      }
+      throw new Error("Confirmation is no longer available");
+    }
+    const toolRun = await tx.assistantToolRun.findUniqueOrThrow({
+      where: { id: input.toolRunId },
+      include: { run: true },
+    });
+    await tx.assistantRun.update({
+      where: { id: toolRun.runId },
+      data: { status: "RUNNING" },
+    });
+    return { status: "rejected" as const, toolRun };
+  });
+  if (outcome.status === "expired") throw new Error("Confirmation expired");
+  return outcome.toolRun;
+}
+
+export async function recordAssistantResponse(input: {
+  runId: string;
+  threadId: string;
+  content: string;
+}) {
+  return prisma.$transaction(async (tx) => {
+    const run = await tx.assistantRun.findFirst({
+      where: {
+        id: input.runId,
+        threadId: input.threadId,
+        status: "RUNNING",
+      },
+      select: { id: true },
+    });
+    if (!run) throw new Error("Assistant run is no longer active");
+    const existingMessage = await tx.assistantMessage.findFirst({
+      where: {
+        threadId: input.threadId,
+        runId: input.runId,
+        role: "ASSISTANT",
+      },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    });
+    if (existingMessage) return existingMessage;
+
+    const message = await tx.assistantMessage.create({
+      data: {
+        threadId: input.threadId,
+        runId: input.runId,
+        role: "ASSISTANT",
+        content: input.content,
+      },
+    });
+    await tx.assistantThread.update({
+      where: { id: input.threadId },
+      data: { updatedAt: new Date() },
+    });
+    return message;
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+}
+
+export async function completeAssistantRun(input: {
+  runId: string;
+  threadId: string;
+  content: string;
+}) {
+  return prisma.$transaction(async (tx) => {
+    const message = await tx.assistantMessage.findFirstOrThrow({
+      where: {
+        threadId: input.threadId,
+        runId: input.runId,
+        role: "ASSISTANT",
+      },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    });
+    await tx.assistantRun.update({
+      where: { id: input.runId },
+      data: {
+        status: "COMPLETED",
+        resumeInput: Prisma.JsonNull,
+        completedAt: new Date(),
+      },
+    });
+    const messageCount = await tx.assistantMessage.count({
+      where: { threadId: input.threadId, ...visibleAssistantMessageWhere },
+    });
+    return { message, messageCount };
+  });
+}
+
+export async function failAssistantRun(runId: string, error: string) {
+  return prisma.$transaction(async (tx) => {
+    const now = new Date();
+    await tx.assistantToolRun.updateMany({
+      where: { runId, status: "RUNNING" },
+      data: {
+        status: "UNKNOWN",
+        error:
+          "Execution finished without a durable audit result. Verify the CRM state before repeating this action.",
+        completedAt: now,
+      },
+    });
+    await tx.assistantToolRun.updateMany({
+      where: { runId, status: "PENDING_CONFIRMATION" },
+      data: {
+        status: "FAILED",
+        error: "Confirmation could not be activated. Start the request again.",
+        completedAt: now,
+      },
+    });
+    return tx.assistantRun.update({
+      where: { id: runId },
+      data: {
+        status: "FAILED",
+        error,
+        resumeInput: Prisma.JsonNull,
+        completedAt: now,
+      },
+    });
+  });
+}
+
+export async function archiveAssistantThread(
+  adminId: string,
+  threadId: string,
+  archived: boolean,
+) {
+  if (!archived) {
+    const restored = await prisma.assistantThread.updateMany({
+      where: { id: threadId, adminId },
+      data: { archivedAt: null },
+    });
+    if (restored.count !== 1) throw new Error("Assistant thread not found");
+    return;
+  }
+  return prisma.$transaction(
+    async (tx) => {
+      const now = new Date();
+      await expireAssistantRunsInTransaction(tx, {
+        adminId,
+        threadId,
+        now,
+      });
+      const result = await tx.assistantThread.updateMany({
+        where: {
+          id: threadId,
+          adminId,
+          archivedAt: null,
+          runs: {
+            none: { status: { in: ACTIVE_RUN_STATUSES } },
+          },
+        },
+        data: { archivedAt: now },
+      });
+      if (result.count === 1) return;
+
+      const thread = await tx.assistantThread.findFirst({
+        where: { id: threadId, adminId },
+        select: {
+          id: true,
+          archivedAt: true,
+          runs: {
+            where: { status: { in: ACTIVE_RUN_STATUSES } },
+            select: { id: true },
+            take: 1,
+          },
+        },
+      });
+      if (!thread) throw new Error("Assistant thread not found");
+      if (thread.runs.length > 0) {
+        throw new Error(
+          "This conversation has an active request or pending approval and cannot be archived yet",
+        );
+      }
+    },
+    { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+  );
+}
+
+export async function getAssistantRun(adminId: string, runId: string) {
+  return prisma.assistantRun.findFirst({
+    where: { id: runId, thread: { adminId } },
+    include: { thread: true, toolRuns: true },
+  });
+}
+
+export function assistantMessageRoleToApi(role: AssistantMessageRole) {
+  return role === "USER" ? ("user" as const) : ("assistant" as const);
+}
+
+export function isTerminalToolRunStatus(status: AssistantToolRunStatus) {
+  return ["COMPLETED", "FAILED", "UNKNOWN", "REJECTED", "EXPIRED"].includes(
+    status,
+  );
+}

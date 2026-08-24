@@ -13,6 +13,7 @@ import {
   ClipboardList,
   Mail,
   UsersRoundIcon,
+  Sparkles,
 } from "lucide-react";
 
 import {
@@ -28,6 +29,7 @@ import {
 } from "@/components/ui/sidebar";
 
 const navItems = [
+  { href: "/assistant", label: "AI Assistant", icon: Sparkles },
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/schedule", label: "Schedule", icon: CalendarDays },
   { href: "/payments", label: "Payments", icon: CreditCard },

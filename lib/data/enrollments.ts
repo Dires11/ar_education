@@ -6,6 +6,7 @@ import { EnrollmentStatus } from "../../generated/prisma";
 export async function listEnrollments(filters?: {
   studentId?: string;
   tutorId?: string;
+  groupId?: string;
   status?: EnrollmentStatus;
 }) {
   return prisma.enrollment.findMany({
@@ -26,6 +27,57 @@ export async function listEnrollments(filters?: {
   });
 }
 
+export async function searchEnrollmentsForAssistant(filters: {
+  studentId?: string;
+  tutorId?: string;
+  groupId?: string;
+  status?: EnrollmentStatus;
+  page: number;
+  limit: number;
+}) {
+  const where = {
+    ...(filters.studentId && { studentId: filters.studentId }),
+    ...(filters.tutorId && { tutorId: filters.tutorId }),
+    ...(filters.groupId && { groupId: filters.groupId }),
+    ...(filters.status && { status: filters.status }),
+  };
+  const [enrollments, total] = await Promise.all([
+    prisma.enrollment.findMany({
+      where,
+      select: {
+        id: true,
+        status: true,
+        startDate: true,
+        endDate: true,
+        priceAtEnrollment: true,
+        customPriceOverride: true,
+        student: {
+          select: { id: true, firstName: true, lastName: true },
+        },
+        tutor: {
+          select: { id: true, firstName: true, lastName: true },
+        },
+        package: {
+          select: { id: true, name: true, lessonType: true },
+        },
+        subject: { select: { id: true, name: true } },
+        group: { select: { id: true, name: true } },
+      },
+      orderBy: [{ createdAt: "desc" }, { id: "asc" }],
+      skip: (filters.page - 1) * filters.limit,
+      take: filters.limit,
+    }),
+    prisma.enrollment.count({ where }),
+  ]);
+  return {
+    enrollments,
+    total,
+    page: filters.page,
+    limit: filters.limit,
+    hasMore: filters.page * filters.limit < total,
+  };
+}
+
 export async function getEnrollment(id: string) {
   return prisma.enrollment.findUnique({
     where: { id },
@@ -35,6 +87,7 @@ export async function getEnrollment(id: string) {
       tutor: true,
       subject: true,
       discounts: true,
+      group: true,
       sessions: {
         orderBy: { scheduledFor: "desc" },
         take: 10,
@@ -44,6 +97,67 @@ export async function getEnrollment(id: string) {
         orderBy: { paidAt: "desc" },
         take: 10,
       },
+    },
+  });
+}
+
+export async function getEnrollmentForAssistant(
+  id: string,
+  discountPage = 1,
+  discountLimit = 20,
+) {
+  return prisma.enrollment.findUnique({
+    where: { id },
+    select: {
+      id: true,
+      studentId: true,
+      tutorId: true,
+      subjectId: true,
+      packageId: true,
+      groupId: true,
+      status: true,
+      startDate: true,
+      endDate: true,
+      priceAtEnrollment: true,
+      customPriceOverride: true,
+      createdAt: true,
+      updatedAt: true,
+      student: {
+        select: { id: true, firstName: true, lastName: true },
+      },
+      tutor: {
+        select: { id: true, firstName: true, lastName: true },
+      },
+      subject: { select: { id: true, name: true } },
+      package: {
+        select: {
+          id: true,
+          name: true,
+          type: true,
+          billingPeriod: true,
+          lessonType: true,
+          basePrice: true,
+          sessionsPerWeek: true,
+          durationMinutes: true,
+        },
+      },
+      group: { select: { id: true, name: true } },
+      discounts: {
+        select: {
+          id: true,
+          kind: true,
+          value: true,
+          temporary: true,
+          validFrom: true,
+          validUntil: true,
+          usesRemaining: true,
+          notes: true,
+        },
+        orderBy: [{ createdAt: "desc" }, { id: "asc" }],
+        skip: (discountPage - 1) * discountLimit,
+        take: discountLimit,
+      },
+      _count: { select: { discounts: true, sessions: true, payments: true } },
     },
   });
 }
@@ -133,10 +247,7 @@ export async function updateEnrollmentLifecycle(input: {
         where: {
           enrollmentId: input.id,
           startsOn: { lte: input.closeRecurrencesOn },
-          OR: [
-            { endsOn: null },
-            { endsOn: { gt: input.closeRecurrencesOn } },
-          ],
+          OR: [{ endsOn: null }, { endsOn: { gt: input.closeRecurrencesOn } }],
         },
         data: { endsOn: input.closeRecurrencesOn },
       });
@@ -149,7 +260,12 @@ export async function updateEnrollmentLifecycle(input: {
 export async function createDiscount(data: {
   enrollmentId?: string;
   studentId?: string;
-  kind: "PERCENT_OFF" | "FIXED_OFF" | "FREE_SESSIONS" | "FREE_MONTH" | "REDUCED_RATE";
+  kind:
+    | "PERCENT_OFF"
+    | "FIXED_OFF"
+    | "FREE_SESSIONS"
+    | "FREE_MONTH"
+    | "REDUCED_RATE";
   value: string;
   temporary: boolean;
   validFrom?: Date | null;
@@ -162,6 +278,50 @@ export async function createDiscount(data: {
 
 export async function deleteDiscount(id: string) {
   return prisma.discount.delete({ where: { id } });
+}
+
+export async function getDiscountWithEnrollment(id: string) {
+  return prisma.discount.findUnique({
+    where: { id },
+    include: {
+      enrollment: {
+        include: {
+          student: true,
+          package: true,
+          tutor: true,
+          subject: true,
+          discounts: true,
+          group: true,
+          sessions: {
+            orderBy: { scheduledFor: "desc" },
+            take: 10,
+            include: { attendance: { include: { student: true } } },
+          },
+          payments: {
+            orderBy: { paidAt: "desc" },
+            take: 10,
+          },
+        },
+      },
+    },
+  });
+}
+
+export function getDiscountForAssistant(id: string) {
+  return prisma.discount.findUnique({
+    where: { id },
+    select: {
+      id: true,
+      enrollmentId: true,
+      kind: true,
+      value: true,
+      temporary: true,
+      validFrom: true,
+      validUntil: true,
+      usesRemaining: true,
+      notes: true,
+    },
+  });
 }
 
 export function getTutorSubjectAssignment(tutorId: string, subjectId: string) {

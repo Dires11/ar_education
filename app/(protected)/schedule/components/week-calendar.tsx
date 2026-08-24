@@ -180,18 +180,28 @@ export function MonthCalendar({
   monthStart,
   sessions,
   selectedDay,
+  initialSessionId,
+  initialRecurrenceId,
   onDaySelect,
   onNavigate,
   onRefresh,
+  onSessionOpen,
+  onRecurrenceOpen,
+  onTargetClose,
   isPending,
 }: {
   centerTimeZone: string;
   monthStart: Date;
   sessions: CalendarSession[];
   selectedDay?: Date | null;
+  initialSessionId?: string | null;
+  initialRecurrenceId?: string | null;
   onDaySelect?: (day: Date | null) => void;
   onNavigate: (month: Date) => void;
   onRefresh: () => void;
+  onSessionOpen?: (session: CalendarSession) => void;
+  onRecurrenceOpen?: (session: CalendarSession) => void;
+  onTargetClose?: () => void;
   isPending?: boolean;
 }) {
   const [editingSession, setEditingSession] = useState<CalendarSession | null>(
@@ -220,6 +230,30 @@ export function MonthCalendar({
   );
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [settingStatusId, setSettingStatusId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (initialSessionId) {
+      const session = sessions.find((item) => item.id === initialSessionId);
+      if (session) setDetailSession(session);
+      return;
+    }
+    if (initialRecurrenceId) {
+      const session = sessions.find(
+        (item) => item.ruleId === initialRecurrenceId,
+      );
+      if (session) setEditingRecurring(session);
+    }
+  }, [initialRecurrenceId, initialSessionId, sessions]);
+
+  function openSession(session: CalendarSession) {
+    setDetailSession(session);
+    onSessionOpen?.(session);
+  }
+
+  function openRecurrence(session: CalendarSession) {
+    setEditingRecurring(session);
+    onRecurrenceOpen?.(session);
+  }
 
   useEffect(() => {
     const enrollmentId = editingRecurring?.enrollmentId;
@@ -366,6 +400,7 @@ export function MonthCalendar({
             if (!open) {
               setEditingRecurring(null);
               setEditingRecurringRules([]);
+              onTargetClose?.();
             }
           }}
         />
@@ -377,7 +412,10 @@ export function MonthCalendar({
         open={!!detailSession}
         onRefresh={onRefresh}
         onOpenChange={(open) => {
-          if (!open) setDetailSession(null);
+          if (!open) {
+            setDetailSession(null);
+            onTargetClose?.();
+          }
         }}
       />
 
@@ -634,7 +672,7 @@ export function MonthCalendar({
                               size="sm"
                               variant="outline"
                               className="h-6 px-2 text-[11px]"
-                              onClick={() => setDetailSession(session)}
+                              onClick={() => openSession(session)}
                             >
                               Open
                             </Button>
@@ -642,7 +680,7 @@ export function MonthCalendar({
                               size="sm"
                               variant="outline"
                               className="h-6 px-2 text-[11px]"
-                              onClick={() => setEditingRecurring(session)}
+                              onClick={() => openRecurrence(session)}
                             >
                               <PencilIcon className="h-3 w-3 mr-1" />
                               Edit
@@ -827,7 +865,7 @@ export function MonthCalendar({
                               size="sm"
                               variant="outline"
                               className="h-6 flex-1 px-2 text-[11px]"
-                              onClick={() => setDetailSession(session)}
+                              onClick={() => openSession(session)}
                             >
                               Open
                             </Button>
@@ -844,7 +882,7 @@ export function MonthCalendar({
                                 size="sm"
                                 variant="outline"
                                 className="h-6 px-2 text-[11px]"
-                                onClick={() => setEditingRecurring(session)}
+                                onClick={() => openRecurrence(session)}
                               >
                                 <RepeatIcon className="h-3 w-3" />
                               </Button>

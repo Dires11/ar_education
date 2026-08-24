@@ -54,6 +54,42 @@ export async function getUpcomingPackageEndings(
   });
 }
 
+export async function getUpcomingPackageEndingsForAssistant(input: {
+  today: Date;
+  withinDays: number;
+  page: number;
+  limit: number;
+}) {
+  const cutoff = addDays(input.today, input.withinDays);
+  const where = {
+    status: "ACTIVE" as const,
+    endDate: { gte: input.today, lte: cutoff },
+  };
+  const [total, results] = await prisma.$transaction([
+    prisma.enrollment.count({ where }),
+    prisma.enrollment.findMany({
+      where,
+      select: {
+        id: true,
+        endDate: true,
+        student: { select: { firstName: true, lastName: true } },
+        package: { select: { name: true } },
+        subject: { select: { name: true } },
+      },
+      orderBy: [{ endDate: "asc" }, { id: "asc" }],
+      skip: (input.page - 1) * input.limit,
+      take: input.limit,
+    }),
+  ]);
+  return {
+    total,
+    page: input.page,
+    limit: input.limit,
+    hasMore: input.page * input.limit < total,
+    results,
+  };
+}
+
 export async function getTutorSessionCountsThisWeek(
   weekStart: Date,
   weekEndExclusive: Date,
@@ -112,6 +148,82 @@ export async function getStudentsWithBalance() {
       },
     },
   });
+}
+
+export const ASSISTANT_BALANCE_QUERY_LIMITS = {
+  students: 10,
+  paymentsPerStudent: 100,
+  enrollmentsPerStudent: 10,
+  attendancePerEnrollment: 100,
+  discountsPerEnrollment: 20,
+} as const;
+
+export async function getStudentsWithBalanceForAssistant(input: {
+  page: number;
+  limit: number;
+}) {
+  // Include one sentinel child row at every level. That lets the service mark
+  // a balance incomplete without ever materializing an unbounded relation.
+  const limit = Math.min(input.limit, ASSISTANT_BALANCE_QUERY_LIMITS.students);
+  const where = { status: "ACTIVE" as const };
+  const [total, students] = await prisma.$transaction([
+    prisma.student.count({ where }),
+    prisma.student.findMany({
+      where,
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        payments: {
+          select: { amount: true },
+          orderBy: { id: "asc" },
+          take: ASSISTANT_BALANCE_QUERY_LIMITS.paymentsPerStudent + 1,
+        },
+        enrollments: {
+          select: {
+            id: true,
+            status: true,
+            startDate: true,
+            endDate: true,
+            updatedAt: true,
+            priceAtEnrollment: true,
+            customPriceOverride: true,
+            package: { select: { type: true, billingPeriod: true } },
+            sessionAttendance: {
+              where: { billable: true },
+              select: { session: { select: { scheduledFor: true } } },
+              orderBy: { id: "asc" },
+              take: ASSISTANT_BALANCE_QUERY_LIMITS.attendancePerEnrollment + 1,
+            },
+            discounts: {
+              select: {
+                kind: true,
+                value: true,
+                temporary: true,
+                validFrom: true,
+                validUntil: true,
+                usesRemaining: true,
+              },
+              orderBy: { id: "asc" },
+              take: ASSISTANT_BALANCE_QUERY_LIMITS.discountsPerEnrollment + 1,
+            },
+          },
+          orderBy: { id: "asc" },
+          take: ASSISTANT_BALANCE_QUERY_LIMITS.enrollmentsPerStudent + 1,
+        },
+      },
+      orderBy: [{ firstName: "asc" }, { lastName: "asc" }, { id: "asc" }],
+      skip: (input.page - 1) * limit,
+      take: limit,
+    }),
+  ]);
+  return {
+    total,
+    page: input.page,
+    limit,
+    hasMore: input.page * limit < total,
+    students,
+  };
 }
 
 export async function getWeeklySessionsByDay(

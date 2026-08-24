@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   Table,
   TableBody,
@@ -47,18 +48,39 @@ type EnrollmentRow = {
 export function EnrollmentsTable({
   enrollments,
   centerTimeZone,
+  initialEnrollmentId,
 }: {
   enrollments: EnrollmentRow[];
   centerTimeZone: string;
+  initialEnrollmentId: string | null;
 }) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [selectedEnrollmentId, setSelectedEnrollmentId] = useState<string | null>(
-    null,
+    initialEnrollmentId,
   );
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(Boolean(initialEnrollmentId));
+
+  useEffect(() => {
+    setSelectedEnrollmentId(initialEnrollmentId);
+    setOpen(Boolean(initialEnrollmentId));
+  }, [initialEnrollmentId]);
+
+  function updateEnrollmentUrl(id: string | null) {
+    const nextSearchParams = new URLSearchParams(searchParams.toString());
+    if (id) nextSearchParams.set("enrollment", id);
+    else nextSearchParams.delete("enrollment");
+    const query = nextSearchParams.toString();
+    router.replace(query ? `${pathname}?${query}` : pathname, {
+      scroll: false,
+    });
+  }
 
   function openEnrollment(id: string) {
     setSelectedEnrollmentId(id);
     setOpen(true);
+    updateEnrollmentUrl(id);
   }
 
   return (
@@ -161,7 +183,12 @@ export function EnrollmentsTable({
         centerTimeZone={centerTimeZone}
         enrollmentId={selectedEnrollmentId}
         open={open}
-        onOpenChange={setOpen}
+        onOpenChange={(nextOpen) => {
+          setOpen(nextOpen);
+          if (nextOpen) return;
+          setSelectedEnrollmentId(null);
+          updateEnrollmentUrl(null);
+        }}
       />
     </>
   );

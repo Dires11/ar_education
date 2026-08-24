@@ -9,12 +9,26 @@ import {
 } from "@/lib/services/session-dates";
 import { ScheduleView } from "./components/schedule-view";
 import { getSchedulePaymentStatus } from "@/lib/services/schedule-payment-status";
+import { idSchema, monthSchema } from "@/lib/validators/common";
 
 export const dynamic = "force-dynamic";
 
-export default async function SchedulePage() {
+export default async function SchedulePage({
+  searchParams,
+}: {
+  searchParams: Promise<{
+    month?: string;
+    session?: string;
+    recurrence?: string;
+  }>;
+}) {
   const centerTimeZone = getConfiguredCenterTimeZone();
-  const monthKey = getCalendarMonthKey(new Date(), centerTimeZone);
+  const query = await searchParams;
+  const fallbackMonthKey = getCalendarMonthKey(new Date(), centerTimeZone);
+  const parsedMonth = monthSchema.safeParse(query.month);
+  const monthKey = parsedMonth.success ? parsedMonth.data : fallbackMonthKey;
+  const parsedSessionId = idSchema.safeParse(query.session);
+  const parsedRecurrenceId = idSchema.safeParse(query.recurrence);
 
   const [
     {
@@ -41,6 +55,10 @@ export default async function SchedulePage() {
   return (
     <ScheduleView
       monthKey={monthKey}
+      initialSessionId={parsedSessionId.success ? parsedSessionId.data : null}
+      initialRecurrenceId={
+        parsedRecurrenceId.success ? parsedRecurrenceId.data : null
+      }
       centerTimeZone={centerTimeZone}
       sessions={sessions.map((s) => ({
         id: s.id,

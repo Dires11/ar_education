@@ -14,6 +14,8 @@ export async function requireAdmin() {
 
   let admin = await findAdminByClerkUserId(userId);
 
+  if (admin?.disabledAt) throw new Error("Forbidden");
+
   if (!admin) {
     const { clerkClient } = await import("@clerk/nextjs/server");
     const client = await clerkClient();
@@ -43,6 +45,7 @@ export async function requireAdmin() {
     });
   }
 
+  if (admin.disabledAt) throw new Error("Forbidden");
   return admin;
 }
 

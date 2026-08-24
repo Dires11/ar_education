@@ -7,6 +7,34 @@ export async function listEmailTemplates() {
   return prisma.emailTemplate.findMany({ orderBy: { createdAt: "desc" } });
 }
 
+export async function listEmailTemplatesForAssistant(input: {
+  page: number;
+  limit: number;
+}) {
+  const [total, templates] = await prisma.$transaction([
+    prisma.emailTemplate.count(),
+    prisma.emailTemplate.findMany({
+      select: {
+        id: true,
+        name: true,
+        type: true,
+        subject: true,
+        updatedAt: true,
+      },
+      orderBy: [{ createdAt: "desc" }, { id: "asc" }],
+      skip: (input.page - 1) * input.limit,
+      take: input.limit,
+    }),
+  ]);
+  return {
+    total,
+    page: input.page,
+    limit: input.limit,
+    hasMore: input.page * input.limit < total,
+    templates,
+  };
+}
+
 export async function getEmailTemplate(id: string) {
   return prisma.emailTemplate.findUnique({ where: { id } });
 }
@@ -58,12 +86,13 @@ export async function getStudentsForEmail(studentIds: string[]) {
       guardians: {
         where: { isPrimary: true },
         include: { guardian: true },
+        orderBy: { guardianId: "asc" },
       },
       enrollments: {
         where: { status: "ACTIVE" },
         include: { tutor: true, subject: true, package: true },
         take: 1,
-        orderBy: { createdAt: "desc" },
+        orderBy: [{ createdAt: "desc" }, { id: "asc" }],
       },
     },
   });

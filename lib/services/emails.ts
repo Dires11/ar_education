@@ -1,7 +1,9 @@
 import "server-only";
 
+import { createHash } from "node:crypto";
 import { format } from "date-fns";
 import { sendEmail } from "@/lib/utils/email";
+import { DeliveryOutcomeUnknownError } from "@/lib/utils/email-errors";
 import { getStudentsForEmail } from "@/lib/data/emails";
 import {
   createEmailTemplate,
@@ -39,25 +41,74 @@ function substitutePlaceholders(text: string, ctx: PlaceholderContext): string {
     .replace(/@center\b/g, "AR Educational Center");
 }
 
-// ─── Send to multiple students ────────────────────────────────────────────────
+type PreparedStudentEmail = {
+  studentId: string;
+  studentName: string;
+  email: string;
+  subject: string;
+  body: string;
+  html: string;
+};
 
-export async function sendEmailToStudents({
-  studentIds,
-  subject,
-  body,
-}: {
+function escapeHtml(text: string) {
+  return text
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+export function plainTextToEmailHtml(text: string) {
+  return text
+    .split("\n")
+    .map((line) => `<p>${escapeHtml(line)}</p>`)
+    .join("");
+}
+
+function deliveryDigest(deliveries: PreparedStudentEmail[]) {
+  return createHash("sha256")
+    .update(JSON.stringify(deliveries))
+    .digest("hex");
+}
+
+function personalizedDeliveryPreview(deliveries: PreparedStudentEmail[]) {
+  const visible = deliveries.slice(0, 3).map(
+    (delivery) =>
+      `${delivery.studentName} — ${delivery.email}\nSubject: ${delivery.subject}\n${delivery.body}`,
+  );
+  if (deliveries.length > visible.length) {
+    const remaining = deliveries.length - visible.length;
+    visible.push(`…and ${remaining} more recipient${remaining === 1 ? "" : "s"}.`);
+  }
+  const preview = visible.join("\n\n");
+  return preview.length <= 2_000
+    ? preview
+    : `${preview.slice(0, 1_999).trimEnd()}…`;
+}
+
+async function prepareStudentEmails(input: {
   studentIds: string[];
   subject: string;
   body: string;
 }) {
-  const students = await getStudentsForEmail(studentIds);
+  const students = await getStudentsForEmail(input.studentIds);
+  const byId = new Map(students.map((student) => [student.id, student]));
+  const deliveries: PreparedStudentEmail[] = [];
+  const unavailableStudentIds: string[] = [];
 
-  const results: { studentId: string; email: string; success: boolean }[] = [];
-
-  for (const student of students) {
+  for (const studentId of [...input.studentIds].sort()) {
+    const student = byId.get(studentId);
+    if (!student) {
+      unavailableStudentIds.push(studentId);
+      continue;
+    }
     const recipientEmail =
       student.guardians[0]?.guardian.email ?? student.email;
-    if (!recipientEmail) continue;
+    if (!recipientEmail) {
+      unavailableStudentIds.push(studentId);
+      continue;
+    }
 
     const ctx: PlaceholderContext = {
       studentFirstName: student.firstName,
@@ -74,21 +125,95 @@ export async function sendEmailToStudents({
       month: format(new Date(), "MMMM yyyy"),
     };
 
-    const personalizedSubject = substitutePlaceholders(subject, ctx);
-    const personalizedBody = substitutePlaceholders(body, ctx);
+    const personalizedBody = substitutePlaceholders(input.body, ctx);
+    deliveries.push({
+      studentId,
+      studentName: `${student.firstName} ${student.lastName}`,
+      email: recipientEmail,
+      subject: substitutePlaceholders(input.subject, ctx),
+      body: personalizedBody,
+      html: plainTextToEmailHtml(personalizedBody),
+    });
+  }
 
+  return {
+    deliveries,
+    unavailableStudentIds,
+    digest: deliveryDigest(deliveries),
+  };
+}
+
+export async function getEmailDeliveryConfirmation(input: {
+  studentIds: string[];
+  subject: string;
+  body: string;
+}) {
+  const prepared = await prepareStudentEmails(input);
+  if (prepared.unavailableStudentIds.length > 0) {
+    throw new Error(
+      "Every selected student must exist and have a deliverable primary guardian or student email before approval.",
+    );
+  }
+  return {
+    digest: prepared.digest,
+    bodyPreview: personalizedDeliveryPreview(prepared.deliveries),
+    recipients: prepared.deliveries.map((delivery) => ({
+      studentId: delivery.studentId,
+      name: delivery.studentName,
+      email: delivery.email,
+    })),
+  };
+}
+
+// ─── Send to multiple students ────────────────────────────────────────────────
+
+export async function sendEmailToStudents({
+  studentIds,
+  subject,
+  body,
+  idempotencyKey,
+  expectedConfirmationDigest,
+}: {
+  studentIds: string[];
+  subject: string;
+  body: string;
+  idempotencyKey?: string;
+  expectedConfirmationDigest?: string;
+}) {
+  const prepared = await prepareStudentEmails({ studentIds, subject, body });
+  if (
+    expectedConfirmationDigest &&
+    prepared.digest !== expectedConfirmationDigest
+  ) {
+    throw new Error(
+      "The email recipients or personalized content changed after approval was requested. Review and approve a new email action.",
+    );
+  }
+
+  const results: { studentId: string; email: string; success: boolean }[] = [];
+
+  for (const delivery of prepared.deliveries) {
     try {
       await sendEmail({
-        to: recipientEmail,
-        subject: personalizedSubject,
-        html: personalizedBody
-          .split("\n")
-          .map((line) => `<p>${line}</p>`)
-          .join(""),
+        to: delivery.email,
+        subject: delivery.subject,
+        html: delivery.html,
+        idempotencyKey: idempotencyKey
+          ? `${idempotencyKey}:${delivery.studentId}`
+          : undefined,
       });
-      results.push({ studentId: student.id, email: recipientEmail, success: true });
-    } catch {
-      results.push({ studentId: student.id, email: recipientEmail, success: false });
+      results.push({
+        studentId: delivery.studentId,
+        email: delivery.email,
+        success: true,
+      });
+    } catch (error) {
+      if (error instanceof DeliveryOutcomeUnknownError) throw error;
+      results.push({
+        studentId: delivery.studentId,
+        email: delivery.email,
+        success: false,
+      });
     }
   }
 

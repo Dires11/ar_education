@@ -10,6 +10,42 @@ export async function listPackages(activeOnly = false) {
   });
 }
 
+export async function listPackagesForAssistant(input: {
+  activeOnly: boolean;
+  page: number;
+  limit: number;
+}) {
+  const where = input.activeOnly ? { isActive: true } : undefined;
+  const [total, packages] = await prisma.$transaction([
+    prisma.package.count({ where }),
+    prisma.package.findMany({
+      where,
+      select: {
+        id: true,
+        name: true,
+        type: true,
+        billingPeriod: true,
+        lessonType: true,
+        subject: { select: { id: true, name: true } },
+        basePrice: true,
+        sessionsPerWeek: true,
+        durationMinutes: true,
+        isActive: true,
+      },
+      orderBy: [{ type: "asc" }, { name: "asc" }, { id: "asc" }],
+      skip: (input.page - 1) * input.limit,
+      take: input.limit,
+    }),
+  ]);
+  return {
+    total,
+    page: input.page,
+    limit: input.limit,
+    hasMore: input.page * input.limit < total,
+    packages,
+  };
+}
+
 export async function getPackage(id: string) {
   return prisma.package.findUnique({
     where: { id },

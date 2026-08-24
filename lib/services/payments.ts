@@ -1,5 +1,6 @@
 import "server-only";
 
+import { createHash } from "node:crypto";
 import {
   createPayment,
   listPayments,
@@ -9,6 +10,7 @@ import {
   getActiveSubscriptionEnrollments,
   getEnrollmentForPaymentReminder,
   getEnrollmentPaymentDue,
+  getEnrollmentPaymentDueQuote,
   createOutstandingPaymentForPeriod,
 } from "@/lib/data/payments";
 import {
@@ -16,7 +18,10 @@ import {
   markPaymentPaidSchema,
   type CreatePaymentInput,
 } from "@/lib/validators/payments";
-import { getStudentBalance } from "@/lib/services/pricing";
+import {
+  getStudentBalance,
+  getStudentBalanceForAssistant,
+} from "@/lib/services/pricing";
 import {
   addBillingMonths,
   applyDiscounts,
@@ -29,11 +34,11 @@ import {
   startOfBillingMonth,
 } from "@/lib/services/pricing-calculator";
 import { sendEmail } from "@/lib/utils/email";
-import { substitutePlaceholders } from "@/lib/services/emails";
 import {
-  createEmailTemplate,
-  getLatestEmailTemplate,
-} from "@/lib/data/emails";
+  plainTextToEmailHtml,
+  substitutePlaceholders,
+} from "@/lib/services/emails";
+import { createEmailTemplate, getLatestEmailTemplate } from "@/lib/data/emails";
 import {
   addCalendarMonths,
   getCalendarDateStart,
@@ -59,6 +64,20 @@ export type PaymentDue = {
   isDueThisMonth: boolean;
 };
 
+type PaymentDueStatus =
+  | "ALL"
+  | "OVERDUE"
+  | "DUE_THIS_MONTH"
+  | "UPCOMING"
+  | "PAID";
+
+const DEFAULT_PAYMENT_REMINDER_TEMPLATE = {
+  name: "Payment Reminder",
+  type: "PAYMENT_REMINDER" as const,
+  subject: "Payment reminder — @subject (@month)",
+  body: `Hello @guardian,\n\nThis is a friendly reminder that the payment for @name's @subject lessons is due for @month.\n\nAmount due: @amount\n\nPlease contact us to arrange payment or if you have any questions.\n\nThank you,\n@center`,
+};
+
 function formatBillingMonth(date: Date) {
   return date.toISOString().slice(0, 7);
 }
@@ -73,13 +92,12 @@ function formatBillingMonthLabel(date: Date, short = false) {
 
 export async function recordPayment(
   input: CreatePaymentInput,
-  recordedById: string
+  recordedById: string,
+  idempotencyKey?: string,
 ) {
   const parsed = createPaymentSchema.parse(input);
   if (parsed.enrollmentId) {
-    const enrollment = await getEnrollmentPaymentDue(
-      parsed.enrollmentId,
-    );
+    const enrollment = await getEnrollmentPaymentDue(parsed.enrollmentId);
     if (!enrollment || enrollment.studentId !== parsed.studentId) {
       throw new Error("Payment enrollment does not belong to this student");
     }
@@ -101,24 +119,54 @@ export async function recordPayment(
     enrollmentId: parsed.enrollmentId || undefined,
     coversMonth: parsed.coversMonth || undefined,
     notes: parsed.notes || undefined,
+    idempotencyKey,
   });
 }
 
 export async function recordPaymentForDue(
   input: unknown,
   recordedById: string,
+  idempotencyKey?: string,
 ) {
   const parsed = markPaymentPaidSchema.parse(input);
-  const enrollment = await getEnrollmentPaymentDue(parsed.enrollmentId);
+  const timeZone = getConfiguredCenterTimeZone();
+
+  return createOutstandingPaymentForPeriod({
+    studentId: parsed.studentId,
+    method: parsed.method,
+    paidAt: new Date(),
+    recordedById,
+    enrollmentId: parsed.enrollmentId,
+    coversMonth: parsed.month,
+    expectedOutstandingAmount: parsed.amount,
+    calculateAmountDue: (enrollment) => {
+      const { periodDate, billingPeriodIndex } = getValidatedBillingPeriod(
+        enrollment,
+        parsed.month,
+        timeZone,
+      );
+      return applyDiscounts(
+        enrollment.customPriceOverride ?? enrollment.priceAtEnrollment,
+        enrollment.discounts,
+        { calendarDate: periodDate, billingPeriodIndex, timeZone },
+      );
+    },
+    idempotencyKey,
+  });
+}
+
+export async function getPaymentDueQuote(input: unknown) {
+  const parsed = markPaymentPaidSchema.parse(input);
+  const enrollment = await getEnrollmentPaymentDueQuote(
+    parsed.enrollmentId,
+    parsed.month,
+  );
   if (!enrollment || enrollment.studentId !== parsed.studentId) {
     throw new Error("Enrollment does not belong to this student");
   }
 
   const timeZone = getConfiguredCenterTimeZone();
-  const {
-    periodDate,
-    billingPeriodIndex,
-  } = getValidatedBillingPeriod(
+  const { periodDate, billingPeriodIndex } = getValidatedBillingPeriod(
     enrollment,
     parsed.month,
     timeZone,
@@ -133,33 +181,46 @@ export async function recordPaymentForDue(
       timeZone,
     },
   );
-  return createOutstandingPaymentForPeriod({
-    studentId: parsed.studentId,
-    method: parsed.method,
-    paidAt: new Date(),
-    recordedById,
-    enrollmentId: parsed.enrollmentId,
-    coversMonth: parsed.month,
+  const outstanding = calculateOutstandingAmount(
     amountDue,
-  });
+    enrollment.payments.map((payment) => payment.amount),
+  );
+  if (outstanding.isZero()) {
+    throw new Error("This billing period is already paid");
+  }
+
+  return {
+    parsed,
+    confirmationArguments: {
+      ...parsed,
+      amount: outstanding.toFixed(2),
+    },
+    enrollment,
+    amountDue,
+  };
 }
 
 export async function deletePaymentById(id: string) {
   return deletePayment(id);
 }
 
-export async function getUpcomingPaymentDues(): Promise<PaymentDue[]> {
-  const today = new Date();
-  const timeZone = getConfiguredCenterTimeZone();
-  const currentBillingMonth = startOfBillingMonth(
-    getCalendarDateInTimeZone(today, timeZone),
-  );
-  const offsets = [-2, -1, 0, 1, 2];
+function paymentDueMatchesStatus(due: PaymentDue, status: PaymentDueStatus) {
+  if (status === "OVERDUE") return due.isOverdue;
+  if (status === "DUE_THIS_MONTH") return due.isDueThisMonth;
+  if (status === "UPCOMING") {
+    return !due.isPaid && !due.isOverdue && !due.isDueThisMonth;
+  }
+  if (status === "PAID") return due.isPaid;
+  return true;
+}
 
-  const enrollments = await getActiveSubscriptionEnrollments();
-
+function paymentDuesForEnrollments(
+  enrollments: Awaited<ReturnType<typeof getActiveSubscriptionEnrollments>>["enrollments"],
+  monthDates: Date[],
+  currentBillingMonth: Date,
+  timeZone: string,
+) {
   const dues: PaymentDue[] = [];
-
   for (const enrollment of enrollments) {
     const { student } = enrollment;
     const recipientEmail =
@@ -172,13 +233,12 @@ export async function getUpcomingPaymentDues(): Promise<PaymentDue[]> {
       ? startOfBillingMonth(billingCutoff)
       : null;
 
-    for (const offset of offsets) {
-      const monthDate = addBillingMonths(currentBillingMonth, offset);
-
-      // Skip months before enrollment started
+    for (const monthDate of monthDates) {
       if (enrollmentStart > monthDate) continue;
       if (finalBillingMonth && monthDate > finalBillingMonth) continue;
-      if (billingMonthDifference(monthDate, enrollmentStart) % periodMonths !== 0) {
+      if (
+        billingMonthDifference(monthDate, enrollmentStart) % periodMonths !== 0
+      ) {
         continue;
       }
 
@@ -202,9 +262,7 @@ export async function getUpcomingPaymentDues(): Promise<PaymentDue[]> {
         amountDecimal,
         paymentAmounts,
       );
-      const amount = outstandingAmount.toFixed(2);
       const isPaid = outstandingAmount.isZero();
-
       dues.push({
         key: `${enrollment.id}_${monthStr}`,
         enrollmentId: enrollment.id,
@@ -213,7 +271,7 @@ export async function getUpcomingPaymentDues(): Promise<PaymentDue[]> {
         recipientEmail,
         subjectName: enrollment.subject.name,
         packageName: enrollment.package.name,
-        amount,
+        amount: outstandingAmount.toFixed(2),
         month: monthStr,
         monthLabel,
         isPaid,
@@ -223,20 +281,107 @@ export async function getUpcomingPaymentDues(): Promise<PaymentDue[]> {
       });
     }
   }
+  return dues;
+}
 
+function sortPaymentDues(dues: PaymentDue[]) {
   dues.sort((a, b) => {
-    const rank = (d: PaymentDue) => {
-      if (d.isPaid) return 4;
-      if (d.isOverdue) return 0;
-      if (d.isDueThisMonth) return 1;
+    const rank = (due: PaymentDue) => {
+      if (due.isPaid) return 4;
+      if (due.isOverdue) return 0;
+      if (due.isDueThisMonth) return 1;
       return 2;
     };
-    const r = rank(a) - rank(b);
-    if (r !== 0) return r;
-    return a.month.localeCompare(b.month);
+    return rank(a) - rank(b) || a.month.localeCompare(b.month);
   });
-
   return dues;
+}
+
+function billingMonthRange(fromMonth: string, toMonth: string) {
+  const from = new Date(`${fromMonth}-01T00:00:00.000Z`);
+  const to = new Date(`${toMonth}-01T00:00:00.000Z`);
+  const count = billingMonthDifference(to, from) + 1;
+  if (count < 1 || count > 24) {
+    throw new Error("Payment-due ranges must cover between 1 and 24 months");
+  }
+  return Array.from({ length: count }, (_, index) =>
+    addBillingMonths(from, index),
+  );
+}
+
+export async function getPaymentDuesForAssistant(input: {
+  status: PaymentDueStatus;
+  fromMonth: string;
+  toMonth: string;
+  page: number;
+  limit: number;
+}) {
+  const timeZone = getConfiguredCenterTimeZone();
+  const currentBillingMonth = startOfBillingMonth(
+    getCalendarDateInTimeZone(new Date(), timeZone),
+  );
+  const monthDates = billingMonthRange(input.fromMonth, input.toMonth);
+  const enrollmentPage = await getActiveSubscriptionEnrollments({
+    page: input.page,
+    limit: input.limit,
+    paymentFromMonth: input.fromMonth,
+    paymentToMonth: input.toMonth,
+  });
+  const dues = sortPaymentDues(
+    paymentDuesForEnrollments(
+      enrollmentPage.enrollments,
+      monthDates,
+      currentBillingMonth,
+      timeZone,
+    ).filter((due) => paymentDueMatchesStatus(due, input.status)),
+  );
+  return {
+    total: enrollmentPage.total,
+    page: enrollmentPage.page,
+    limit: enrollmentPage.limit,
+    hasMore: enrollmentPage.hasMore,
+    from: input.fromMonth,
+    to: input.toMonth,
+    oldestApplicableMonth: enrollmentPage.oldestApplicableStartDate
+      ? formatBillingMonth(enrollmentPage.oldestApplicableStartDate)
+      : null,
+    earlierHistoryAvailable: enrollmentPage.oldestApplicableStartDate
+      ? input.fromMonth >
+        formatBillingMonth(enrollmentPage.oldestApplicableStartDate)
+      : false,
+    dues,
+  };
+}
+
+export async function getUpcomingPaymentDues(): Promise<PaymentDue[]> {
+  const timeZone = getConfiguredCenterTimeZone();
+  const currentBillingMonth = startOfBillingMonth(
+    getCalendarDateInTimeZone(new Date(), timeZone),
+  );
+  const monthDates = [-2, -1, 0, 1, 2].map((offset) =>
+    addBillingMonths(currentBillingMonth, offset),
+  );
+  const fromMonth = formatBillingMonth(monthDates[0]);
+  const toMonth = formatBillingMonth(monthDates.at(-1)!);
+  const dues: PaymentDue[] = [];
+  for (let page = 1; ; page += 1) {
+    const enrollmentPage = await getActiveSubscriptionEnrollments({
+      page,
+      limit: 100,
+      paymentFromMonth: fromMonth,
+      paymentToMonth: toMonth,
+    });
+    dues.push(
+      ...paymentDuesForEnrollments(
+        enrollmentPage.enrollments,
+        monthDates,
+        currentBillingMonth,
+        timeZone,
+      ),
+    );
+    if (!enrollmentPage.hasMore) break;
+  }
+  return sortPaymentDues(dues);
 }
 
 export async function getEnrollmentPaidMonths(
@@ -266,10 +411,7 @@ export async function getPaymentStats() {
   const timeZone = getConfiguredCenterTimeZone();
   const currentMonthKey = getCalendarMonthKey(new Date(), timeZone);
   const currentRange = getCalendarMonthRange(currentMonthKey, timeZone);
-  const previousMonthKey = addCalendarMonths(
-    currentRange.calendarStart,
-    -1,
-  )
+  const previousMonthKey = addCalendarMonths(currentRange.calendarStart, -1)
     .toISOString()
     .slice(0, 7);
   const previousRange = getCalendarMonthRange(previousMonthKey, timeZone);
@@ -282,9 +424,9 @@ export async function getPaymentStats() {
   });
 }
 
-export async function sendPaymentReminderEmail(
+async function preparePaymentReminderDelivery(
   enrollmentId: string,
-  month: string
+  month: string,
 ) {
   const [enrollment, template] = await Promise.all([
     getEnrollmentForPaymentReminder(enrollmentId, month),
@@ -294,17 +436,13 @@ export async function sendPaymentReminderEmail(
   if (!enrollment) throw new Error("Enrollment not found");
 
   const { student } = enrollment;
-  const recipientEmail =
-    student.guardians[0]?.guardian.email ?? student.email;
+  const recipientEmail = student.guardians[0]?.guardian.email ?? student.email;
 
   if (!recipientEmail)
     throw new Error("No email address found for this student");
 
   const timeZone = getConfiguredCenterTimeZone();
-  const {
-    periodDate,
-    billingPeriodIndex,
-  } = getValidatedBillingPeriod(
+  const { periodDate, billingPeriodIndex } = getValidatedBillingPeriod(
     enrollment,
     month,
     timeZone,
@@ -339,27 +477,85 @@ export async function sendPaymentReminderEmail(
     month: monthLabel,
   };
 
-  // Auto-create the default template if it was deleted
-  const activeTemplate =
-    template ??
-    (await createEmailTemplate({
-        name: "Payment Reminder",
-        type: "PAYMENT_REMINDER",
-        subject: "Payment reminder — @subject (@month)",
-        body: `Hello @guardian,\n\nThis is a friendly reminder that the payment for @name's @subject lessons is due for @month.\n\nAmount due: @amount\n\nPlease contact us to arrange payment or if you have any questions.\n\nThank you,\n@center`,
-    }));
+  const activeTemplate = template ?? DEFAULT_PAYMENT_REMINDER_TEMPLATE;
 
   const emailSubject = substitutePlaceholders(activeTemplate.subject, ctx);
-  const emailHtml = substitutePlaceholders(activeTemplate.body, ctx)
-    .split("\n")
-    .map((line) => `<p>${line}</p>`)
-    .join("");
+  const emailBody = substitutePlaceholders(activeTemplate.body, ctx);
+  const emailHtml = plainTextToEmailHtml(emailBody);
+
+  const digest = createHash("sha256")
+    .update(
+      JSON.stringify({
+        enrollmentId,
+        month,
+        recipientEmail,
+        amount,
+        subject: emailSubject,
+        html: emailHtml,
+      }),
+    )
+    .digest("hex");
+
+  return {
+    digest,
+    recipientEmail,
+    recipientName: `${student.firstName} ${student.lastName}`,
+    amount,
+    monthLabel,
+    subject: emailSubject,
+    bodyPreview:
+      emailBody.length <= 2_000
+        ? emailBody
+        : `${emailBody.slice(0, 1_999)}…`,
+    html: emailHtml,
+    usedDefaultTemplate: !template,
+  };
+}
+
+export async function getPaymentReminderConfirmation(
+  enrollmentId: string,
+  month: string,
+) {
+  const prepared = await preparePaymentReminderDelivery(enrollmentId, month);
+  return {
+    digest: prepared.digest,
+    recipientEmail: prepared.recipientEmail,
+    recipientName: prepared.recipientName,
+    amount: prepared.amount,
+    monthLabel: prepared.monthLabel,
+    subject: prepared.subject,
+    bodyPreview: prepared.bodyPreview,
+  };
+}
+
+export async function sendPaymentReminderEmail(
+  enrollmentId: string,
+  month: string,
+  idempotencyKey?: string,
+  expectedConfirmationDigest?: string,
+) {
+  const prepared = await preparePaymentReminderDelivery(enrollmentId, month);
+  if (
+    expectedConfirmationDigest &&
+    prepared.digest !== expectedConfirmationDigest
+  ) {
+    throw new Error(
+      "The reminder recipient, amount, or message changed after approval was requested. Review and approve a new reminder action.",
+    );
+  }
+
+  // Preserve the manual workflow's default-template behavior without using a
+  // mutable template value for the approved delivery itself.
+  if (prepared.usedDefaultTemplate) {
+    await createEmailTemplate(DEFAULT_PAYMENT_REMINDER_TEMPLATE);
+  }
 
   await sendEmail({
-    to: recipientEmail,
-    subject: emailSubject,
-    html: emailHtml,
+    to: prepared.recipientEmail,
+    subject: prepared.subject,
+    html: prepared.html,
+    idempotencyKey,
   });
 }
 
-export { listPayments, getStudentBalance };
+export { listPayments, getStudentBalance, getStudentBalanceForAssistant };
