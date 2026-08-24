@@ -57,3 +57,31 @@ export function validateAssistantEvalArguments(
     arguments: result.data as Record<string, unknown>,
   };
 }
+
+export function assistantEvalArgumentsMatch(
+  actual: unknown,
+  expected: unknown,
+): boolean {
+  if (Array.isArray(expected)) {
+    return (
+      Array.isArray(actual) &&
+      actual.length === expected.length &&
+      expected.every((item, index) =>
+        assistantEvalArgumentsMatch(actual[index], item),
+      )
+    );
+  }
+  if (expected && typeof expected === "object") {
+    if (!actual || typeof actual !== "object" || Array.isArray(actual)) {
+      return false;
+    }
+    return Object.entries(expected as Record<string, unknown>).every(
+      ([key, value]) =>
+        assistantEvalArgumentsMatch(
+          (actual as Record<string, unknown>)[key],
+          value,
+        ),
+    );
+  }
+  return Object.is(actual, expected);
+}

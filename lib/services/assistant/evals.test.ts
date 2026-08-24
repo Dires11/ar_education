@@ -25,28 +25,32 @@ describe("assistant routing evaluation set", () => {
       );
       if (item.expectedConfirmation !== undefined && expectedSpec) {
         const exampleArguments =
-          item.expectedTool === "mark_attendance"
-            ? {
-                sessionId: "session_123",
-                attendances: [
-                  {
-                    studentId: "student_123",
-                    status: "COMPLETED",
-                    billable: true,
-                  },
-                ],
-              }
-            : {};
+          item.expectedArgumentsByTool[
+            `${item.expectedNamespace}.${item.expectedTool}`
+          ];
+        expect(exampleArguments, item.name).toBeDefined();
         expect(
-          assistantToolRequiresConfirmation(expectedSpec, exampleArguments),
+          assistantToolRequiresConfirmation(expectedSpec, exampleArguments!),
           item.name,
         ).toBe(item.expectedConfirmation);
       }
-      for (const lookupGroup of item.requiredLookupGroups ?? []) {
-        for (const lookup of lookupGroup) {
+      for (const requirement of item.requiredLookups ?? []) {
+        expect(Object.keys(requirement.arguments).length, item.name).toBeGreaterThan(
+          0,
+        );
+        for (const lookup of requirement.alternatives) {
           const [namespace, name] = lookup.split(".");
-          expect(getAssistantToolSpec(namespace, name, "OWNER"), item.name).toBeDefined();
+          expect(
+            getAssistantToolSpec(namespace, name, "OWNER"),
+            item.name,
+          ).toBeDefined();
         }
+      }
+      for (const key of [
+        `${item.expectedNamespace}.${item.expectedTool}`,
+        ...(item.acceptableAlternativeTools ?? []),
+      ]) {
+        expect(item.expectedArgumentsByTool[key], item.name).toBeDefined();
       }
     }
   });

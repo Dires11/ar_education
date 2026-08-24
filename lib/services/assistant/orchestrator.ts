@@ -28,6 +28,7 @@ import {
   markAssistantToolRunUnknown,
   pauseAssistantRun,
   recordAssistantModelStep,
+  recordAssistantResponse,
   claimAssistantToolRun,
   rejectAssistantToolRun,
   setAssistantThreadSummary,
@@ -581,31 +582,56 @@ async function refreshAssistantSummary(
         }${formatOperationAuditHistoryNote(message.operationAudit)}`,
     )
     .join("\n\n");
-  const response = await client.responses.create(
-    {
-      model: ASSISTANT_MODEL,
-      instructions:
-        "Summarize durable CRM conversation context. Preserve entity names and IDs, completed actions, pending decisions, constraints, dates, administrator preferences, and every server-generated operation audit warning verbatim in substance. Never remove or soften an unverified-outcome or do-not-repeat warning. Do not add facts. Return concise plain text.",
-      input: [
+  const deterministicFallback = [
+    source.previousSummary
+      ? `Earlier durable summary:\n${source.previousSummary.slice(0, 6_000)}`
+      : "",
+    `Additional conversation:\n${transcript.slice(0, 6_000)}`,
+  ]
+    .filter(Boolean)
+    .join("\n\n")
+    .slice(0, 12_000);
+  let contextSummary = deterministicFallback;
+  if (!signal?.aborted) {
+    try {
+      const response = await client.responses.create(
         {
-          role: "user",
-          content: `Previous summary:\n${source.previousSummary ?? "(none)"}\n\nNew transcript:\n${transcript}`,
+          model: ASSISTANT_MODEL,
+          instructions:
+            "Summarize durable CRM conversation context. Preserve entity names and IDs, completed actions, pending decisions, constraints, dates, administrator preferences, and every server-generated operation audit warning verbatim in substance. Never remove or soften an unverified-outcome or do-not-repeat warning. Do not add facts. Return concise plain text.",
+          input: [
+            {
+              role: "user",
+              content: `Previous summary:\n${source.previousSummary ?? "(none)"}\n\nNew transcript:\n${transcript}`,
+            },
+          ],
+          reasoning: { effort: "low", context: "current_turn" },
+          max_output_tokens: 1_200,
+          store: false,
+          safety_identifier: safetyIdentifier(admin.id),
         },
-      ],
-      reasoning: { effort: "low", context: "current_turn" },
-      max_output_tokens: 1_200,
-      store: false,
-      safety_identifier: safetyIdentifier(admin.id),
-    },
-    { signal },
-  );
-  if (!response.output_text.trim()) return;
-  await setAssistantThreadSummary(
-    admin.id,
-    threadId,
-    response.output_text.trim().slice(0, 12_000),
-    source.summarizeThrough,
-  );
+        { signal },
+      );
+      if (response.output_text.trim()) {
+        contextSummary = response.output_text.trim().slice(0, 12_000);
+      }
+    } catch {
+      // A deterministic local summary keeps the context window contiguous
+      // when the optional model-generated summary is unavailable.
+    }
+  }
+  const saved = await setAssistantThreadSummary(admin.id, threadId, {
+    contextSummary,
+    summarizedMessageCount: source.summarizeThrough,
+    expectedSummarizedMessageCount: source.expectedSummarizedMessageCount,
+    expectedMessageCount: source.expectedMessageCount,
+    expectedUpdatedAt: source.expectedUpdatedAt,
+  });
+  if (saved.count !== 1) {
+    throw new Error(
+      "Conversation history changed while its summary was being prepared",
+    );
+  }
 }
 
 async function executeRecordedTool(input: {
@@ -1409,7 +1435,7 @@ async function runModelLoop(input: {
         const content =
           assistantContent.trim() ||
           "I completed the request, but no summary was generated.";
-        const completed = await completeAssistantRun({
+        await recordAssistantResponse({
           runId: input.runId,
           threadId: input.threadId,
           content,
@@ -1419,7 +1445,12 @@ async function runModelLoop(input: {
           input.admin,
           input.threadId,
           input.signal,
-        ).catch(() => undefined);
+        );
+        const completed = await completeAssistantRun({
+          runId: input.runId,
+          threadId: input.threadId,
+          content,
+        });
         input.emit({
           type: "assistant_completed",
           runId: input.runId,

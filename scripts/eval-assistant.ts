@@ -14,7 +14,10 @@ import {
   getAssistantOpenAITools,
   getAssistantToolSpec,
 } from "@/lib/services/assistant/tools";
-import { validateAssistantEvalArguments } from "./assistant-eval-validation";
+import {
+  assistantEvalArgumentsMatch,
+  validateAssistantEvalArguments,
+} from "./assistant-eval-validation";
 
 function sanitizeReplayValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(sanitizeReplayValue);
@@ -347,20 +350,36 @@ async function evaluateCase(
         continue;
       }
       if (targetKeys.has(key)) {
-        const calledTools = new Set(
-          transcript
-            .slice(0, -1)
-            .filter((entry) => entry.schemaValid)
-            .map((entry) => entry.tool),
-        );
-        const missingLookups = (item.requiredLookupGroups ?? []).filter(
-          (alternatives) =>
-            !alternatives.some((lookup) => calledTools.has(lookup)),
+        const previousValidCalls = transcript
+          .slice(0, -1)
+          .filter((entry) => entry.schemaValid);
+        const missingLookups = (item.requiredLookups ?? []).filter(
+          (requirement) =>
+            !previousValidCalls.some(
+              (entry) =>
+                requirement.alternatives.includes(entry.tool) &&
+                assistantEvalArgumentsMatch(
+                  entry.arguments,
+                  requirement.arguments,
+                ),
+            ),
         );
         if (missingLookups.length > 0) {
           failure = `Target mutation ran before prerequisite lookup(s): ${missingLookups
-            .map((group) => group.join(" or "))
+            .map(
+              (requirement) =>
+                `${requirement.alternatives.join(" or ")} with ${JSON.stringify(requirement.arguments)}`,
+            )
             .join(", ")}`;
+          break;
+        }
+        const expectedArguments = item.expectedArgumentsByTool[key];
+        if (!expectedArguments) {
+          failure = `No semantic argument assertion is configured for ${key}`;
+          break;
+        }
+        if (!assistantEvalArgumentsMatch(args, expectedArguments)) {
+          failure = `Target ${key} used scenario-inconsistent arguments; expected ${JSON.stringify(expectedArguments)}`;
           break;
         }
         if (item.expectedConfirmation !== undefined) {

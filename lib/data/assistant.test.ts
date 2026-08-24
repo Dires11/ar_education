@@ -31,6 +31,7 @@ import {
   getAssistantThreadMessageCount,
   listAssistantThreads,
   recordAssistantModelStep,
+  recordAssistantResponse,
   rejectAssistantToolRun,
   setAssistantThreadSummary,
 } from "@/lib/data/assistant";
@@ -152,6 +153,7 @@ describe("assistant persistence guarantees", () => {
     prismaMock.assistantThread.findFirst.mockResolvedValue({
       contextSummary: "Earlier summary",
       summarizedMessageCount: 0,
+      updatedAt: new Date("2026-08-23T12:00:00.000Z"),
       _count: { messages: 200 },
     });
     prismaMock.assistantMessage.findMany.mockResolvedValue(
@@ -231,6 +233,7 @@ describe("assistant persistence guarantees", () => {
       prismaMock.assistantThread.findFirst.mockResolvedValue({
         contextSummary: null,
         summarizedMessageCount: 0,
+        updatedAt: new Date("2026-08-23T12:00:00.000Z"),
         _count: { messages: count },
       });
       prismaMock.assistantMessage.findMany.mockResolvedValue([]);
@@ -796,41 +799,103 @@ describe("assistant persistence guarantees", () => {
     expect(tx.assistantRun.create).not.toHaveBeenCalled();
   });
 
-  it("only advances summaries monotonically when refreshes resolve out of order", async () => {
-    prismaMock.assistantThread.updateMany
-      .mockResolvedValueOnce({ count: 1 })
-      .mockResolvedValueOnce({ count: 0 });
-
-    await setAssistantThreadSummary("admin-1", "thread-1", "Newer summary", 80);
-    await setAssistantThreadSummary(
-      "admin-1",
-      "thread-1",
-      "Older slow summary",
-      40,
+  it("publishes a summary only while its message snapshot is unchanged", async () => {
+    const expectedUpdatedAt = new Date("2026-08-23T12:00:00.000Z");
+    const tx = {
+      assistantThread: {
+        findFirst: vi.fn().mockResolvedValue({ id: "thread-1" }),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+      assistantMessage: { count: vi.fn().mockResolvedValue(80) },
+    };
+    prismaMock.$transaction.mockImplementation(
+      (callback: (client: typeof tx) => unknown) => callback(tx),
     );
 
-    expect(prismaMock.assistantThread.updateMany).toHaveBeenNthCalledWith(1, {
+    await expect(
+      setAssistantThreadSummary("admin-1", "thread-1", {
+        contextSummary: "New summary",
+        summarizedMessageCount: 50,
+        expectedSummarizedMessageCount: 10,
+        expectedMessageCount: 80,
+        expectedUpdatedAt,
+      }),
+    ).resolves.toEqual({ count: 1 });
+
+    expect(tx.assistantThread.updateMany).toHaveBeenCalledWith({
       where: {
         id: "thread-1",
         adminId: "admin-1",
-        summarizedMessageCount: { lt: 80 },
+        updatedAt: expectedUpdatedAt,
+        summarizedMessageCount: 10,
       },
       data: {
-        contextSummary: "Newer summary",
-        summarizedMessageCount: 80,
+        contextSummary: "New summary",
+        summarizedMessageCount: 50,
       },
     });
-    expect(prismaMock.assistantThread.updateMany).toHaveBeenNthCalledWith(2, {
-      where: {
-        id: "thread-1",
-        adminId: "admin-1",
-        summarizedMessageCount: { lt: 40 },
+    expect(prismaMock.$transaction).toHaveBeenCalledWith(
+      expect.any(Function),
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+    );
+  });
+
+  it("records the assistant response without releasing the active run", async () => {
+    const message = { id: "assistant-message", role: "ASSISTANT" };
+    const tx = {
+      assistantRun: {
+        findFirst: vi.fn().mockResolvedValue({ id: "run-1" }),
+        update: vi.fn(),
       },
-      data: {
-        contextSummary: "Older slow summary",
-        summarizedMessageCount: 40,
+      assistantMessage: {
+        findFirst: vi.fn().mockResolvedValue(null),
+        create: vi.fn().mockResolvedValue(message),
       },
+      assistantThread: { update: vi.fn().mockResolvedValue({}) },
+    };
+    prismaMock.$transaction.mockImplementation(
+      (callback: (client: typeof tx) => unknown) => callback(tx),
+    );
+
+    await expect(
+      recordAssistantResponse({
+        runId: "run-1",
+        threadId: "thread-1",
+        content: "Done",
+      }),
+    ).resolves.toEqual(message);
+
+    expect(tx.assistantRun.findFirst).toHaveBeenCalledWith({
+      where: { id: "run-1", threadId: "thread-1", status: "RUNNING" },
+      select: { id: true },
     });
+    expect(tx.assistantRun.update).not.toHaveBeenCalled();
+    expect(tx.assistantThread.update).toHaveBeenCalled();
+  });
+
+  it("discards a summary when visible messages changed after its snapshot", async () => {
+    const tx = {
+      assistantThread: {
+        findFirst: vi.fn().mockResolvedValue({ id: "thread-1" }),
+        updateMany: vi.fn(),
+      },
+      assistantMessage: { count: vi.fn().mockResolvedValue(81) },
+    };
+    prismaMock.$transaction.mockImplementation(
+      (callback: (client: typeof tx) => unknown) => callback(tx),
+    );
+
+    await expect(
+      setAssistantThreadSummary("admin-1", "thread-1", {
+        contextSummary: "Stale summary",
+        summarizedMessageCount: 50,
+        expectedSummarizedMessageCount: 10,
+        expectedMessageCount: 80,
+        expectedUpdatedAt: new Date("2026-08-23T12:00:00.000Z"),
+      }),
+    ).resolves.toEqual({ count: 0 });
+
+    expect(tx.assistantThread.updateMany).not.toHaveBeenCalled();
   });
 
   it("atomically claims a pending, unexpired confirmation", async () => {

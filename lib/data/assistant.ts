@@ -483,17 +483,49 @@ export async function getAssistantThreadMessageCount(
 export async function setAssistantThreadSummary(
   adminId: string,
   threadId: string,
-  contextSummary: string,
-  summarizedMessageCount: number,
+  input: {
+    contextSummary: string;
+    summarizedMessageCount: number;
+    expectedSummarizedMessageCount: number;
+    expectedMessageCount: number;
+    expectedUpdatedAt: Date;
+  },
 ) {
-  return prisma.assistantThread.updateMany({
-    where: {
-      id: threadId,
-      adminId,
-      summarizedMessageCount: { lt: summarizedMessageCount },
+  return prisma.$transaction(
+    async (tx) => {
+      const unchangedThread = await tx.assistantThread.findFirst({
+        where: {
+          id: threadId,
+          adminId,
+          updatedAt: input.expectedUpdatedAt,
+          summarizedMessageCount: input.expectedSummarizedMessageCount,
+        },
+        select: { id: true },
+      });
+      if (!unchangedThread) return { count: 0 };
+
+      const visibleMessageCount = await tx.assistantMessage.count({
+        where: { threadId, ...visibleAssistantMessageWhere },
+      });
+      if (visibleMessageCount !== input.expectedMessageCount) {
+        return { count: 0 };
+      }
+
+      return tx.assistantThread.updateMany({
+        where: {
+          id: threadId,
+          adminId,
+          updatedAt: input.expectedUpdatedAt,
+          summarizedMessageCount: input.expectedSummarizedMessageCount,
+        },
+        data: {
+          contextSummary: input.contextSummary,
+          summarizedMessageCount: input.summarizedMessageCount,
+        },
+      });
     },
-    data: { contextSummary, summarizedMessageCount },
-  });
+    { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+  );
 }
 
 function assistantResultEntityKey(result: Prisma.JsonValue | null) {
@@ -519,6 +551,7 @@ export async function getAssistantSummarySource(
     select: {
       contextSummary: true,
       summarizedMessageCount: true,
+      updatedAt: true,
       _count: {
         select: { messages: { where: visibleAssistantMessageWhere } },
       },
@@ -559,6 +592,9 @@ export async function getAssistantSummarySource(
   });
   return {
     previousSummary: thread.contextSummary,
+    expectedSummarizedMessageCount: thread.summarizedMessageCount,
+    expectedMessageCount: thread._count.messages,
+    expectedUpdatedAt: thread.updatedAt,
     messages: messages.map((message) => ({
       role: message.role,
       content: message.content,
@@ -1179,12 +1215,31 @@ export async function rejectAssistantToolRun(input: {
   return outcome.toolRun;
 }
 
-export async function completeAssistantRun(input: {
+export async function recordAssistantResponse(input: {
   runId: string;
   threadId: string;
   content: string;
 }) {
   return prisma.$transaction(async (tx) => {
+    const run = await tx.assistantRun.findFirst({
+      where: {
+        id: input.runId,
+        threadId: input.threadId,
+        status: "RUNNING",
+      },
+      select: { id: true },
+    });
+    if (!run) throw new Error("Assistant run is no longer active");
+    const existingMessage = await tx.assistantMessage.findFirst({
+      where: {
+        threadId: input.threadId,
+        runId: input.runId,
+        role: "ASSISTANT",
+      },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    });
+    if (existingMessage) return existingMessage;
+
     const message = await tx.assistantMessage.create({
       data: {
         threadId: input.threadId,
@@ -1192,6 +1247,28 @@ export async function completeAssistantRun(input: {
         role: "ASSISTANT",
         content: input.content,
       },
+    });
+    await tx.assistantThread.update({
+      where: { id: input.threadId },
+      data: { updatedAt: new Date() },
+    });
+    return message;
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+}
+
+export async function completeAssistantRun(input: {
+  runId: string;
+  threadId: string;
+  content: string;
+}) {
+  return prisma.$transaction(async (tx) => {
+    const message = await tx.assistantMessage.findFirstOrThrow({
+      where: {
+        threadId: input.threadId,
+        runId: input.runId,
+        role: "ASSISTANT",
+      },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     });
     await tx.assistantRun.update({
       where: { id: input.runId },
@@ -1201,22 +1278,10 @@ export async function completeAssistantRun(input: {
         completedAt: new Date(),
       },
     });
-    const thread = await tx.assistantThread.update({
-      where: { id: input.threadId },
-      data: { updatedAt: new Date() },
-      select: {
-        _count: {
-          select: {
-            messages: {
-              where: {
-                OR: [{ runId: null }, { run: { supersededAt: null } }],
-              },
-            },
-          },
-        },
-      },
+    const messageCount = await tx.assistantMessage.count({
+      where: { threadId: input.threadId, ...visibleAssistantMessageWhere },
     });
-    return { message, messageCount: thread._count.messages };
+    return { message, messageCount };
   });
 }
 

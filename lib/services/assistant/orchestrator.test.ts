@@ -9,6 +9,7 @@ const responses = vi.hoisted(() => ({
   options: [] as Array<{ signal?: AbortSignal } | undefined>,
   summaryRequests: [] as Array<Record<string, unknown>>,
   summaryResponseText: "Durable summary",
+  summaryError: null as Error | null,
 }));
 
 const dataMocks = vi.hoisted(() => ({
@@ -34,9 +35,12 @@ const dataMocks = vi.hoisted(() => ({
     toolCallAllowed: true,
     toolCallCount: 1,
   })),
+  recordAssistantResponse: vi.fn(async () => ({
+    id: "message-assistant",
+  })),
   claimAssistantToolRun: vi.fn(),
   rejectAssistantToolRun: vi.fn(),
-  setAssistantThreadSummary: vi.fn(),
+  setAssistantThreadSummary: vi.fn(async () => ({ count: 1 })),
   touchAssistantRun: vi.fn(async () => undefined),
 }));
 
@@ -85,6 +89,7 @@ vi.mock("openai", () => ({
       },
       create: async (request: Record<string, unknown>) => {
         responses.summaryRequests.push(request);
+        if (responses.summaryError) throw responses.summaryError;
         return { output_text: responses.summaryResponseText };
       },
     };
@@ -164,6 +169,7 @@ describe("assistant orchestration", () => {
     responses.options.length = 0;
     responses.summaryRequests.length = 0;
     responses.summaryResponseText = "Durable summary";
+    responses.summaryError = null;
     process.env.OPENAI_API_KEY = "test-key";
     confirmationCardMock.mockResolvedValue(undefined);
     confirmationArgumentsMock.mockImplementation(
@@ -483,6 +489,9 @@ describe("assistant orchestration", () => {
     dataMocks.getAssistantSummarySource.mockResolvedValueOnce({
       previousSummary: "Earlier conversation",
       summarizeThrough: 40,
+      expectedSummarizedMessageCount: 0,
+      expectedMessageCount: 70,
+      expectedUpdatedAt: new Date("2026-08-23T12:00:00.000Z"),
       messages: [
         {
           role: "USER",
@@ -540,9 +549,68 @@ describe("assistant orchestration", () => {
     expect(dataMocks.setAssistantThreadSummary).toHaveBeenCalledWith(
       "admin-1",
       "thread-1",
-      "Durable summary",
-      40,
+      {
+        contextSummary: "Durable summary",
+        summarizedMessageCount: 40,
+        expectedSummarizedMessageCount: 0,
+        expectedMessageCount: 70,
+        expectedUpdatedAt: new Date("2026-08-23T12:00:00.000Z"),
+      },
     );
+    expect(
+      dataMocks.recordAssistantResponse.mock.invocationCallOrder[0],
+    ).toBeLessThan(
+      dataMocks.setAssistantThreadSummary.mock.invocationCallOrder[0],
+    );
+    expect(
+      dataMocks.setAssistantThreadSummary.mock.invocationCallOrder[0],
+    ).toBeLessThan(dataMocks.completeAssistantRun.mock.invocationCallOrder[0]);
+  });
+
+  it("publishes a deterministic summary before releasing the run when the summary model fails", async () => {
+    dataMocks.getAssistantSummarySource.mockResolvedValueOnce({
+      previousSummary: "Earlier context",
+      summarizeThrough: 1,
+      expectedSummarizedMessageCount: 0,
+      expectedMessageCount: 31,
+      expectedUpdatedAt: new Date("2026-08-23T12:00:00.000Z"),
+      messages: [
+        {
+          role: "USER",
+          content: "Find Maya",
+          entityKeys: [],
+          operationAudit: null,
+        },
+      ],
+    });
+    responses.summaryError = new Error("Summary model unavailable");
+    responses.queue.push({
+      events: [],
+      final: { output_text: "Maya was found.", output: [], usage },
+    });
+
+    await processAssistantTurn(
+      { id: "admin-1", role: "STAFF" },
+      {
+        clientTurnId: "c7bcb6f9-41e7-4c17-bf0d-3e1b04c8e0d4",
+        message: "Find Maya",
+      },
+      () => undefined,
+    );
+
+    expect(dataMocks.setAssistantThreadSummary).toHaveBeenCalledWith(
+      "admin-1",
+      "thread-1",
+      expect.objectContaining({
+        contextSummary: expect.stringContaining(
+          "Additional conversation:\nAdministrator: Find Maya",
+        ),
+        summarizedMessageCount: 1,
+      }),
+    );
+    expect(
+      dataMocks.setAssistantThreadSummary.mock.invocationCallOrder[0],
+    ).toBeLessThan(dataMocks.completeAssistantRun.mock.invocationCallOrder[0]);
   });
 
   it("persists an incomplete OpenAI response as a retryable failure", async () => {
