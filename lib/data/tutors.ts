@@ -11,6 +11,11 @@ export type TutorFilters = {
   pageSize?: number;
 };
 
+type TutorDirectoryFilters = Pick<
+  TutorFilters,
+  "search" | "status" | "subjectId"
+>;
+
 function tutorSearchWhere(search: string): Prisma.TutorWhereInput {
   const tokens = search.trim().split(/\s+/).filter(Boolean).slice(0, 10);
   return {
@@ -25,6 +30,18 @@ function tutorSearchWhere(search: string): Prisma.TutorWhereInput {
   };
 }
 
+function tutorDirectoryWhere({
+  search,
+  status,
+  subjectId,
+}: TutorDirectoryFilters): Prisma.TutorWhereInput {
+  return {
+    ...(status && { status }),
+    ...(subjectId && { subjects: { some: { subjectId } } }),
+    ...(search && tutorSearchWhere(search)),
+  };
+}
+
 export async function listTutors({
   search,
   status,
@@ -32,11 +49,7 @@ export async function listTutors({
   page = 1,
   pageSize = 20,
 }: TutorFilters = {}) {
-  const where = {
-    ...(status && { status }),
-    ...(subjectId && { subjects: { some: { subjectId } } }),
-    ...(search && tutorSearchWhere(search)),
-  };
+  const where = tutorDirectoryWhere({ search, status, subjectId });
 
   const [tutors, total] = await Promise.all([
     prisma.tutor.findMany({
@@ -50,6 +63,27 @@ export async function listTutors({
   ]);
 
   return { tutors, total, page, pageSize };
+}
+
+export async function getTutorDirectoryStats(
+  filters: TutorDirectoryFilters = {},
+) {
+  const matchingWhere = tutorDirectoryWhere(filters);
+  const [activeCount, coveredSubjects] = await Promise.all([
+    prisma.tutor.count({
+      where: { AND: [matchingWhere, { status: "ACTIVE" }] },
+    }),
+    prisma.tutorSubject.findMany({
+      where: { tutor: matchingWhere },
+      select: { subjectId: true },
+      distinct: ["subjectId"],
+    }),
+  ]);
+
+  return {
+    activeCount,
+    subjectsCoveredCount: coveredSubjects.length,
+  };
 }
 
 const ASSISTANT_TUTOR_SEARCH_SUBJECT_LIMIT = 20;

@@ -6,6 +6,9 @@ const prismaMock = vi.hoisted(() => ({
     findMany: vi.fn(),
     findUnique: vi.fn(),
   },
+  tutorSubject: {
+    findMany: vi.fn(),
+  },
   session: {
     aggregate: vi.fn(),
     count: vi.fn(),
@@ -16,6 +19,7 @@ const prismaMock = vi.hoisted(() => ({
 vi.mock("@/lib/prisma", () => ({ prisma: prismaMock }));
 
 import {
+  getTutorDirectoryStats,
   getTutorForAssistant,
   getTutorProfileForAssistantMutation,
   getTutorPayrollForAssistantData,
@@ -28,6 +32,30 @@ describe("tutor search", () => {
     vi.clearAllMocks();
     prismaMock.tutor.findMany.mockResolvedValue([]);
     prismaMock.tutor.count.mockResolvedValue(0);
+    prismaMock.tutorSubject.findMany.mockResolvedValue([]);
+  });
+
+  it("counts tutor stats across the full directory", async () => {
+    prismaMock.tutor.count.mockResolvedValue(24);
+    prismaMock.tutorSubject.findMany.mockResolvedValue([
+      { subjectId: "subject-1" },
+      { subjectId: "subject-2" },
+      { subjectId: "subject-3" },
+    ]);
+
+    await expect(getTutorDirectoryStats()).resolves.toEqual({
+      activeCount: 24,
+      subjectsCoveredCount: 3,
+    });
+
+    expect(prismaMock.tutor.count).toHaveBeenCalledWith({
+      where: { AND: [{}, { status: "ACTIVE" }] },
+    });
+    expect(prismaMock.tutorSubject.findMany).toHaveBeenCalledWith({
+      where: { tutor: {} },
+      select: { subjectId: true },
+      distinct: ["subjectId"],
+    });
   });
 
   it("matches every full-name token across tutor identity fields", async () => {

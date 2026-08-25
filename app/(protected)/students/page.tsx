@@ -1,4 +1,7 @@
-import { listStudents } from "@/lib/data/students";
+import {
+  getStudentDirectoryStats,
+  listStudents,
+} from "@/lib/data/students";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import Link from "next/link";
@@ -23,18 +26,12 @@ export default async function StudentsPage({
   const status = params.status as PersonStatus | undefined;
   const page = Number(params.page ?? 1);
 
-  const { students, total, pageSize } = await listStudents({
-    search,
-    status,
-    page,
-  });
+  const [{ students, total, pageSize }, stats] = await Promise.all([
+    listStudents({ search, status, page }),
+    getStudentDirectoryStats({ search, status }),
+  ]);
 
   const totalPages = Math.ceil(total / pageSize);
-  const activeCount = students.filter((student) => student.status === "ACTIVE").length;
-  const pausedCount = students.filter((student) => student.status === "PAUSED").length;
-  const withGuardiansCount = students.filter(
-    (student) => student.guardians.length > 0
-  ).length;
 
   return (
     <div className="space-y-6">
@@ -63,14 +60,18 @@ export default async function StudentsPage({
                   <UserCheckIcon className="h-4 w-4" />
                   <span className="text-xs uppercase tracking-[0.18em]">Active</span>
                 </div>
-                <p className="mt-2 text-2xl font-semibold">{activeCount}</p>
+                <p className="mt-2 text-2xl font-semibold">
+                  {stats.activeCount}
+                </p>
               </div>
               <div className="rounded-2xl border bg-background/80 px-4 py-3 shadow-sm">
                 <div className="flex items-center gap-2 text-muted-foreground">
                   <BookOpenIcon className="h-4 w-4" />
                   <span className="text-xs uppercase tracking-[0.18em]">With Contacts</span>
                 </div>
-                <p className="mt-2 text-2xl font-semibold">{withGuardiansCount}</p>
+                <p className="mt-2 text-2xl font-semibold">
+                  {stats.withContactsCount}
+                </p>
               </div>
             </div>
           </div>
@@ -79,7 +80,9 @@ export default async function StudentsPage({
             <NewStudentDialog />
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
               <CirclePauseIcon className="h-3.5 w-3.5" />
-              <span>{pausedCount} paused students in the current result set</span>
+              <span>
+                {stats.pausedCount} paused students in the current result set
+              </span>
             </div>
           </div>
         </div>

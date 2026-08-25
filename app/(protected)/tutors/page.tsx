@@ -1,4 +1,4 @@
-import { listTutors } from "@/lib/data/tutors";
+import { getTutorDirectoryStats, listTutors } from "@/lib/data/tutors";
 import { listSubjects } from "@/lib/data/subjects";
 import { UsersIcon, UserCheckIcon, BookOpenIcon } from "lucide-react";
 import { PageHero } from "@/components/page-hero";
@@ -6,15 +6,11 @@ import { NewTutorDialog } from "./components/new-tutor-dialog";
 import { TutorsTable } from "./components/tutors-table";
 
 export default async function TutorsPage() {
-  const [{ tutors, total }, subjects] = await Promise.all([
+  const [{ tutors, total }, subjects, stats] = await Promise.all([
     listTutors(),
     listSubjects(),
+    getTutorDirectoryStats(),
   ]);
-
-  const activeCount = tutors.filter((t) => t.status === "ACTIVE").length;
-  const uniqueSubjects = new Set(
-    tutors.flatMap((t) => t.subjects.map((ts) => ts.subject.name))
-  ).size;
 
   return (
     <div className="space-y-6">
@@ -25,8 +21,12 @@ export default async function TutorsPage() {
         gradient="from-violet-50 via-background to-indigo-50"
         stats={[
           { icon: UsersIcon, label: "Total", value: total },
-          { icon: UserCheckIcon, label: "Active", value: activeCount },
-          { icon: BookOpenIcon, label: "Subjects Covered", value: uniqueSubjects },
+          { icon: UserCheckIcon, label: "Active", value: stats.activeCount },
+          {
+            icon: BookOpenIcon,
+            label: "Subjects Covered",
+            value: stats.subjectsCoveredCount,
+          },
         ]}
         action={<NewTutorDialog subjects={subjects} />}
       />

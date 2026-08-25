@@ -14,6 +14,7 @@ const prismaMock = vi.hoisted(() => ({
 vi.mock("@/lib/prisma", () => ({ prisma: prismaMock }));
 
 import {
+  getStudentDirectoryStats,
   getLinkedGuardianForAssistant,
   getStudentIdentityForAssistant,
   getStudentForAssistant,
@@ -27,6 +28,32 @@ import {
 describe("student directory data queries", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it("counts directory stats across the full filtered result", async () => {
+    prismaMock.student.count
+      .mockResolvedValueOnce(17)
+      .mockResolvedValueOnce(4)
+      .mockResolvedValueOnce(19);
+
+    await expect(
+      getStudentDirectoryStats({ search: "Maya" }),
+    ).resolves.toEqual({
+      activeCount: 17,
+      pausedCount: 4,
+      withContactsCount: 19,
+    });
+
+    const searchWhere = expect.objectContaining({ AND: expect.any(Array) });
+    expect(prismaMock.student.count).toHaveBeenNthCalledWith(1, {
+      where: { AND: [searchWhere, { status: "ACTIVE" }] },
+    });
+    expect(prismaMock.student.count).toHaveBeenNthCalledWith(2, {
+      where: { AND: [searchWhere, { status: "PAUSED" }] },
+    });
+    expect(prismaMock.student.count).toHaveBeenNthCalledWith(3, {
+      where: { AND: [searchWhere, { guardians: { some: {} } }] },
+    });
   });
 
   it("bounds nested guardians and enrollments in exact assistant detail", async () => {

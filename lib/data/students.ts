@@ -10,6 +10,8 @@ export type StudentFilters = {
   pageSize?: number;
 };
 
+type StudentDirectoryFilters = Pick<StudentFilters, "search" | "status">;
+
 function studentSearchWhere(search: string): Prisma.StudentWhereInput {
   const tokens = search.trim().split(/\s+/).filter(Boolean).slice(0, 10);
   return {
@@ -40,16 +42,23 @@ function studentSearchWhere(search: string): Prisma.StudentWhereInput {
   };
 }
 
+function studentDirectoryWhere({
+  search,
+  status,
+}: StudentDirectoryFilters): Prisma.StudentWhereInput {
+  return {
+    ...(status && { status }),
+    ...(search && studentSearchWhere(search)),
+  };
+}
+
 export async function listStudents({
   search,
   status,
   page = 1,
   pageSize = 20,
 }: StudentFilters = {}) {
-  const where = {
-    ...(status && { status }),
-    ...(search && studentSearchWhere(search)),
-  };
+  const where = studentDirectoryWhere({ search, status });
 
   const [students, total] = await Promise.all([
     prisma.student.findMany({
@@ -68,6 +77,25 @@ export async function listStudents({
   ]);
 
   return { students, total, page, pageSize };
+}
+
+export async function getStudentDirectoryStats(
+  filters: StudentDirectoryFilters = {},
+) {
+  const matchingWhere = studentDirectoryWhere(filters);
+  const [activeCount, pausedCount, withContactsCount] = await Promise.all([
+    prisma.student.count({
+      where: { AND: [matchingWhere, { status: "ACTIVE" }] },
+    }),
+    prisma.student.count({
+      where: { AND: [matchingWhere, { status: "PAUSED" }] },
+    }),
+    prisma.student.count({
+      where: { AND: [matchingWhere, { guardians: { some: {} } }] },
+    }),
+  ]);
+
+  return { activeCount, pausedCount, withContactsCount };
 }
 
 export async function searchStudentsForAssistant(input: {
